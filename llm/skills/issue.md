@@ -7,20 +7,15 @@ description: >
   issue is drafted interactively from the conversation.
 ---
 
-The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT,
-REQUIRED, RECOMMENDED, MAY, and OPTIONAL in this document are to be
-interpreted as described in RFC 2119.
+The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT, REQUIRED, RECOMMENDED, MAY, and OPTIONAL in this document are to be interpreted as described in RFC 2119.
 
 # Issue Skill
 
-Create a well-structured GitHub issue, either from a prepared `.issue.md`
-file or interactively from conversation context.
+Create a well-structured GitHub issue, either from a prepared `.issue.md` file or interactively from conversation context.
 
 ## Pipeline Context
 
-This skill is part of the development workflow pipeline:
-`/issue` → `/pr` → `/implement` → `/commit` → `/pr` (update).
-This skill is the **first** stage.
+This skill is part of the development workflow pipeline: `/issue` → `/pr` → `/implement` → `/commit` → `/pr` (update). This skill is the **first** stage.
 
 ## Workflow
 
@@ -32,26 +27,16 @@ Check whether `.issue.md` exists in the repository root:
 test -f .issue.md && echo "exists" || echo "missing"
 ```
 
-- **If `.issue.md` exists** — read it. The first `# heading` MUST be parsed
-  as the issue title and the remaining content as the body. Proceed to
-  step 3.
-- **If `.issue.md` does not exist** — draft the issue interactively
-  (step 2).
+- **If `.issue.md` exists** — read it. The first `# heading` MUST be parsed as the issue title and the remaining content as the body. Proceed to step 3.
+- **If `.issue.md` does not exist** — draft the issue interactively (step 2).
 
 ### 2. Draft interactively
 
-Based on conversation context, determine the issue type and draft using the
-matching template. All templates share the same structure — only the field
-names and auto-label differ.
+Based on conversation context, determine the issue type and draft using the matching template. All templates share the same structure — only the field names and auto-label differ.
 
-Issue titles MUST be written in the imperative mood. Issue body prose
-SHOULD use the imperative mood for proposed actions and present tense
-for descriptions of current system state.
+Issue titles MUST be written in the imperative mood. Issue body prose SHOULD use the imperative mood for proposed actions and present tense for descriptions of current system state.
 
-Prose in issue bodies MUST NOT be hard-wrapped at a fixed column width.
-Write each sentence or logical phrase as a single unwrapped line.
-Markdown renderers handle line wrapping automatically — manual line
-breaks inside paragraphs create unnecessary diffs and awkward rendering.
+Prose in issue bodies MUST NOT be hard-wrapped at a fixed column width. Write each sentence or logical phrase as a single unwrapped line. Markdown renderers handle line wrapping automatically — manual line breaks inside paragraphs create unnecessary diffs and awkward rendering.
 
 **Bug** (label: `bug`):
 
@@ -167,8 +152,7 @@ The draft MUST be shown to the user and iterated until they approve.
 
 ### 3. Suggest labels
 
-The issue content MUST be analyzed and one or more labels suggested from
-the repository's label set:
+The issue content MUST be analyzed and one or more labels suggested from the repository's label set:
 
 | Label | Use when |
 |-------|----------|
@@ -179,18 +163,13 @@ the repository's label set:
 | `cicd` | CI/CD pipeline changes |
 | `build` | Build system or dependency changes |
 
-Each label SHOULD only be applied when the issue's **primary focus** matches
-that category. For example, a bug fix will naturally include tests as part
-of its implementation — that MUST NOT warrant the `test` label. The `test`
-label is reserved for issues whose core purpose is adding, fixing, or
-improving tests or test infrastructure.
+Each label SHOULD only be applied when the issue's **primary focus** matches that category. For example, a bug fix will naturally include tests as part of its implementation — that MUST NOT warrant the `test` label. The `test` label is reserved for issues whose core purpose is adding, fixing, or improving tests or test infrastructure.
 
 The suggested labels MUST be shown alongside the draft for user approval.
 
 ### 4. Show draft for approval
 
-The full issue (title, body, labels) MUST be presented to the user. The
-issue MUST NOT be pushed until the user explicitly approves.
+The full issue (title, body, labels) MUST be presented to the user. The issue MUST NOT be pushed until the user explicitly approves.
 
 ### 5. Push the issue
 
@@ -207,8 +186,7 @@ The `--assignee` flag MUST NOT be used — issues are not auto-assigned.
 
 ### 6. Clean up `.issue.md`
 
-If the issue was created from `.issue.md`, the user MUST be asked whether to
-delete the file now that the issue has been pushed. If they agree:
+If the issue was created from `.issue.md`, the user MUST be asked whether to delete the file now that the issue has been pushed. If they agree:
 
 ```bash
 rm .issue.md
@@ -216,8 +194,10 @@ rm .issue.md
 
 ### 7. Return the issue URL
 
-The issue URL returned by `gh issue create` MUST be printed so the user can
-access it directly.
+The issue URL returned by `gh issue create` MUST be printed so the user can access it directly.
 
-The user SHOULD be prompted with the next pipeline step: "Ready to plan
-this? Run `/pr <number>` to create a branch and draft PR."
+The user SHOULD be prompted with the next pipeline step: "Ready to plan this? Run `/pr <number>` to create a branch and draft PR."
+
+### 8. Verify
+
+Compile a structured action summary of the actions performed and outputs produced during this skill invocation, then invoke the `/verify` skill: `/verify issue`.
