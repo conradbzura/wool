@@ -35,6 +35,24 @@ async def _clear_channel_pool():
     await _conn._channel_pool.clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_proxy_context():
+    """Reset proxy context vars between tests.
+
+    Prevents ContextVar leakage from tests that set
+    ``wool.__proxy__`` or ``wool.__proxy_pool__`` (directly
+    or via worker_dispatch on the gRPC server handler
+    context).
+    """
+    import wool
+
+    proxy_token = wool.__proxy__.set(None)
+    pool_token = wool.__proxy_pool__.set(None)
+    yield
+    wool.__proxy__.reset(proxy_token)
+    wool.__proxy_pool__.reset(pool_token)
+
+
 @pytest.fixture
 def metadata():
     """Provides sample WorkerMetadata for testing.
