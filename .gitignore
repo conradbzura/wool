@@ -29,3 +29,5 @@ STYLEGUIDE.md
 
 wool/src/wool/cli.py
 specs/
+demo/
+benchmarks/
