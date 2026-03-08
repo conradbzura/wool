@@ -16,6 +16,7 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from pytest_mock import MockerFixture
 
+import wool
 from wool import protocol
 from wool.protocol.worker import WorkerStub
 from wool.protocol.worker import add_WorkerServicer_to_server
@@ -23,6 +24,7 @@ from wool.runtime.event import Event
 from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskEvent
+from wool.runtime.routine.task import do_dispatch
 from wool.runtime.worker.interceptor import VersionInterceptor
 from wool.runtime.worker.service import WorkerService
 from wool.runtime.worker.service import _ReadOnlyEvent
@@ -2279,3 +2281,348 @@ class TestWorkerService:
             assert completed[1].step == 1
         finally:
             TaskEvent._handlers = saved
+
+    @pytest.mark.asyncio
+    @pytest.mark.dependency("test_dispatch_async_generator_task")
+    async def test_dispatch_streaming_with_proxy_and_dispatch_context(
+        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
+    ):
+        """Test dispatch() sets proxy and do_dispatch(False) for streaming.
+
+        Given:
+            A proxy pool configured in wool.__proxy_pool__ and an
+            async generator task that reports do_dispatch() and
+            wool.__proxy__ via yielded values
+        When:
+            dispatch() is called and the generator is advanced via
+            next requests
+        Then:
+            It should execute with do_dispatch set to False during
+            advancement, and wool.__proxy__ set to the pool's proxy.
+        """
+
+        # Arrange — generator yields its observed context
+        async def capturing_generator():
+            from wool.runtime.routine.task import do_dispatch as _dd
+
+            yield {
+                "do_dispatch": _dd(),
+                "has_proxy": wool.__proxy__.get() is not None,
+            }
+
+        mock_proxy = mocker.MagicMock()
+        mock_proxy.id = "test-proxy-id"
+
+        wool_task = Task(
+            id=uuid4(),
+            callable=capturing_generator,
+            args=(),
+            kwargs={},
+            proxy=mock_proxy,
+        )
+
+        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        next_request = protocol.worker.Request(next=protocol.worker.Void())
+
+        # Act
+        async with grpc_aio_stub() as stub:
+            stream = stub.dispatch()
+            await stream.write(request)
+
+            response = await anext(aiter(stream))
+            assert response.HasField("ack")
+
+            await stream.write(next_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            result = cloudpickle.loads(response.result.dump)
+
+            await stream.write(next_request)
+            await stream.done_writing()
+            [r async for r in stream]
+
+        # Assert
+        assert result["do_dispatch"] is False
+        assert result["has_proxy"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.dependency("test_dispatch_async_generator_task")
+    async def test_dispatch_streaming_without_proxy_pool(
+        self, grpc_aio_stub, mocker: MockerFixture
+    ):
+        """Test dispatch() streaming works without a proxy pool.
+
+        Given:
+            No proxy pool configured in wool.__proxy_pool__ (default
+            None) and an async generator task
+        When:
+            dispatch() is called and the generator is advanced via
+            next requests
+        Then:
+            It should execute normally without error, with
+            wool.__proxy__ remaining None.
+        """
+
+        # Arrange — generator yields its observed proxy state
+        async def capturing_generator():
+            yield {"has_proxy": wool.__proxy__.get() is not None}
+
+        mock_proxy = mocker.MagicMock()
+        mock_proxy.id = "test-proxy-id"
+
+        wool_task = Task(
+            id=uuid4(),
+            callable=capturing_generator,
+            args=(),
+            kwargs={},
+            proxy=mock_proxy,
+        )
+
+        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        next_request = protocol.worker.Request(next=protocol.worker.Void())
+
+        # Act
+        async with grpc_aio_stub() as stub:
+            stream = stub.dispatch()
+            await stream.write(request)
+
+            response = await anext(aiter(stream))
+            assert response.HasField("ack")
+
+            await stream.write(next_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            result = cloudpickle.loads(response.result.dump)
+
+            await stream.write(next_request)
+            await stream.done_writing()
+            [r async for r in stream]
+
+        # Assert
+        assert result["has_proxy"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.dependency("test_dispatch_async_generator_task")
+    async def test_dispatch_streaming_proxy_cleanup_on_error(
+        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
+    ):
+        """Test dispatch() cleans up proxy context on generator error.
+
+        Given:
+            A proxy pool configured in wool.__proxy_pool__ and an
+            async generator task that raises after one yield
+        When:
+            dispatch() is called and the generator raises
+        Then:
+            It should return the exception and clean up the proxy
+            context (call __aexit__).
+        """
+
+        # Arrange
+        async def failing_generator():
+            yield "before_error"
+            raise ValueError("generator_error")
+
+        mock_proxy = mocker.MagicMock()
+        mock_proxy.id = "test-proxy-id"
+
+        wool_task = Task(
+            id=uuid4(),
+            callable=failing_generator,
+            args=(),
+            kwargs={},
+            proxy=mock_proxy,
+        )
+
+        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        next_request = protocol.worker.Request(next=protocol.worker.Void())
+
+        # Act
+        async with grpc_aio_stub() as stub:
+            stream = stub.dispatch()
+            await stream.write(request)
+
+            response = await anext(aiter(stream))
+            assert response.HasField("ack")
+
+            # First next: yields "before_error"
+            await stream.write(next_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            assert cloudpickle.loads(response.result.dump) == "before_error"
+
+            # Second next: generator raises
+            await stream.write(next_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("exception")
+            exception = cloudpickle.loads(response.exception.dump)
+            assert isinstance(exception, ValueError)
+            assert str(exception) == "generator_error"
+
+            await stream.done_writing()
+            [r async for r in stream]
+
+        # Assert — proxy context manager was cleaned up
+        mock_worker_proxy_cache.get.return_value.__aexit__.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.dependency("test_dispatch_async_generator_with_send")
+    async def test_dispatch_streaming_asend_with_proxy_context(
+        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
+    ):
+        """Test dispatch() forwards asend() within do_dispatch(False) context.
+
+        Given:
+            A proxy pool configured in wool.__proxy_pool__ and an
+            async generator task that echoes sent values and reports
+            do_dispatch state
+        When:
+            dispatch() is called with send requests containing
+            non-None payloads
+        Then:
+            It should forward each sent value to the generator via
+            asend() with do_dispatch set to False, and yield back
+            the generator's responses.
+        """
+
+        # Arrange — generator echoes sent values and reports dispatch flag
+        async def echo_with_capture():
+            from wool.runtime.routine.task import do_dispatch as _dd
+
+            value = yield "ready"
+            while value is not None:
+                value = yield {"echo": value, "do_dispatch": _dd()}
+
+        mock_proxy = mocker.MagicMock()
+        mock_proxy.id = "test-proxy-id"
+
+        wool_task = Task(
+            id=uuid4(),
+            callable=echo_with_capture,
+            args=(),
+            kwargs={},
+            proxy=mock_proxy,
+        )
+
+        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        next_request = protocol.worker.Request(next=protocol.worker.Void())
+
+        # Act
+        async with grpc_aio_stub() as stub:
+            stream = stub.dispatch()
+            await stream.write(request)
+
+            response = await anext(aiter(stream))
+            assert response.HasField("ack")
+
+            # First next to get "ready"
+            await stream.write(next_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            assert cloudpickle.loads(response.result.dump) == "ready"
+
+            # Send "hello"
+            msg = protocol.worker.Request(
+                send=protocol.task.Message(dump=cloudpickle.dumps("hello"))
+            )
+            await stream.write(msg)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            result1 = cloudpickle.loads(response.result.dump)
+
+            # Send "world"
+            msg = protocol.worker.Request(
+                send=protocol.task.Message(dump=cloudpickle.dumps("world"))
+            )
+            await stream.write(msg)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            result2 = cloudpickle.loads(response.result.dump)
+
+            # Send None to terminate
+            msg = protocol.worker.Request(
+                send=protocol.task.Message(dump=cloudpickle.dumps(None))
+            )
+            await stream.write(msg)
+            await stream.done_writing()
+            [r async for r in stream]
+
+        # Assert
+        assert result1 == {"echo": "hello", "do_dispatch": False}
+        assert result2 == {"echo": "world", "do_dispatch": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.dependency("test_dispatch_async_generator_throw_terminates")
+    async def test_dispatch_streaming_athrow_with_proxy_context(
+        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
+    ):
+        """Test dispatch() forwards athrow() within do_dispatch(False) context.
+
+        Given:
+            A proxy pool configured in wool.__proxy_pool__ and an
+            async generator task that catches a specific exception
+        When:
+            dispatch() is called with a throw request
+        Then:
+            It should forward the exception via athrow() with
+            do_dispatch set to False, and yield the recovery value
+            along with the observed context.
+        """
+
+        # Arrange — generator catches ValueError and reports context
+        async def resilient_generator():
+            from wool.runtime.routine.task import do_dispatch as _dd
+
+            try:
+                yield "waiting"
+            except ValueError:
+                yield {
+                    "do_dispatch": _dd(),
+                    "has_proxy": wool.__proxy__.get() is not None,
+                }
+
+        mock_proxy = mocker.MagicMock()
+        mock_proxy.id = "test-proxy-id"
+
+        wool_task = Task(
+            id=uuid4(),
+            callable=resilient_generator,
+            args=(),
+            kwargs={},
+            proxy=mock_proxy,
+        )
+
+        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        next_request = protocol.worker.Request(next=protocol.worker.Void())
+
+        # Act
+        async with grpc_aio_stub() as stub:
+            stream = stub.dispatch()
+            await stream.write(request)
+
+            response = await anext(aiter(stream))
+            assert response.HasField("ack")
+
+            # Get first yield
+            await stream.write(next_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            assert cloudpickle.loads(response.result.dump) == "waiting"
+
+            # Throw ValueError
+            throw_request = protocol.worker.Request(
+                throw=protocol.task.Message(dump=cloudpickle.dumps(ValueError("test")))
+            )
+            await stream.write(throw_request)
+            response = await anext(aiter(stream))
+            assert response.HasField("result")
+            result = cloudpickle.loads(response.result.dump)
+
+            # Exhaust generator
+            await stream.write(next_request)
+            await stream.done_writing()
+            [r async for r in stream]
+
+        # Assert
+        assert result["do_dispatch"] is False
+        assert result["has_proxy"] is True
