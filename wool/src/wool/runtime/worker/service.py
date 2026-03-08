@@ -21,6 +21,7 @@ from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskEvent
+from wool.runtime.routine.task import do_dispatch
 
 # Sentinel to mark end of async generator stream
 _SENTINEL = object()
@@ -302,39 +303,50 @@ class WorkerService(protocol.worker.WorkerServicer):
         async with self._loop_pool.get("worker") as (worker_loop, _):
 
             async def worker_dispatch():
-                gen = work_task.callable(*work_task.args, **work_task.kwargs)
+                proxy_pool = wool.__proxy_pool__.get()
+                proxy_ctx = proxy_pool.get(work_task.proxy) if proxy_pool else None
+                proxy = await proxy_ctx.__aenter__() if proxy_ctx else None
+                token = wool.__proxy__.set(proxy) if proxy else None
                 try:
-                    while True:
-                        cmd = await request_queue.get()
-                        if cmd is _SENTINEL:
-                            break
-                        kind, payload = cmd
-                        try:
-                            if kind == "next":
-                                value = await gen.asend(None)
-                            elif kind == "send":
-                                value = await gen.asend(payload)
-                            elif kind == "throw":
-                                value = await gen.athrow(type(payload), payload)
+                    gen = work_task.callable(*work_task.args, **work_task.kwargs)
+                    try:
+                        while True:
+                            cmd = await request_queue.get()
+                            if cmd is _SENTINEL:
+                                break
+                            kind, payload = cmd
+                            try:
+                                with do_dispatch(False):
+                                    if kind == "next":
+                                        value = await gen.asend(None)
+                                    elif kind == "send":
+                                        value = await gen.asend(payload)
+                                    elif kind == "throw":
+                                        value = await gen.athrow(type(payload), payload)
+                                    else:
+                                        continue
+                            except StopAsyncIteration:
+                                main_loop.call_soon_threadsafe(
+                                    result_queue.put_nowait, _SENTINEL
+                                )
+                                return
+                            except BaseException as e:
+                                main_loop.call_soon_threadsafe(
+                                    result_queue.put_nowait, ("error", e)
+                                )
+                                return
                             else:
-                                continue
-                        except StopAsyncIteration:
-                            main_loop.call_soon_threadsafe(
-                                result_queue.put_nowait, _SENTINEL
-                            )
-                            return
-                        except BaseException as e:
-                            main_loop.call_soon_threadsafe(
-                                result_queue.put_nowait, ("error", e)
-                            )
-                            return
-                        else:
-                            main_loop.call_soon_threadsafe(
-                                result_queue.put_nowait,
-                                ("value", value),
-                            )
+                                main_loop.call_soon_threadsafe(
+                                    result_queue.put_nowait,
+                                    ("value", value),
+                                )
+                    finally:
+                        await gen.aclose()
                 finally:
-                    await gen.aclose()
+                    if token is not None:
+                        wool.__proxy__.reset(token)
+                    if proxy_ctx is not None:
+                        await proxy_ctx.__aexit__(None, None, None)
 
             worker_loop.call_soon_threadsafe(
                 lambda: worker_loop.create_task(worker_dispatch(), context=ctx)
