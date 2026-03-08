@@ -482,9 +482,21 @@ class WorkerConnection:
             yield  # Priming yield — signals dispatch() that ref is held
             stream = _DispatchStream(call, task)
             try:
-                async for result in stream:
-                    yield result
-            except (Exception, GeneratorExit, asyncio.CancelledError):
+                sent = None
+                result = await stream.__anext__()
+                while True:
+                    try:
+                        sent = yield result
+                    except GeneratorExit:
+                        await stream.aclose()
+                        return
+                    except BaseException as exc:
+                        result = await stream.athrow(type(exc), exc)
+                    else:
+                        result = await stream.asend(sent)
+            except StopAsyncIteration:
+                return
+            except (Exception, asyncio.CancelledError):
                 try:
                     await stream.aclose()
                 except Exception:  # pragma: no cover
