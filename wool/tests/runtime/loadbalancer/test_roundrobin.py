@@ -11,6 +11,7 @@ from pytest_mock import MockerFixture
 
 from wool.runtime.discovery.base import WorkerMetadata
 from wool.runtime.loadbalancer.base import LoadBalancerContext
+from wool.runtime.loadbalancer.base import LoadBalancerLike
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
 from wool.runtime.routine.task import Task
@@ -58,6 +59,56 @@ def dispatch_side_effects(
 
 
 class TestRoundRobinLoadBalancer:
+    def test_isinstance_satisfies_protocol(self):
+        """Test RoundRobinLoadBalancer satisfies the
+        LoadBalancerLike protocol.
+
+        Given:
+            A concrete RoundRobinLoadBalancer instance
+        When:
+            Checked against the LoadBalancerLike protocol
+        Then:
+            It should satisfy the protocol
+        """
+        # Act & Assert
+        assert isinstance(RoundRobinLoadBalancer(), LoadBalancerLike)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_with_empty_context(
+        self,
+        mocker: MockerFixture,
+    ):
+        """Test dispatch raises NoWorkersAvailable with empty
+        context.
+
+        Given:
+            A load balancer with an empty context (no workers)
+        When:
+            A task is dispatched
+        Then:
+            NoWorkersAvailable is raised
+        """
+        # Arrange
+        lb = RoundRobinLoadBalancer()
+        ctx = LoadBalancerContext()
+
+        async def routine():
+            return "Hello world!"
+
+        mock_proxy = mocker.MagicMock(id="mock-proxy")
+
+        task = Task(
+            id=uuid4(),
+            callable=routine,
+            args=(),
+            kwargs={},
+            proxy=mock_proxy,
+        )
+
+        # Act & Assert
+        with pytest.raises(NoWorkersAvailable):
+            await lb.dispatch(task, context=ctx)
+
     @pytest.mark.asyncio
     @settings(
         max_examples=16,
@@ -66,22 +117,24 @@ class TestRoundRobinLoadBalancer:
         ],
     )
     @given(data=st.data())
-    async def test_dispatch(
+    async def test_dispatch_with_healthy_workers(
         self,
         mocker: MockerFixture,
         dispatch_side_effect_factory,
         data: st.DataObject,
     ):
-        """Test tasks dispatch successfully when there's at least one healthy
-        worker available.
+        """Test tasks dispatch successfully when there's at least
+        one healthy worker available.
 
         Given:
-            A load balancer with one or more workers with randomized behavior
+            A load balancer with one or more workers with randomized
+            behavior
         When:
             One or more tasks are dispatched
         Then:
-            The tasks should be dispatched to workers in round-robin order,
-            with unhealthy workers being removed from the loadbalancer
+            The tasks should be dispatched to workers in round-robin
+            order, with unhealthy workers being removed from the
+            loadbalancer
         """
         # Arrange
         lb = RoundRobinLoadBalancer()
@@ -195,22 +248,24 @@ class TestRoundRobinLoadBalancer:
         ],
     )
     @given(data=st.data())
-    async def test_dispatch_no_workers_available(
+    async def test_dispatch_with_all_workers_failing(
         self,
         mocker: MockerFixture,
         dispatch_side_effect_factory,
         data: st.DataObject,
     ):
-        """Test task dispatch fails when there are no healthy workers available.
+        """Test task dispatch fails when there are no healthy workers
+        available.
 
         Given:
-            A load balancer with one or more workers with a randomized failure mode
+            A load balancer with one or more workers with a
+            randomized failure mode
         When:
             One or more tasks are dispatched
         Then:
-            The tasks should be dispatched to workers in round-robin order and
-            raise NoWorkersAvailable, with unhealthy workers being removed from
-            the loadbalancer
+            The tasks should be dispatched to workers in round-robin
+            order and raise NoWorkersAvailable, with unhealthy
+            workers being removed from the loadbalancer
         """
         # Arrange
         lb = RoundRobinLoadBalancer()
@@ -306,18 +361,20 @@ class TestRoundRobinLoadBalancer:
             assert len(tasks_dispatched) == 0
 
     @pytest.mark.asyncio
-    async def test_concurrent_dispatch_distributes_across_workers(
+    async def test_dispatch_with_concurrent_tasks(
         self,
         mocker: MockerFixture,
     ):
-        """Test concurrent dispatches are distributed across different workers.
+        """Test concurrent dispatches are distributed across
+        different workers.
 
         Given:
             A load balancer with 4 workers
         When:
             4 tasks are dispatched concurrently (in parallel)
         Then:
-            Each task goes to a different worker (not all to worker 0)
+            Each task goes to a different worker (not all to
+            worker 0)
         """
         # Arrange
         lb = RoundRobinLoadBalancer()
@@ -360,15 +417,13 @@ class TestRoundRobinLoadBalancer:
             for _ in range(4)
         ]
 
-        # Act - dispatch all 4 tasks concurrently
+        # Act
         results = await asyncio.gather(
             *[lb.dispatch(task, context=ctx) for task in tasks]
         )
 
-        # Assert - all 4 tasks should complete
+        # Assert
         assert len(results) == 4
-
-        # Assert - tasks should be distributed across different workers
         unique_workers = set(w.uid for w in workers_that_received_dispatch)
         assert len(unique_workers) == 4, (
             f"Expected 4 unique workers, got {len(unique_workers)}. "
@@ -376,18 +431,20 @@ class TestRoundRobinLoadBalancer:
         )
 
     @pytest.mark.asyncio
-    async def test_worker_lock_released_on_dispatch_success(
+    async def test_dispatch_with_lock_release_on_success(
         self,
         mocker: MockerFixture,
     ):
-        """Test that worker lock is released after successful dispatch.
+        """Test that worker lock is released after successful
+        dispatch.
 
         Given:
             A load balancer with workers, one dispatch completes
         When:
             Another dispatch is initiated
         Then:
-            The previously-busy worker is available again for selection
+            The previously-busy worker is available again for
+            selection
         """
         # Arrange
         lb = RoundRobinLoadBalancer()
@@ -395,7 +452,6 @@ class TestRoundRobinLoadBalancer:
         mock_workers = {}
         workers_that_received_dispatch = []
 
-        # Create single worker
         mock_connection = mocker.create_autospec(WorkerConnection, instance=True)
         metadata = WorkerMetadata(
             uid=uuid4(),
@@ -433,25 +489,24 @@ class TestRoundRobinLoadBalancer:
             proxy=mock_proxy,
         )
 
-        # Act - dispatch first task
+        # Act
         await lb.dispatch(task1, context=ctx)
-
-        # Dispatch second task
         await lb.dispatch(task2, context=ctx)
 
-        # Assert - same worker received both dispatches (lock was released)
+        # Assert
         assert len(workers_that_received_dispatch) == 2
         assert workers_that_received_dispatch[0] == workers_that_received_dispatch[1]
 
     @pytest.mark.asyncio
-    async def test_worker_lock_released_on_transient_error(
+    async def test_dispatch_with_transient_error_retry(
         self,
         mocker: MockerFixture,
     ):
         """Test that worker lock is released after transient error.
 
         Given:
-            A load balancer with workers, dispatch fails with TransientRpcError
+            A load balancer with workers, dispatch fails with
+            TransientRpcError
         When:
             The worker is retried on subsequent dispatch
         Then:
@@ -463,7 +518,6 @@ class TestRoundRobinLoadBalancer:
         mock_workers = {}
         dispatch_count = [0]
 
-        # Create single worker
         mock_connection = mocker.create_autospec(WorkerConnection, instance=True)
         metadata = WorkerMetadata(
             uid=uuid4(),
@@ -497,41 +551,41 @@ class TestRoundRobinLoadBalancer:
             proxy=mock_proxy,
         )
 
-        # Act - first dispatch exhausts the single-worker cycle on transient error
+        # Act & Assert
         with pytest.raises(NoWorkersAvailable):
             await lb.dispatch(task, context=ctx)
 
         assert dispatch_count[0] == 1
-        assert len(ctx.workers) == 1  # Worker still in pool after transient error
+        assert len(ctx.workers) == 1
 
-        # Act - subsequent dispatch succeeds (lock released, worker retained)
         result = await lb.dispatch(task, context=ctx)
 
-        # Assert
         assert result == "success"
         assert dispatch_count[0] == 2
         assert len(ctx.workers) == 1
 
     @pytest.mark.asyncio
-    async def test_worker_lock_cleaned_up_on_removal(
+    async def test_dispatch_with_worker_removal(
         self,
         mocker: MockerFixture,
     ):
-        """Test that worker lock is cleaned up when worker is removed.
+        """Test that worker lock is cleaned up when worker is
+        removed.
 
         Given:
-            A load balancer with workers, dispatch fails with non-transient error
+            A load balancer with workers, dispatch fails with
+            non-transient error
         When:
             Worker is removed from the pool
         Then:
-            Worker lock is cleaned up and subsequent dispatches tasks correctly
+            Worker lock is cleaned up and subsequent dispatches
+            route correctly
         """
         # Arrange
         lb = RoundRobinLoadBalancer()
         ctx = LoadBalancerContext()
         mock_workers = {}
 
-        # Create two workers
         for i in range(2):
             mock_connection = mocker.create_autospec(WorkerConnection, instance=True)
             metadata = WorkerMetadata(
@@ -542,12 +596,10 @@ class TestRoundRobinLoadBalancer:
             )
 
             if i == 0:
-                # First worker fails with non-transient error
                 mock_connection.dispatch = mocker.AsyncMock(
                     side_effect=Exception("fatal error")
                 )
             else:
-                # Second worker succeeds
                 mock_connection.dispatch = mocker.AsyncMock(return_value="success")
 
             mock_workers[metadata] = mock_connection
@@ -566,26 +618,29 @@ class TestRoundRobinLoadBalancer:
             proxy=mock_proxy,
         )
 
-        # Act - dispatch (first worker fails, second succeeds)
+        # Act
         result = await lb.dispatch(task, context=ctx)
 
         # Assert
         assert result == "success"
-        assert len(ctx.workers) == 1  # First worker was removed
+        assert len(ctx.workers) == 1
 
     @pytest.mark.asyncio
-    async def test_waiting_tasks_distributed_across_workers(
+    async def test_dispatch_with_overflow_tasks(
         self,
         mocker: MockerFixture,
     ):
-        """Test that waiting tasks are assigned to different workers in round-robin.
+        """Test that waiting tasks are assigned to different workers
+        in round-robin.
 
         Given:
-            A load balancer with 4 workers, dispatches blocked by locks
+            A load balancer with 4 workers, dispatches blocked by
+            locks
         When:
             8 tasks are dispatched concurrently (more than workers)
         Then:
-            Each worker receives exactly 2 tasks (round-robin distribution)
+            Each worker receives exactly 2 tasks (round-robin
+            distribution)
         """
         # Arrange
         lb = RoundRobinLoadBalancer()
@@ -606,14 +661,11 @@ class TestRoundRobinLoadBalancer:
                 version="1.0.0",
             )
 
-            # Create dispatch function that tracks worker and waits for signal
             async def dispatch_fn(task, *, timeout=None, m=metadata):
                 dispatch_count[0] += 1
                 workers_that_received_dispatch.append(m)
-                # Signal when all 8 dispatches have been queued
                 if dispatch_count[0] >= 8:
                     all_dispatches_queued.set()
-                # Wait until signaled to proceed
                 await proceed_with_dispatch.wait()
                 return f"result-{m.address}"
 
@@ -637,28 +689,21 @@ class TestRoundRobinLoadBalancer:
             for _ in range(8)
         ]
 
-        # Act - dispatch all 8 tasks concurrently
+        # Act
         dispatch_futures = [
             asyncio.create_task(lb.dispatch(task, context=ctx)) for task in tasks
         ]
 
-        # Wait for all dispatches to be queued (with timeout)
         try:
             await asyncio.wait_for(all_dispatches_queued.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            # If we timeout, some tasks might still be waiting for workers
             pass
 
-        # Allow dispatches to complete
         proceed_with_dispatch.set()
-
-        # Wait for all dispatches to complete
         results = await asyncio.gather(*dispatch_futures)
 
-        # Assert - all 8 tasks should complete
+        # Assert
         assert len(results) == 8
-
-        # Assert - each worker should receive exactly 2 tasks
         worker_task_counts = {}
         for w in workers_that_received_dispatch:
             worker_task_counts[w.uid] = worker_task_counts.get(w.uid, 0) + 1
