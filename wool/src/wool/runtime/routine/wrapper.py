@@ -34,7 +34,7 @@ R = TypeVar("R")
 def routine(fn: C) -> C:
     """Decorator to declare an asynchronous function as remotely executable.
 
-    Converts an asynchronous function or async generator into a distributed
+    Converts an asynchronous coroutine or generator into a distributed
     task that can be executed by a worker pool. When the decorated function
     is invoked, it is dispatched to the worker pool associated with the
     current worker pool session context.
@@ -62,10 +62,11 @@ def routine(fn: C) -> C:
     the next value. This enables efficient processing of large or
     infinite sequences without server-side buffering.
 
-    - **Supported operations**: ``__anext__()``, ``asend()``,
-      ``athrow()``, ``aclose()``
-    - **Cleanup**: Calling ``aclose()`` or breaking out of iteration
-      properly cancels the remote worker task
+    - **Supported operations**:
+      ``anext()``, ``asend()``, ``athrow()``, ``aclose()``
+    - **Cleanup**:
+      Calling ``aclose()`` or breaking out of iteration properly cancels
+      the remote worker task
 
     Best practices and considerations for designing tasks:
 

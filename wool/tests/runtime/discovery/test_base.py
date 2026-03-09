@@ -7,8 +7,10 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from wool.protocol.worker import WorkerMetadata as WorkerMetadataProtobuf
+from wool.runtime.discovery.base import Discovery
 from wool.runtime.discovery.base import DiscoveryEvent
 from wool.runtime.discovery.base import DiscoveryEventType
+from wool.runtime.discovery.base import DiscoveryLike
 from wool.runtime.discovery.base import DiscoveryPublisherLike
 from wool.runtime.discovery.base import DiscoverySubscriberLike
 from wool.runtime.discovery.base import WorkerMetadata
@@ -194,6 +196,32 @@ class TestWorkerMetadata:
         assert protobuf.version == "1.0.0"
         assert set(protobuf.tags) == {"test", "worker"}
         assert dict(protobuf.extra) == {"key": "value"}
+
+    def test_to_protobuf_with_secure_flag_roundtrip(self):
+        """Test secure=True roundtrip through protobuf serialization.
+
+        Given:
+            A WorkerMetadata with secure=True
+        When:
+            to_protobuf() and from_protobuf() roundtrip
+        Then:
+            It should preserve secure field as True.
+        """
+        # Arrange
+        worker = WorkerMetadata(
+            uid=uuid.uuid4(),
+            address="localhost:50051",
+            pid=12345,
+            version="1.0.0",
+            secure=True,
+        )
+
+        # Act
+        protobuf = worker.to_protobuf()
+        restored = WorkerMetadata.from_protobuf(protobuf)
+
+        # Assert
+        assert restored.secure is True
 
     @given(
         address=st.from_regex(r"^[a-zA-Z0-9._-]+:[0-9]+$", fullmatch=True),
@@ -424,3 +452,174 @@ class TestDiscoverySubscriberLike:
 
         # Act & Assert
         isinstance(subscriber, DiscoverySubscriberLike)
+
+
+class TestDiscoveryLike:
+    """Tests for DiscoveryLike protocol.
+
+    Fully qualified name: wool.runtime.discovery.base.DiscoveryLike
+    """
+
+    def test_conforming_protocol(self):
+        """Test runtime_checkable protocol with conforming class.
+
+        Given:
+            A class with publisher, subscriber properties and
+            subscribe() method
+        When:
+            isinstance() check against DiscoveryLike
+        Then:
+            It should return True.
+        """
+
+        # Arrange
+        class ConformingDiscovery:
+            @property
+            def publisher(self) -> DiscoveryPublisherLike: ...
+
+            @property
+            def subscriber(self) -> DiscoverySubscriberLike: ...
+
+            def subscribe(self, filter=None) -> DiscoverySubscriberLike: ...
+
+        instance = ConformingDiscovery()
+
+        # Act & Assert
+        assert isinstance(instance, DiscoveryLike)
+
+    def test_nonconforming_missing_subscribe(self):
+        """Test runtime_checkable protocol rejects missing subscribe.
+
+        Given:
+            A class missing subscribe() method
+        When:
+            isinstance() check against DiscoveryLike
+        Then:
+            It should return False.
+        """
+
+        # Arrange
+        class MissingSubscribe:
+            @property
+            def publisher(self) -> DiscoveryPublisherLike: ...
+
+            @property
+            def subscriber(self) -> DiscoverySubscriberLike: ...
+
+        instance = MissingSubscribe()
+
+        # Act & Assert
+        assert not isinstance(instance, DiscoveryLike)
+
+    def test_nonconforming_missing_publisher(self):
+        """Test runtime_checkable protocol rejects missing publisher.
+
+        Given:
+            A class missing publisher property
+        When:
+            isinstance() check against DiscoveryLike
+        Then:
+            It should return False.
+        """
+
+        # Arrange
+        class MissingPublisher:
+            @property
+            def subscriber(self) -> DiscoverySubscriberLike: ...
+
+            def subscribe(self, filter=None) -> DiscoverySubscriberLike: ...
+
+        instance = MissingPublisher()
+
+        # Act & Assert
+        assert not isinstance(instance, DiscoveryLike)
+
+
+class TestDiscovery:
+    """Tests for Discovery ABC.
+
+    Fully qualified name: wool.runtime.discovery.base.Discovery
+    """
+
+    def test___init___with_concrete_subclass(self):
+        """Test concrete subclass instantiation.
+
+        Given:
+            A concrete subclass implementing all abstract methods
+        When:
+            Subclass is instantiated
+        Then:
+            It should create an instance successfully.
+        """
+
+        # Arrange
+        class ConcreteDiscovery(Discovery):
+            @property
+            def publisher(self) -> DiscoveryPublisherLike:
+                return None  # type: ignore
+
+            @property
+            def subscriber(self) -> DiscoverySubscriberLike:
+                return None  # type: ignore
+
+            def subscribe(self, filter=None) -> DiscoverySubscriberLike:
+                return None  # type: ignore
+
+        # Act
+        instance = ConcreteDiscovery()
+
+        # Assert
+        assert isinstance(instance, Discovery)
+
+    def test___init___with_missing_abstract_method(self):
+        """Test missing abstract method raises TypeError.
+
+        Given:
+            A subclass missing publisher implementation
+        When:
+            Subclass is instantiated
+        Then:
+            It should raise TypeError.
+        """
+
+        # Arrange
+        class IncompleteDiscovery(Discovery):
+            @property
+            def subscriber(self) -> DiscoverySubscriberLike:
+                return None  # type: ignore
+
+            def subscribe(self, filter=None) -> DiscoverySubscriberLike:
+                return None  # type: ignore
+
+        # Act & Assert
+        with pytest.raises(TypeError):
+            IncompleteDiscovery()  # type: ignore
+
+    def test___init___structural_subtyping_conformance(self):
+        """Test concrete Discovery conforms to DiscoveryLike.
+
+        Given:
+            A concrete Discovery subclass instance
+        When:
+            isinstance() check against DiscoveryLike
+        Then:
+            It should return True.
+        """
+
+        # Arrange
+        class ConcreteDiscovery(Discovery):
+            @property
+            def publisher(self) -> DiscoveryPublisherLike:
+                return None  # type: ignore
+
+            @property
+            def subscriber(self) -> DiscoverySubscriberLike:
+                return None  # type: ignore
+
+            def subscribe(self, filter=None) -> DiscoverySubscriberLike:
+                return None  # type: ignore
+
+        instance = ConcreteDiscovery()
+
+        # Act & Assert
+        assert isinstance(instance, DiscoveryLike)

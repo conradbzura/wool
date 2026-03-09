@@ -139,18 +139,15 @@ class WorkerService(protocol.worker.WorkerServicer):
             then yields Response(s) containing the task result(s).
 
         .. note::
-            Emits a :class:`TaskEvent` when the task is
-            scheduled for execution.
+            Emits a :class:`TaskEvent` when the task is scheduled for execution.
         """
         if self._stopping.is_set():
             await context.abort(
                 StatusCode.UNAVAILABLE, "Worker service is shutting down"
             )
 
-        first = await anext(aiter(request_iterator))
-        work_task = Task.from_protobuf(first.task)
-
-        with self._tracker(work_task, request_iterator) as task:
+        response = await anext(aiter(request_iterator))
+        with self._tracker(Task.from_protobuf(response.task), request_iterator) as task:
             ack = protocol.task.Ack(version=protocol.__version__)
             yield protocol.worker.Response(ack=ack)
             try:
@@ -314,17 +311,20 @@ class WorkerService(protocol.worker.WorkerServicer):
                             cmd = await request_queue.get()
                             if cmd is _SENTINEL:
                                 break
-                            kind, payload = cmd
+                            action, payload = cmd
                             try:
                                 with do_dispatch(False):
-                                    if kind == "next":
-                                        value = await gen.asend(None)
-                                    elif kind == "send":
-                                        value = await gen.asend(payload)
-                                    elif kind == "throw":
-                                        value = await gen.athrow(type(payload), payload)
-                                    else:
-                                        continue
+                                    match action:
+                                        case "next":
+                                            value = await gen.asend(None)
+                                        case "send":
+                                            value = await gen.asend(payload)
+                                        case "throw":
+                                            value = await gen.athrow(
+                                                type(payload), payload
+                                            )
+                                        case _:
+                                            continue
                             except StopAsyncIteration:
                                 main_loop.call_soon_threadsafe(
                                     result_queue.put_nowait, _SENTINEL
@@ -355,33 +355,31 @@ class WorkerService(protocol.worker.WorkerServicer):
             try:
                 step = 0
                 async for request in request_iterator:
-                    if request.HasField("next"):
-                        iter_kind = "next"
-                        worker_loop.call_soon_threadsafe(
-                            request_queue.put_nowait,
-                            ("next", None),
-                        )
-                    elif request.HasField("send"):
-                        iter_kind = "send"
-                        value = cloudpickle.loads(request.send.dump)
-                        worker_loop.call_soon_threadsafe(
-                            request_queue.put_nowait,
-                            ("send", value),
-                        )
-                    elif request.HasField("throw"):
-                        iter_kind = "throw"
-                        exc = cloudpickle.loads(request.throw.dump)
-                        worker_loop.call_soon_threadsafe(
-                            request_queue.put_nowait,
-                            ("throw", exc),
-                        )
-                    else:
-                        continue
+                    match action := request.WhichOneof("payload"):
+                        case "next":
+                            worker_loop.call_soon_threadsafe(
+                                request_queue.put_nowait,
+                                ("next", None),
+                            )
+                        case "send":
+                            value = cloudpickle.loads(request.send.dump)
+                            worker_loop.call_soon_threadsafe(
+                                request_queue.put_nowait,
+                                ("send", value),
+                            )
+                        case "throw":
+                            exc = cloudpickle.loads(request.throw.dump)
+                            worker_loop.call_soon_threadsafe(
+                                request_queue.put_nowait,
+                                ("throw", exc),
+                            )
+                        case _:
+                            continue
 
                     IterationEvent(
                         "task-iteration-started",
                         task=work_task,
-                        kind=iter_kind,
+                        kind=action,
                         step=step,
                     ).emit()
 
@@ -390,7 +388,7 @@ class WorkerService(protocol.worker.WorkerServicer):
                     IterationEvent(
                         "task-iteration-completed",
                         task=work_task,
-                        kind=iter_kind,
+                        kind=action,
                         step=step,
                     ).emit()
 
