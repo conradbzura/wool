@@ -256,6 +256,50 @@ async def test_current_task_with_nested_task_contexts(sample_task, clear_event_h
     assert inner_task.caller == outer_task.id
 
 
+@settings(
+    max_examples=20,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(depth=st.integers(min_value=2, max_value=5))
+@pytest.mark.asyncio
+async def test_current_task_with_variable_nesting_depth(
+    depth, sample_task, clear_event_handlers
+):
+    """
+    Given:
+        A nesting depth between 2 and 5.
+    When:
+        That many tasks are entered via nested ``with task:``
+        blocks, each created inside the prior task's context.
+    Then:
+        ``current_task()`` returns the correct task at each level
+        and each inner task's ``caller`` equals the outer task's ID.
+    """
+    # Arrange — create first task outside any context
+    from contextlib import ExitStack
+
+    tasks = [sample_task()]
+
+    # Act & Assert — build nested contexts iteratively
+    with ExitStack() as stack:
+        stack.enter_context(tasks[0])
+        assert current_task() is tasks[0]
+        assert tasks[0].caller is None
+
+        for i in range(1, depth):
+            # Create inside prior task's context so __post_init__
+            # picks up the caller
+            task = sample_task()
+            tasks.append(task)
+            stack.enter_context(task)
+            assert current_task() is task
+            assert task.caller == tasks[i - 1].id
+
+    # After exiting all contexts, current_task should be None
+    assert current_task() is None
+
+
 # --- TestTask ---
 
 
