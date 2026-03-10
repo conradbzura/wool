@@ -16,6 +16,7 @@ from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskEvent
 from wool.runtime.routine.task import TaskException
+from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.routine.task import current_task
 from wool.runtime.routine.task import do_dispatch
 
@@ -71,15 +72,17 @@ class TestWorkerProxyLike:
         assert hasattr(task.proxy, "id")
         assert callable(task.proxy.dispatch)
 
-    def test_negative_conformance(self):
+    def test_negative_conformance(self, sample_async_callable, clear_event_handlers):
         """
         Given:
             A class that has an ``id`` property but is missing the
-            ``dispatch`` method
+            ``dispatch`` method required by
+            :py:class:`WorkerProxyLike`
         When:
-            An instance is checked for the expected interface
+            An instance is passed as the ``proxy`` argument to
+            :py:class:`Task`
         Then:
-            The instance lacks the ``dispatch`` attribute.
+            ``TypeError`` is raised.
         """
 
         # Arrange
@@ -91,7 +94,14 @@ class TestWorkerProxyLike:
         proxy = NonConformingProxy()
 
         # Act & Assert
-        assert not hasattr(proxy, "dispatch")
+        with pytest.raises(TypeError, match="proxy must conform to WorkerProxyLike"):
+            Task(
+                id=uuid4(),
+                callable=sample_async_callable,
+                args=(),
+                kwargs={},
+                proxy=proxy,
+            )
 
 
 class TestTaskEventHandler:
