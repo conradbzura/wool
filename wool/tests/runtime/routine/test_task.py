@@ -41,16 +41,18 @@ class TestWorkerProxyLike:
     """Tests for :py:class:`WorkerProxyLike` protocol conformance."""
 
     def test_positive_conformance(self, sample_task, clear_event_handlers):
-        """
+        """Test that a conforming proxy is accepted by Task.
+
         Given:
             A class that implements the ``id`` property and async
-            ``dispatch`` method required by :py:class:`WorkerProxyLike`
+            ``dispatch`` method required by
+            :py:class:`WorkerProxyLike`.
         When:
             An instance is passed as the ``proxy`` argument to
-            :py:class:`Task`
+            :py:class:`Task`.
         Then:
-            The Task is instantiated successfully and the proxy's
-            methods are callable.
+            It should instantiate successfully and the proxy's
+            methods should be callable.
         """
 
         # Arrange
@@ -73,16 +75,17 @@ class TestWorkerProxyLike:
         assert callable(task.proxy.dispatch)
 
     def test_negative_conformance(self, sample_async_callable, clear_event_handlers):
-        """
+        """Test that a non-conforming proxy is rejected by Task.
+
         Given:
             A class that has an ``id`` property but is missing the
             ``dispatch`` method required by
-            :py:class:`WorkerProxyLike`
+            :py:class:`WorkerProxyLike`.
         When:
             An instance is passed as the ``proxy`` argument to
-            :py:class:`Task`
+            :py:class:`Task`.
         Then:
-            ``TypeError`` is raised.
+            It should raise ``TypeError``.
         """
 
         # Arrange
@@ -108,14 +111,15 @@ class TestTaskEventHandler:
     """Tests for :py:class:`TaskEventHandler` protocol conformance."""
 
     def test_positive_conformance(self, sample_task, event_spy, clear_event_handlers):
-        """
+        """Test that a conforming handler receives emitted events.
+
         Given:
             A callable with ``(event, timestamp, context=None)``
-            signature registered via ``@TaskEvent.handler``
+            signature registered via ``@TaskEvent.handler``.
         When:
-            An event of the registered type is emitted
+            An event of the registered type is emitted.
         Then:
-            The handler is called with the emitted event.
+            It should be called with the emitted event.
         """
         # Arrange
         call_log = []
@@ -142,27 +146,29 @@ class TestTaskEventHandler:
 
 
 def test_do_dispatch_with_default_context():
-    """
+    """Test do_dispatch returns True with no active context.
+
     Given:
-        No ``do_dispatch`` context manager is active
+        No ``do_dispatch`` context manager is active.
     When:
-        ``do_dispatch()`` is called without arguments
+        ``do_dispatch()`` is called without arguments.
     Then:
-        Returns ``True``.
+        It should return ``True``.
     """
     # Arrange & Act & Assert
     assert do_dispatch() is True
 
 
 def test_do_dispatch_with_false_flag():
-    """
+    """Test do_dispatch returns False inside a False context.
+
     Given:
-        A ``do_dispatch(False)`` context manager is active
+        A ``do_dispatch(False)`` context manager is active.
     When:
-        ``do_dispatch()`` is called inside the context
+        ``do_dispatch()`` is called inside the context.
     Then:
-        Returns ``False`` inside the context and ``True`` after
-        exiting.
+        It should return ``False`` inside the context and
+        ``True`` after exiting.
     """
     # Act & Assert
     with do_dispatch(False):
@@ -171,15 +177,16 @@ def test_do_dispatch_with_false_flag():
 
 
 def test_do_dispatch_with_nested_contexts():
-    """
+    """Test do_dispatch tracks the innermost nested context.
+
     Given:
-        Nested ``do_dispatch`` context managers with outer ``True``
-        and inner ``False``
+        Nested ``do_dispatch`` context managers with outer
+        ``True`` and inner ``False``.
     When:
-        ``do_dispatch()`` is called at each level
+        ``do_dispatch()`` is called at each level.
     Then:
-        Returns the value matching the innermost active context and
-        restores correctly on exit.
+        It should return the value matching the innermost active
+        context and restore correctly on exit.
     """
     # Arrange & Act & Assert
     with do_dispatch(True):
@@ -197,13 +204,14 @@ def test_do_dispatch_with_nested_contexts():
 async def test_current_task_inside_task_context(
     sample_task, mock_worker_proxy_cache, clear_event_handlers
 ):
-    """
+    """Test current_task returns the active Task during dispatch.
+
     Given:
-        Execution is within a task context via ``dispatch()``
+        Execution is within a task context via ``dispatch()``.
     When:
-        ``current_task()`` is called inside the task callable
+        ``current_task()`` is called inside the task callable.
     Then:
-        Returns the current :py:class:`Task` instance.
+        It should return the current :py:class:`Task` instance.
     """
 
     # Arrange
@@ -220,13 +228,14 @@ async def test_current_task_inside_task_context(
 
 
 def test_current_task_outside_task_context():
-    """
+    """Test current_task returns None outside any task context.
+
     Given:
-        Execution is outside any task context
+        Execution is outside any task context.
     When:
-        ``current_task()`` is called
+        ``current_task()`` is called.
     Then:
-        Returns ``None``.
+        It should return ``None``.
     """
     # Arrange & Act
     result = current_task()
@@ -237,13 +246,15 @@ def test_current_task_outside_task_context():
 
 @pytest.mark.asyncio
 async def test_current_task_with_nested_task_contexts(sample_task, clear_event_handlers):
-    """
+    """Test nested task contexts set caller to the outer task.
+
     Given:
-        An outer task entered via ``with outer_task:``
+        An outer task entered via ``with outer_task:``.
     When:
-        An inner task is created inside the outer task's context
+        An inner task is created inside the outer task's context.
     Then:
-        The inner task's ``caller`` is set to the outer task's ``id``.
+        It should set the inner task's ``caller`` to the outer
+        task's ``id``.
     """
     # Arrange
     outer_task = sample_task()
@@ -266,15 +277,17 @@ async def test_current_task_with_nested_task_contexts(sample_task, clear_event_h
 async def test_current_task_with_variable_nesting_depth(
     depth, sample_task, clear_event_handlers
 ):
-    """
+    """Test nested task context tracking at variable depth.
+
     Given:
         A nesting depth between 2 and 5.
     When:
         That many tasks are entered via nested ``with task:``
         blocks, each created inside the prior task's context.
     Then:
-        ``current_task()`` returns the correct task at each level
-        and each inner task's ``caller`` equals the outer task's ID.
+        It should maintain correct ``current_task()`` at each
+        level and set each inner task's ``caller`` to the outer
+        task's ID.
     """
     # Arrange — create first task outside any context
     from contextlib import ExitStack
@@ -309,14 +322,16 @@ class TestTask:
     def test___post_init___with_event_handler(
         self, sample_task, event_spy, clear_event_handlers
     ):
-        """
+        """Test post-init emits a task-created event.
+
         Given:
             A handler registered for ``"task-created"`` via
-            ``@TaskEvent.handler``
+            ``@TaskEvent.handler``.
         When:
-            A :py:class:`Task` is instantiated
+            A :py:class:`Task` is instantiated.
         Then:
-            The handler is called with a ``"task-created"`` event.
+            It should call the handler with a ``"task-created"``
+            event.
         """
 
         # Arrange
@@ -342,14 +357,15 @@ class TestTask:
     async def test___post_init___inside_task_context(
         self, sample_task, clear_event_handlers
     ):
-        """
+        """Test post-init sets caller inside a task context.
+
         Given:
-            An outer task entered via ``with outer_task:``
+            An outer task entered via ``with outer_task:``.
         When:
-            A new task is created inside the outer task's context
+            A new task is created inside the outer task's context.
         Then:
-            The inner task's ``caller`` is set to the outer task's
-            ``id``.
+            It should set the inner task's ``caller`` to the outer
+            task's ``id``.
         """
         # Arrange
         outer_task = sample_task()
@@ -362,13 +378,14 @@ class TestTask:
         assert inner_task.caller == outer_task.id
 
     def test___post_init___outside_task_context(self, sample_task, clear_event_handlers):
-        """
+        """Test post-init leaves caller as None without context.
+
         Given:
-            No task context is active
+            No task context is active.
         When:
-            A :py:class:`Task` is instantiated
+            A :py:class:`Task` is instantiated.
         Then:
-            The ``caller`` field remains ``None``.
+            It should leave the ``caller`` field as ``None``.
         """
         # Arrange & Act
         task = sample_task()
@@ -380,13 +397,14 @@ class TestTask:
     async def test___enter___with_coroutine_callable(
         self, sample_task, clear_event_handlers
     ):
-        """
+        """Test __enter__ returns a callable for coroutine tasks.
+
         Given:
-            A :py:class:`Task` with a coroutine callable
+            A :py:class:`Task` with a coroutine callable.
         When:
-            The task is used as a context manager
+            The task is used as a context manager.
         Then:
-            ``__enter__`` returns a callable.
+            It should return a callable from ``__enter__``.
         """
         # Arrange
         task = sample_task()
@@ -398,13 +416,14 @@ class TestTask:
 
     @pytest.mark.asyncio
     async def test___exit___without_exception(self, sample_task, clear_event_handlers):
-        """
+        """Test __exit__ completes cleanly without exceptions.
+
         Given:
-            A :py:class:`Task` context manager
+            A :py:class:`Task` context manager.
         When:
-            The ``with`` block completes without exception
+            The ``with`` block completes without exception.
         Then:
-            The context exits cleanly.
+            It should exit cleanly.
         """
         # Arrange
         task = sample_task()
@@ -415,14 +434,15 @@ class TestTask:
 
     @pytest.mark.asyncio
     async def test___exit___with_value_error(self, sample_task, clear_event_handlers):
-        """
+        """Test __exit__ captures ValueError as TaskException.
+
         Given:
-            A :py:class:`Task` context manager
+            A :py:class:`Task` context manager.
         When:
-            A ``ValueError`` is raised inside the ``with`` block
+            A ``ValueError`` is raised inside the ``with`` block.
         Then:
-            A :py:class:`TaskException` is attached to the task and
-            the exception propagates.
+            It should attach a :py:class:`TaskException` to the
+            task and propagate the exception.
         """
         # Arrange
         task = sample_task()
@@ -443,14 +463,16 @@ class TestTask:
 
     @pytest.mark.asyncio
     async def test___exit___with_runtime_error(self, sample_task, clear_event_handlers):
-        """
+        """Test __exit__ captures RuntimeError as TaskException.
+
         Given:
-            A :py:class:`Task` context manager
+            A :py:class:`Task` context manager.
         When:
-            A ``RuntimeError`` is raised inside the ``with`` block
+            A ``RuntimeError`` is raised inside the ``with``
+            block.
         Then:
-            A :py:class:`TaskException` is attached to the task with
-            the correct type and the exception propagates.
+            It should attach a :py:class:`TaskException` with the
+            correct type and propagate the exception.
         """
         # Arrange
         task = sample_task()
@@ -473,13 +495,14 @@ class TestTask:
     async def test___enter___with_async_generator(
         self, sample_task, clear_event_handlers
     ):
-        """
+        """Test __enter__ returns a callable for generator tasks.
+
         Given:
-            A :py:class:`Task` with an async generator callable
+            A :py:class:`Task` with an async generator callable.
         When:
-            The task is used as a context manager
+            The task is used as a context manager.
         Then:
-            ``__enter__`` returns a callable.
+            It should return a callable from ``__enter__``.
         """
 
         # Arrange
@@ -497,14 +520,15 @@ class TestTask:
     async def test___enter___with_invalid_callable(
         self, sample_task, clear_event_handlers
     ):
-        """
+        """Test __enter__ raises ValueError for non-async callable.
+
         Given:
-            A :py:class:`Task` with neither a coroutine nor an async
-            generator callable
+            A :py:class:`Task` with neither a coroutine nor an
+            async generator callable.
         When:
-            The task is used as a context manager
+            The task is used as a context manager.
         Then:
-            ``ValueError`` is raised.
+            It should raise ``ValueError``.
         """
 
         # Arrange
@@ -536,14 +560,15 @@ class TestTask:
         caller_id,
         tag,
     ):
-        """
+        """Test protobuf round-trip preserves all public attributes.
+
         Given:
-            A :py:class:`Task` with valid picklable data
+            A :py:class:`Task` with valid picklable data.
         When:
-            ``from_protobuf(to_protobuf(task))`` is called
+            ``from_protobuf(to_protobuf(task))`` is called.
         Then:
-            The deserialized task equals the original in all public
-            attributes.
+            It should produce a deserialized task equal to the
+            original in all public attributes.
         """
 
         # Arrange
@@ -593,13 +618,15 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch yields all values from an async generator.
+
         Given:
-            An async generator yielding *N* values (0 <= N <= 10)
+            An async generator yielding *N* values
+            (0 <= N <= 10).
         When:
-            Dispatched via ``dispatch()`` and fully consumed
+            Dispatched via ``dispatch()`` and fully consumed.
         Then:
-            All *N* values are received in order.
+            It should receive all *N* values in order.
         """
 
         # Arrange
@@ -629,14 +656,15 @@ class TestTask:
     async def test_from_protobuf_all_fields(
         self, sample_async_callable, picklable_proxy, clear_event_handlers
     ):
-        """
+        """Test from_protobuf deserializes all fields correctly.
+
         Given:
-            A protobuf Task message with all fields populated
+            A protobuf Task message with all fields populated.
         When:
-            ``from_protobuf`` is called
+            ``from_protobuf`` is called.
         Then:
-            Returns a :py:class:`Task` with all fields correctly
-            deserialized.
+            It should return a :py:class:`Task` with all fields
+            correctly deserialized.
         """
         # Arrange
         task_id = uuid4()
@@ -675,14 +703,15 @@ class TestTask:
     async def test_from_protobuf_empty_optionals(
         self, sample_async_callable, picklable_proxy, clear_event_handlers
     ):
-        """
+        """Test from_protobuf handles empty optional fields.
+
         Given:
-            A protobuf Task message with optional fields empty
+            A protobuf Task message with optional fields empty.
         When:
-            ``from_protobuf`` is called
+            ``from_protobuf`` is called.
         Then:
-            Returns a :py:class:`Task` with ``None`` or ``0`` for
-            empty optional fields.
+            It should return a :py:class:`Task` with ``None`` or
+            ``0`` for empty optional fields.
         """
         # Arrange
         task_id = uuid4()
@@ -713,14 +742,15 @@ class TestTask:
     def test_to_protobuf_all_fields(
         self, sample_async_callable, picklable_proxy, clear_event_handlers
     ):
-        """
+        """Test to_protobuf serializes all fields correctly.
+
         Given:
-            A :py:class:`Task` instance with all fields populated
+            A :py:class:`Task` instance with all fields populated.
         When:
-            ``to_protobuf()`` is called
+            ``to_protobuf()`` is called.
         Then:
-            Returns a protobuf Task with all fields correctly
-            serialized.
+            It should return a protobuf Task with all fields
+            correctly serialized.
         """
         # Arrange
         caller_id = uuid4()
@@ -757,15 +787,16 @@ class TestTask:
     def test_to_protobuf_none_optionals(
         self, sample_async_callable, picklable_proxy, clear_event_handlers
     ):
-        """
+        """Test to_protobuf serializes None optionals as defaults.
+
         Given:
             A :py:class:`Task` instance with optional fields as
-            ``None`` or ``0``
+            ``None`` or ``0``.
         When:
-            ``to_protobuf()`` is called
+            ``to_protobuf()`` is called.
         Then:
-            Returns a protobuf Task with empty strings and ``0`` for
-            optional fields.
+            It should return a protobuf Task with empty strings
+            and ``0`` for optional fields.
         """
         # Arrange
         task = Task(
@@ -790,13 +821,14 @@ class TestTask:
     def test_to_protobuf_with_version_field(
         self, sample_async_callable, picklable_proxy, clear_event_handlers
     ):
-        """
+        """Test to_protobuf includes the protocol version.
+
         Given:
-            A :py:class:`Task` instance
+            A :py:class:`Task` instance.
         When:
-            ``to_protobuf()`` is called
+            ``to_protobuf()`` is called.
         Then:
-            The protobuf Task contains the protocol version in the
+            It should include the protocol version in the
             ``version`` field.
         """
         # Arrange
@@ -822,14 +854,15 @@ class TestTask:
         version=st.from_regex(r"\d{1,3}\.\d{1,3}(rc\d{1,3}|\.\d{1,3})", fullmatch=True),
     )
     def test_from_protobuf_with_version_roundtrip(self, version):
-        """
+        """Test protobuf round-trip preserves the version field.
+
         Given:
-            Any PEP 440-like version string
+            Any PEP 440-like version string.
         When:
             A protobuf Task with that version is serialized and
-            deserialized
+            deserialized.
         Then:
-            The version field is preserved on the wire.
+            It should preserve the version field on the wire.
         """
         # Arrange
         proxy = _PicklableProxy()
@@ -865,13 +898,14 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch executes the callable and returns result.
+
         Given:
-            A :py:class:`Task` with a valid proxy pool in context
+            A :py:class:`Task` with a valid proxy pool in context.
         When:
-            ``dispatch()`` is called
+            ``dispatch()`` is called.
         Then:
-            Executes the callable and returns the result.
+            It should execute the callable and return the result.
         """
 
         # Arrange
@@ -898,13 +932,14 @@ class TestTask:
         event_spy,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch emits task-completed on success.
+
         Given:
-            A handler registered for ``"task-completed"``
+            A handler registered for ``"task-completed"``.
         When:
-            A task completes execution successfully
+            A task completes execution successfully.
         Then:
-            A ``"task-completed"`` event is emitted.
+            It should emit a ``"task-completed"`` event.
         """
 
         # Arrange
@@ -940,14 +975,15 @@ class TestTask:
         event_spy,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch emits task-completed with exception on error.
+
         Given:
-            A handler registered for ``"task-completed"``
+            A handler registered for ``"task-completed"``.
         When:
-            A task completes execution with a ``ValueError``
+            A task completes execution with a ``ValueError``.
         Then:
-            A ``"task-completed"`` event is emitted with exception
-            information attached.
+            It should emit a ``"task-completed"`` event with
+            exception information attached.
         """
 
         # Arrange
@@ -984,13 +1020,14 @@ class TestTask:
     async def test_dispatch_without_proxy_pool_raises_error(
         self, sample_task, clear_event_handlers
     ):
-        """
+        """Test dispatch raises RuntimeError without a proxy pool.
+
         Given:
-            No proxy pool is set in the context
+            No proxy pool is set in the context.
         When:
-            ``dispatch()`` is called
+            ``dispatch()`` is called.
         Then:
-            ``RuntimeError`` is raised.
+            It should raise ``RuntimeError``.
         """
         # Arrange
         task = sample_task()
@@ -1005,13 +1042,15 @@ class TestTask:
     def test_to_protobuf_with_unpicklable_callable_fails(
         self, picklable_proxy, clear_event_handlers
     ):
-        """
+        """Test to_protobuf fails with an unpicklable callable.
+
         Given:
-            A :py:class:`Task` with an unpicklable callable
+            A :py:class:`Task` with an unpicklable callable.
         When:
-            ``to_protobuf()`` is called
+            ``to_protobuf()`` is called.
         Then:
-            Pickling fails with ``TypeError`` or ``AttributeError``.
+            It should fail with ``TypeError`` or
+            ``AttributeError``.
         """
         # Arrange
         import _thread
@@ -1042,14 +1081,16 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch yields all async generator values in order.
+
         Given:
-            A :py:class:`Task` with an async generator callable and a
-            valid proxy pool
+            A :py:class:`Task` with an async generator callable
+            and a valid proxy pool.
         When:
-            ``dispatch()`` is called and iterated
+            ``dispatch()`` is called and iterated.
         Then:
-            Yields all values from the async generator in order.
+            It should yield all values from the async generator in
+            order.
         """
 
         # Arrange
@@ -1074,14 +1115,15 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch returns the coroutine result.
+
         Given:
-            A :py:class:`Task` with a coroutine callable and a valid
-            proxy pool
+            A :py:class:`Task` with a coroutine callable and a
+            valid proxy pool.
         When:
-            ``dispatch()`` is called and awaited
+            ``dispatch()`` is called and awaited.
         Then:
-            Returns the result from the coroutine.
+            It should return the result from the coroutine.
         """
 
         # Arrange
@@ -1102,13 +1144,14 @@ class TestTask:
         sample_task,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch raises ValueError for non-async callable.
+
         Given:
-            A :py:class:`Task` with a non-async callable
+            A :py:class:`Task` with a non-async callable.
         When:
-            ``dispatch()`` is called
+            ``dispatch()`` is called.
         Then:
-            ``ValueError`` is raised.
+            It should raise ``ValueError``.
         """
 
         # Arrange
@@ -1130,14 +1173,15 @@ class TestTask:
         sample_task,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch raises RuntimeError for generator without pool.
+
         Given:
-            A :py:class:`Task` with an async generator callable and no
-            proxy pool in context
+            A :py:class:`Task` with an async generator callable
+            and no proxy pool in context.
         When:
-            ``dispatch()`` is called
+            ``dispatch()`` is called.
         Then:
-            ``RuntimeError`` is raised.
+            It should raise ``RuntimeError``.
         """
 
         # Arrange
@@ -1161,14 +1205,15 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch propagates generator exceptions to caller.
+
         Given:
             A :py:class:`Task` with an async generator that raises
-            during iteration
+            during iteration.
         When:
-            ``dispatch()`` is called and iterated
+            ``dispatch()`` is called and iterated.
         Then:
-            The exception propagates to the caller.
+            It should propagate the exception to the caller.
         """
 
         # Arrange
@@ -1194,13 +1239,14 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch stops iteration on early break.
+
         Given:
-            A :py:class:`Task` with an async generator callable
+            A :py:class:`Task` with an async generator callable.
         When:
-            The async iterator is terminated early via ``break``
+            The async iterator is terminated early via ``break``.
         Then:
-            Iteration stops after receiving expected values.
+            It should stop after receiving the expected values.
         """
 
         # Arrange
@@ -1227,14 +1273,15 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch receives multiple yielded values in order.
+
         Given:
             A :py:class:`Task` with an async generator that yields
-            multiple values
+            multiple values.
         When:
-            ``dispatch()`` is fully consumed
+            ``dispatch()`` is fully consumed.
         Then:
-            All yielded values are received in correct order.
+            It should receive all yielded values in correct order.
         """
 
         # Arrange
@@ -1260,14 +1307,16 @@ class TestTask:
         mock_worker_proxy_cache,
         clear_event_handlers,
     ):
-        """
+        """Test dispatch completes without values for empty generator.
+
         Given:
             A :py:class:`Task` with an async generator that yields
-            zero values
+            zero values.
         When:
-            ``dispatch()`` is called and consumed
+            ``dispatch()`` is called and consumed.
         Then:
-            Completes immediately without yielding any values.
+            It should complete immediately without yielding any
+            values.
         """
 
         # Arrange
@@ -1293,13 +1342,14 @@ class TestTaskException:
     """Tests for :py:class:`TaskException`."""
 
     def test___init___with_type_and_traceback(self):
-        """
+        """Test TaskException stores type and traceback correctly.
+
         Given:
-            A valid exception type string and traceback lines
+            A valid exception type string and traceback lines.
         When:
-            :py:class:`TaskException` is instantiated
+            :py:class:`TaskException` is instantiated.
         Then:
-            The object stores the correct ``type`` and ``traceback``
+            It should store the correct ``type`` and ``traceback``
             attributes.
         """
         # Arrange
@@ -1324,13 +1374,14 @@ class TestTaskEvent:
     """Tests for :py:class:`TaskEvent`."""
 
     def test___init___with_type_and_task(self, sample_task, clear_event_handlers):
-        """
+        """Test TaskEvent stores type and task correctly.
+
         Given:
-            A valid event type and a :py:class:`Task`
+            A valid event type and a :py:class:`Task`.
         When:
-            :py:class:`TaskEvent` is instantiated
+            :py:class:`TaskEvent` is instantiated.
         Then:
-            The event stores the correct ``type`` and ``task``
+            It should store the correct ``type`` and ``task``
             attributes.
         """
         # Arrange
@@ -1344,14 +1395,15 @@ class TestTaskEvent:
         assert event.task == task
 
     def test_handler_with_multiple_event_types(self, sample_task, clear_event_handlers):
-        """
+        """Test handler receives events for all registered types.
+
         Given:
             A handler registered via ``@TaskEvent.handler`` for
-            ``"task-created"`` and ``"task-completed"``
+            ``"task-created"`` and ``"task-completed"``.
         When:
-            Events of those types are emitted
+            Events of those types are emitted.
         Then:
-            The handler is called once per emitted event type.
+            It should be called once per emitted event type.
         """
         # Arrange
         call_log = []
@@ -1375,14 +1427,16 @@ class TestTaskEvent:
         assert callable(test_handler)
 
     def test_emit_with_event_handler(self, sample_task, event_spy, clear_event_handlers):
-        """
+        """Test emit calls the registered handler with a timestamp.
+
         Given:
             A handler registered via ``@TaskEvent.handler`` for
-            ``"task-created"``
+            ``"task-created"``.
         When:
-            ``emit()`` is called on a ``"task-created"`` event
+            ``emit()`` is called on a ``"task-created"`` event.
         Then:
-            The handler is called with the event and a timestamp.
+            It should call the handler with the event and a
+            timestamp.
         """
         # Arrange
         task = sample_task()
@@ -1404,13 +1458,14 @@ class TestTaskEvent:
         assert timestamp > 0
 
     def test_emit_without_event_handler(self, sample_task, clear_event_handlers):
-        """
+        """Test emit completes without error when no handlers exist.
+
         Given:
-            No handlers are registered
+            No handlers are registered.
         When:
-            ``emit()`` is called on a :py:class:`TaskEvent`
+            ``emit()`` is called on a :py:class:`TaskEvent`.
         Then:
-            Execution completes normally without error.
+            It should complete normally without error.
         """
         # Arrange
         task = sample_task()
@@ -1420,15 +1475,16 @@ class TestTaskEvent:
         event.emit()
 
     def test_emit_with_raising_handler(self, sample_task, clear_event_handlers, caplog):
-        """
+        """Test emit logs and suppresses handler exceptions.
+
         Given:
             A handler registered via ``@TaskEvent.handler`` that
-            raises a ``ValueError``
+            raises a ``ValueError``.
         When:
-            ``emit()`` is called
+            ``emit()`` is called.
         Then:
-            The exception is logged and does not propagate to the
-            caller.
+            It should log the exception and not propagate it to
+            the caller.
         """
         # Arrange
         task = sample_task()
@@ -1475,15 +1531,16 @@ class TestTaskEvent:
         num_handlers,
         clear_event_handlers,
     ):
-        """
+        """Test emit invokes all handlers for their registered types.
+
         Given:
-            Any set of event types and any number of handlers
+            Any set of event types and any number of handlers.
         When:
             Handlers are registered via ``@TaskEvent.handler`` and
-            events are emitted
+            events are emitted.
         Then:
-            All handlers are called exactly once for their registered
-            event types.
+            It should call all handlers exactly once for their
+            registered event types.
         """
 
         # Arrange
@@ -1531,13 +1588,14 @@ class TestIterationEvent:
     """Tests for :py:class:`IterationEvent`."""
 
     def test___init___with_all_attributes(self, sample_task, clear_event_handlers):
-        """
+        """Test IterationEvent is a TaskEvent instance.
+
         Given:
-            Valid parameters for an :py:class:`IterationEvent`
+            Valid parameters for an :py:class:`IterationEvent`.
         When:
-            An instance is created
+            An instance is created.
         Then:
-            It is an instance of :py:class:`TaskEvent`.
+            It should be an instance of :py:class:`TaskEvent`.
         """
         # Arrange
         task = sample_task()
@@ -1551,15 +1609,16 @@ class TestIterationEvent:
         assert isinstance(event, TaskEvent)
 
     def test___init___with_kind_and_step(self, sample_task, clear_event_handlers):
-        """
+        """Test IterationEvent stores kind, step, type, and task.
+
         Given:
-            An :py:class:`IterationEvent` with ``kind="send"`` and
-            ``step=3``
+            An :py:class:`IterationEvent` with ``kind="send"``
+            and ``step=3``.
         When:
-            Attributes are accessed
+            Attributes are accessed.
         Then:
-            ``kind`` is ``"send"``, ``step`` is ``3``, ``type`` and
-            ``task`` are set correctly.
+            It should have ``kind`` as ``"send"``, ``step`` as
+            ``3``, and ``type`` and ``task`` set correctly.
         """
         # Arrange
         task = sample_task()
@@ -1576,14 +1635,15 @@ class TestIterationEvent:
     def test_emit_with_registered_handler(
         self, sample_task, event_spy, clear_event_handlers
     ):
-        """
+        """Test emit delivers IterationEvent with correct attributes.
+
         Given:
             A handler registered via ``@TaskEvent.handler`` for
-            ``"task-iteration-completed"``
+            ``"task-iteration-completed"``.
         When:
-            An :py:class:`IterationEvent` of that type is emitted
+            An :py:class:`IterationEvent` of that type is emitted.
         Then:
-            The handler receives the event with correct attributes.
+            It should receive the event with correct attributes.
         """
 
         # Arrange
