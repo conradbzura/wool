@@ -1299,7 +1299,7 @@ class TestTaskEvent:
         assert event.type == "task-created"
         assert event.task == task
 
-    def test_handler_with_single_event_type(self, sample_task, clear_event_handlers):
+    def test_handler_with_multiple_event_types(self, sample_task, clear_event_handlers):
         """
         Given:
             A handler registered via ``@TaskEvent.handler`` for
