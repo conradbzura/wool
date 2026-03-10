@@ -74,7 +74,7 @@ Prose in PR descriptions MUST NOT be hard-wrapped at a fixed column width. Write
 
 The PR description MUST contain exactly four sections:
 
-**Summary** — A quick recap of the issue, the high-level approach, and any trade-offs worth noting. The summary MUST end with `Closes #<number>` to link the issue.
+**Summary** — A quick recap of the issue, the high-level approach, and any trade-offs worth noting. The summary MUST end with `— Closes #<number>` to link the issue.
 
 **Proposed changes** — Subsections for each logical change. Design rationale and before/after code snippets SHOULD be included where useful.
 

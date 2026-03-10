@@ -9,7 +9,7 @@ Every skill in this pipeline is collaborative, not autonomous. The LLM agent pro
 - The agent reads a skill document, performs the described work, and presents the result to the user.
 - The user reviews, approves, requests changes, or overrides any decision.
 - No destructive or externally-visible action (push, PR creation, issue filing) proceeds without explicit user approval.
-- The `/verify` skill exists specifically to give the user an independent compliance check after any other skill runs.
+- The `/audit` skill exists specifically to give the user an independent compliance check after any other skill runs.
 
 ## Directory layout
 
@@ -22,7 +22,7 @@ llm/
 │   ├── implement.md                   ← /implement — implement a planned PR or issue
 │   ├── test.md                        ← /test — generate test specifications
 │   ├── commit.md                      ← /commit — stage and commit changes atomically
-│   └── verify.md                      ← /verify — post-skill compliance checker
+│   └── audit.md                      ← /audit — post-skill compliance checker
 ├── guides/
 │   └── testguide-python.md            ← Python testing conventions (pytest, Hypothesis)
 └── styles/
@@ -40,7 +40,7 @@ The typical development flow follows this sequence:
 5. **`/commit`** — Stage and commit changes in disciplined, atomic commits grouped by logical kind.
 6. **`/pr` (update)** — Update the draft PR description and mark it ready for review.
 
-**`/verify`** is a cross-cutting quality gate. It can be invoked after any skill (`/verify commit`, `/verify implement`, etc.) to spawn a fresh subagent that independently checks whether the skill's requirements were met.
+**`/audit`** is a cross-cutting quality gate. It can be invoked after any skill (`/audit commit`, `/audit implement`, etc.) to spawn a fresh subagent that independently checks whether the skill's requirements were met.
 
 ```mermaid
 sequenceDiagram
@@ -51,11 +51,11 @@ sequenceDiagram
     participant implement as /implement
     participant test as /test
     participant commit as /commit
-    participant verify as /verify
+    participant audit as /audit
     participant guide as testguide-python.md
 
     rect rgb(0, 0, 0, 0.03)
-        Note over User, verify: Issue creation
+        Note over User, audit: Issue creation
         User->>Agent: describe work item
         Agent->>issue: read skill
         Agent->>Agent: draft issue
@@ -65,7 +65,7 @@ sequenceDiagram
     end
 
     rect rgb(0, 0, 0, 0.03)
-        Note over User, verify: PR creation
+        Note over User, audit: PR creation
         User->>Agent: /pr <number>
         Agent->>pr: read skill
         Agent->>Agent: create branch, draft PR with plan
@@ -84,7 +84,7 @@ sequenceDiagram
     end
 
     rect rgb(0, 0, 0, 0.03)
-        Note over User, verify: Test specification
+        Note over User, audit: Test specification
         User->>Agent: /test <module>
         Agent->>test: read skill
         Agent->>guide: read testing conventions
@@ -94,7 +94,7 @@ sequenceDiagram
     end
 
     rect rgb(0, 0, 0, 0.03)
-        Note over User, verify: Commit
+        Note over User, audit: Commit
         User->>Agent: /commit
         Agent->>commit: read skill
         Agent->>Agent: analyse diff, group changes
@@ -104,9 +104,9 @@ sequenceDiagram
     end
 
     rect rgb(0, 0, 0, 0.03)
-        Note over User, verify: Verification (after any stage)
-        User->>Agent: /verify <skill>
-        Agent->>verify: read skill
+        Note over User, audit: Verification (after any stage)
+        User->>Agent: /audit <skill>
+        Agent->>audit: read skill
         Agent->>Agent: spawn subagent for unbiased check
         Agent->>User: present compliance report
         User->>Agent: acknowledge / remediate
@@ -124,7 +124,7 @@ sequenceDiagram
 | [implement.md](skills/implement.md) | `/implement <number>` | Resolve a PR or issue number to a draft PR, check out the branch, and enter plan mode to design and execute the implementation. |
 | [test.md](skills/test.md) | `/test` | Generate comprehensive Given-When-Then test specifications for source modules, targeting 100% coverage of public APIs. |
 | [commit.md](skills/commit.md) | `/commit` | Analyse the working tree diff, group changes by logical kind, and create disciplined atomic commits with conventional-commit messages. |
-| [verify.md](skills/verify.md) | `/verify <skill>` | Spawn an independent subagent to evaluate whether a skill's MUST/SHALL requirements were met, using binary checklist decomposition. |
+| [audit.md](skills/audit.md) | `/audit <skill>` | Spawn an independent subagent to evaluate whether a skill's MUST/SHALL requirements were met, using binary checklist decomposition. |
 
 ### Guides
 
@@ -146,7 +146,7 @@ Claude Code discovers skills via the `.claude/skills/` directory. Each subdirect
 .claude/skills/issue/SKILL.md     → ../../../llm/skills/issue.md
 .claude/skills/pr/SKILL.md        → ../../../llm/skills/pr.md
 .claude/skills/test/SKILL.md      → ../../../llm/skills/test.md
-.claude/skills/verify/SKILL.md    → ../../../llm/skills/verify.md
+.claude/skills/audit/SKILL.md    → ../../../llm/skills/audit.md
 ```
 
 Guides are similarly symlinked where needed (e.g., `.claude/skills/implement/TESTGUIDE.md → ../../../llm/guides/testguide-python.md`). This keeps the canonical content in `llm/` while letting Claude Code's skill discovery find it automatically.
