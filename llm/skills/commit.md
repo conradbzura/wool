@@ -23,6 +23,16 @@ This skill is part of the development workflow pipeline: `/issue` → `/pr` → 
 
 ## Workflow
 
+### TL;DR
+
+1. Verify git state
+2. Create a staging branch
+3. Analyze the full diff
+4. Plan the commits
+5. Stage and commit sequentially
+6. Review and present
+7. Prompt the user to move onto the PR update step
+
 ### 1. Verify git state
 
 ```bash
@@ -153,6 +163,11 @@ If the current branch is associated with a PR, the user SHOULD be prompted with 
 
 ---
 
+### 7. Prompt the user to move onto the PR update step
+
+1. Prompt the user to invoke the `/pr` skill to update the PR description: check off completed implementation steps, refresh the test cases table, and update the summary to reflect what was actually implemented. Ask the user: "Ready to update the PR description? Run `/pr <number>` to update the PR description to reflect the implementation." DO NOT proceed on your own.
+2. Inform the user that the branch is ready for review and the PR can be marked ready via `gh pr ready <number>`.
+
 ## Commit Message Style Guide
 
 Every commit message MUST follow these rules.
@@ -245,7 +260,3 @@ the whole file and added a test
 **Merge conflicts or unusual repo state:** Execution MUST stop and the situation MUST be explained rather than worked around. A confused repo state needs human judgment.
 
 **Already-staged changes:** If the user has already staged some changes with git add, those MUST be incorporated into the plan. Already-staged changes MUST NOT be blindly unstaged. `git diff --cached` MUST be run first to see what is already staged.
-
-### 7. Verify
-
-Compile a structured action summary of the actions performed and outputs produced during this skill invocation, then invoke the `/verify` skill: `/verify commit`.

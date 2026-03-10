@@ -24,6 +24,16 @@ A PR or issue number MUST be provided as the sole argument (e.g., `/implement 10
 
 ## Workflow
 
+### TL;DR
+
+1. Resolve the input to a PR
+2. Check out the PR branch
+3. Read the PR description
+4. Gather context
+5. Enter plan mode
+6. Execute after approval
+7. Prompt the user to move onto the commit step
+
 ### 1. Resolve the input to a PR
 
 Run `gh pr view <number>` to check if the number is a PR.
@@ -90,11 +100,9 @@ Call `EnterPlanMode` to begin the planning phase. The execution plan:
 
 Once the user approves the plan, implement each step sequentially.
 
-After all steps are complete:
+### 7. Prompt the user to move onto the commit step
 
-1. Invoke the `/commit` skill to stage and commit the changes.
-2. Invoke the `/pr` skill to update the PR description: check off completed implementation steps, refresh the test cases table, and update the summary to reflect what was actually implemented.
-3. Inform the user that the branch is ready for review and the PR can be marked ready via `gh pr ready <number>`.
+The user MUST be prompted with the next pipeline step: "Ready to commit? Run `/commit` to stage and commit the changes." DO NOT proceed on your own.
 
 ## Edge cases
 
@@ -102,7 +110,3 @@ After all steps are complete:
 - **Partially checked off:** Only plan the remaining unchecked items.
 - **PR is not a draft:** Proceed normally — the PR may have been marked ready for review before implementation was complete.
 - **Merge conflicts:** Stop and explain the situation rather than trying to resolve automatically.
-
-### 7. Verify
-
-Compile a structured action summary of the actions performed and outputs produced during this skill invocation, then invoke the `/verify` skill: `/verify implement`.

@@ -25,6 +25,17 @@ An issue number MUST be provided as the sole argument (e.g., `/pr 96`).
 
 ## Workflow
 
+### TL;DR
+
+1. Fetch the issue
+2. Generate a branch name
+3. Create and checkout the branch
+4. Draft the PR description
+5. Show draft for approval
+6. Push and create the draft PR
+7. Return the PR URL
+8. Prompt the user to move onto the implementation step
+
 ### 1. Fetch the issue
 
 ```bash
@@ -132,6 +143,6 @@ The PR description is a living document. It MUST be re-evaluated and updated whe
 
 The PR description MUST always accurately reflect the current state — planned or implemented — and MUST NOT drift from reality.
 
-### 8. Verify
+### 8. Prompt the user to move onto the implementation step
 
-Compile a structured action summary of the actions performed and outputs produced during this skill invocation, then invoke the `/verify` skill: `/verify pr`.
+The user MUST be prompted with the next pipeline step: "Ready to implement? Run `/implement <number>` to start coding against this plan." DO NOT proceed on your own.

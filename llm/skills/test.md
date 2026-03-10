@@ -172,7 +172,3 @@ A test specification is valid if and only if:
 - **Comprehensive coverage**: 100% of public APIs must be covered.
 - **Clear organization**: Group by module, class/function, test progression.
 - **Separate files**: One spec file per source module in `specs/` directory.
-
-### 6. Verify
-
-Compile a structured action summary of the actions performed and outputs produced during this skill invocation, then invoke the `/verify` skill: `/verify test`.
