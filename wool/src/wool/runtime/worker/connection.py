@@ -295,7 +295,7 @@ class RpcError(Exception):
             super().__init__(f"{code.name}: {details}")
         elif code is not None:  # pragma: no cover
             super().__init__(code.name)
-        elif details is not None:  # pragma: no cover
+        elif details is not None:
             super().__init__(details)
         else:  # pragma: no cover
             super().__init__()
