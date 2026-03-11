@@ -15,6 +15,7 @@ from hypothesis import HealthCheck
 from hypothesis import given
 from hypothesis import settings
 from hypothesis import strategies as st
+from packaging.version import Version
 from pytest_mock import MockerFixture
 
 import wool.runtime.worker.proxy as wp
@@ -26,6 +27,8 @@ from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.routine.task import Task
 from wool.runtime.worker.connection import WorkerConnection
 from wool.runtime.worker.proxy import WorkerProxy
+from wool.runtime.worker.proxy import is_version_compatible
+from wool.runtime.worker.proxy import parse_version
 
 # ============================================================================
 # Test Fixtures
@@ -212,6 +215,125 @@ def mock_proxy_session(mocker: MockerFixture):
 
 
 # ============================================================================
+# Module-Level Function Tests
+# ============================================================================
+
+
+def test_parse_version_with_valid_string():
+    """Test parsing a valid PEP 440 version string.
+
+    Given:
+        A valid version string "1.2.3".
+    When:
+        parse_version is called with the string.
+    Then:
+        It should return a Version instance equal to Version("1.2.3").
+    """
+    # Act
+    result = parse_version("1.2.3")
+
+    # Assert
+    assert result == Version("1.2.3")
+
+
+def test_parse_version_with_invalid_string():
+    """Test parsing an invalid version string.
+
+    Given:
+        An invalid version string "abc".
+    When:
+        parse_version is called with the string.
+    Then:
+        It should return None.
+    """
+    # Act
+    result = parse_version("abc")
+
+    # Assert
+    assert result is None
+
+
+def test_parse_version_with_empty_string():
+    """Test parsing an empty version string.
+
+    Given:
+        An empty version string "".
+    When:
+        parse_version is called with the string.
+    Then:
+        It should return None.
+    """
+    # Act
+    result = parse_version("")
+
+    # Assert
+    assert result is None
+
+
+def test_is_version_compatible_same_major():
+    """Test version compatibility with same major version.
+
+    Given:
+        A client version "1.0.0" and a server version "1.0.0".
+    When:
+        is_version_compatible is called.
+    Then:
+        It should return True since client <= server within same major.
+    """
+    # Arrange
+    client = Version("1.0.0")
+    server = Version("1.0.0")
+
+    # Act
+    result = is_version_compatible(client, server)
+
+    # Assert
+    assert result is True
+
+
+def test_is_version_compatible_newer_minor():
+    """Test version compatibility when server has newer minor version.
+
+    Given:
+        A client version "1.0.0" and a server version "1.2.0".
+    When:
+        is_version_compatible is called.
+    Then:
+        It should return True since client <= server within same major.
+    """
+    # Arrange
+    client = Version("1.0.0")
+    server = Version("1.2.0")
+
+    # Act
+    result = is_version_compatible(client, server)
+
+    # Assert
+    assert result is True
+
+
+def test_is_version_compatible_different_major():
+    """Test version incompatibility with different major versions.
+
+    Given:
+        A client version "1.0.0" and a server version "2.0.0".
+    When:
+        is_version_compatible is called.
+    Then:
+        It should return False since major versions differ.
+    """
+    # Arrange
+    client = Version("1.0.0")
+    server = Version("2.0.0")
+
+    # Act
+    result = is_version_compatible(client, server)
+
+    # Assert
+    assert result is False
+
+
+# ============================================================================
 # Test Classes
 # ============================================================================
 
@@ -223,7 +345,7 @@ class TestWorkerProxy:
     # Constructor Tests
     # =========================================================================
 
-    def test_constructor_discovery_and_loadbalancer(
+    def test___init___discovery_and_loadbalancer(
         self, mock_discovery_service, mock_load_balancer_factory
     ):
         """Test create a proxy with both services configured.
@@ -245,7 +367,7 @@ class TestWorkerProxy:
         assert isinstance(proxy, WorkerProxy)
         assert not proxy.started
 
-    def test_constructor_discovery_only(
+    def test___init___discovery_only(
         self, mocker: MockerFixture, mock_discovery_service
     ):
         """Test create proxy with default RoundRobinLoadBalancer.
@@ -264,7 +386,7 @@ class TestWorkerProxy:
         assert isinstance(proxy, WorkerProxy)
         assert not proxy.started
 
-    def test_constructor_uri_only(self, mocker: MockerFixture):
+    def test___init___uri_only(self, mocker: MockerFixture):
         """Test create LocalDiscovery and use RoundRobinLoadBalancer.
 
         Given:
@@ -289,7 +411,7 @@ class TestWorkerProxy:
         assert isinstance(proxy, WorkerProxy)
         assert not proxy.started
 
-    def test_constructor_invalid_arguments(self):
+    def test___init___invalid_arguments(self):
         """Test raise ValueError.
 
         Given:
@@ -299,7 +421,7 @@ class TestWorkerProxy:
         Then:
             It should raise ValueError
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(
             ValueError,
             match=(
@@ -309,7 +431,7 @@ class TestWorkerProxy:
         ):
             WorkerProxy()  # type: ignore[call-overload]
 
-    def test_constructor_uri_and_loadbalancer(
+    def test___init___uri_and_loadbalancer(
         self, mock_load_balancer_factory, mocker: MockerFixture
     ):
         """Test create a proxy with URI filtering and provided load balancer.
@@ -335,7 +457,7 @@ class TestWorkerProxy:
         assert isinstance(proxy, WorkerProxy)
         assert not proxy.started
 
-    def test_constructor_workers_parameter_creates_reducible_iterator(self):
+    def test___init___workers_parameter_creates_reducible_iterator(self):
         """Test create a ReducibleAsyncIterator with worker-added events.
 
         Given:
@@ -361,7 +483,7 @@ class TestWorkerProxy:
         # Assert
         assert isinstance(proxy, WorkerProxy)
 
-    def test_constructor_invalid_multiple_parameters_raises_error(self):
+    def test___init___invalid_multiple_parameters_raises_error(self):
         """Test raise ValueError with appropriate message.
 
         Given:
@@ -379,11 +501,11 @@ class TestWorkerProxy:
         ]
         discovery = LocalDiscovery("test-pool").subscriber
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Must specify exactly one of"):
             WorkerProxy(pool_uri="test-pool", discovery=discovery, workers=workers)
 
-    def test_constructor_no_parameters_raises_error(self):
+    def test___init___no_parameters_raises_error(self):
         """Test raise ValueError with appropriate message.
 
         Given:
@@ -393,7 +515,7 @@ class TestWorkerProxy:
         Then:
             It should raise ValueError with appropriate message
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Must specify either a workerpool URI"):
             WorkerProxy()
 
@@ -402,7 +524,7 @@ class TestWorkerProxy:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_context_manager_lifecycle(self, mock_discovery_service):
+    async def test___aenter___lifecycle(self, mock_discovery_service):
         """Test it starts and stops correctly.
 
         Given:
@@ -430,7 +552,7 @@ class TestWorkerProxy:
         assert not proxy.started
 
     @pytest.mark.asyncio
-    async def test_context_manager_cleanup_on_error(self, mock_discovery_service):
+    async def test___aexit___cleanup_on_error(self, mock_discovery_service):
         """Test cleanup still occurs and exception propagates.
 
         Given:
@@ -444,7 +566,7 @@ class TestWorkerProxy:
         proxy = WorkerProxy(discovery=mock_discovery_service)
         exception_caught = False
 
-        # Act & Assert
+        # Act & assert
         try:
             async with proxy:
                 raise ValueError("Test error")
@@ -516,7 +638,7 @@ class TestWorkerProxy:
         proxy = WorkerProxy(discovery=mock_discovery_service)
         await proxy.start()
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(RuntimeError, match="Proxy already started"):
             await proxy.start()
 
@@ -534,12 +656,12 @@ class TestWorkerProxy:
         # Arrange
         proxy = WorkerProxy(discovery=mock_discovery_service)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(RuntimeError, match="Proxy not started"):
             await proxy.stop()
 
     @pytest.mark.asyncio
-    async def test_context_manager_enter_starts_proxy(
+    async def test___aenter___enter_starts_proxy(
         self, mock_discovery_service, mock_proxy_session
     ):
         """Test automatically start the proxy.
@@ -554,12 +676,12 @@ class TestWorkerProxy:
         # Arrange
         proxy = WorkerProxy(discovery=mock_discovery_service)
 
-        # Act & Assert
+        # Act & assert
         async with proxy as p:
             assert p.started
 
     @pytest.mark.asyncio
-    async def test_context_manager_exit_stops_proxy(
+    async def test___aexit___exit_stops_proxy(
         self, mock_discovery_service, mock_proxy_session
     ):
         """Test automatically stop the proxy.
@@ -908,7 +1030,7 @@ class TestWorkerProxy:
         # Arrange
         proxy = WorkerProxy(discovery=mock_discovery_service)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(RuntimeError, match="Proxy not started"):
             async for _ in await proxy.dispatch(mock_wool_task):
                 pass
@@ -961,7 +1083,7 @@ class TestWorkerProxy:
         # Add worker through proper callback
         failing_loadbalancer.worker_added_callback(mock_worker_connection, metadata)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(Exception, match="Load balancer error"):
             async for _ in await proxy.dispatch(mock_wool_task):
                 pass
@@ -1140,7 +1262,7 @@ class TestWorkerProxy:
 
         proxy = WorkerProxy(workers=workers)
 
-        # Act & Assert
+        # Act & assert
         async with proxy as p:
             assert p is not None
             assert p.started
@@ -1162,7 +1284,7 @@ class TestWorkerProxy:
         # Arrange
         proxy = WorkerProxy("test://pool")
 
-        # Act & Assert
+        # Act & assert
         async with proxy as p:
             assert p is not None
             assert p.started
@@ -1230,7 +1352,7 @@ class TestWorkerProxy:
         # Assert
         assert len(set(proxy_ids)) == len(proxy_ids)
 
-    def test_hash(self):
+    def test___hash__(self):
         """Test return hash of the proxy ID string.
 
         Given:
@@ -1250,7 +1372,7 @@ class TestWorkerProxy:
         assert proxy_hash == hash(str(proxy.id))
         assert isinstance(proxy_hash, int)
 
-    def test_eq(self):
+    def test___eq__(self):
         """Test return True if both are WorkerProxy instances with same hash.
 
         Given:
@@ -1265,7 +1387,7 @@ class TestWorkerProxy:
         proxy2 = WorkerProxy("test-pool")
         non_proxy = "not a proxy"
 
-        # Act & Assert
+        # Act & assert
         # Same proxy should equal itself
         assert proxy1 == proxy1
 
@@ -1300,7 +1422,7 @@ class TestWorkerProxy:
             discovery=discovery_service, loadbalancer=wp.RoundRobinLoadBalancer
         )
 
-        # Act & Assert
+        # Act & assert
         async with proxy:
             # Verify proxy is started before pickling
             assert proxy.started is True
@@ -1331,7 +1453,7 @@ class TestWorkerProxy:
         discovery_service = LocalDiscovery("test-pool").subscriber
         proxy = WorkerProxy(discovery=discovery_service)
 
-        # Act & Assert
+        # Act & assert
         async with proxy:
             # Verify proxy is started before pickling
             assert proxy.started is True
@@ -1361,7 +1483,7 @@ class TestWorkerProxy:
         # Arrange - Use real objects - this creates a LocalDiscovery internally
         proxy = WorkerProxy("pool-1")
 
-        # Act & Assert
+        # Act & assert
         async with proxy:
             # Verify proxy is started before pickling
             assert proxy.started is True
@@ -1403,7 +1525,7 @@ class TestWorkerProxy:
             pool_uri="test-pool", loadbalancer=lambda: invalid_loadbalancer
         )
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError):
             await proxy.start()
 
@@ -1425,7 +1547,7 @@ class TestWorkerProxy:
 
         proxy = WorkerProxy(discovery=lambda: invalid_discovery)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError):
             await proxy.start()
 
@@ -1506,7 +1628,7 @@ class TestWorkerProxy:
         # Capture the filter passed to subscribe()
         filter_fn = mock_local_discovery.subscribe.call_args.kwargs["filter"]
 
-        # Act & Assert — matching tags, insecure (no credentials)
+        # Act & assert — matching tags, insecure (no credentials)
         matching = WorkerMetadata(
             uid=uuid.uuid4(),
             address="127.0.0.1:50051",
@@ -1517,7 +1639,7 @@ class TestWorkerProxy:
         )
         assert filter_fn(matching) is True
 
-        # Act & Assert — no matching tags
+        # Act & assert — no matching tags
         non_matching = WorkerMetadata(
             uid=uuid.uuid4(),
             address="127.0.0.1:50052",
@@ -1528,7 +1650,7 @@ class TestWorkerProxy:
         )
         assert filter_fn(non_matching) is False
 
-        # Act & Assert — matching tags but secure (no credentials means
+        # Act & assert — matching tags but secure (no credentials means
         # security filter rejects secure workers)
         secure_matching = WorkerMetadata(
             uid=uuid.uuid4(),
@@ -1541,283 +1663,8 @@ class TestWorkerProxy:
         assert filter_fn(secure_matching) is False
 
     # =========================================================================
-    # Version Filtering Tests
+    # Property-Based Tests
     # =========================================================================
-
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(
-        local_major=st.integers(min_value=0, max_value=100),
-        local_minor=st.integers(min_value=0, max_value=100),
-        local_patch=st.integers(min_value=0, max_value=100),
-        worker_minor=st.integers(min_value=0, max_value=100),
-        worker_patch=st.integers(min_value=0, max_value=100),
-    )
-    @pytest.mark.asyncio
-    async def test__worker_sentinel_with_compatible_version(
-        self,
-        mock_proxy_session,
-        local_major,
-        local_minor,
-        local_patch,
-        worker_minor,
-        worker_patch,
-        mocker: MockerFixture,
-    ):
-        """Test workers with version >= client are accepted.
-
-        Given:
-            A proxy with version X.a.b and a worker with version
-            X.c.d where (c, d) >= (a, b) (same major, worker not
-            older)
-        When:
-            The worker is discovered via static workers list
-        Then:
-            The worker is accepted into the load balancer context.
-        """
-        from hypothesis import assume
-
-        assume((worker_minor, worker_patch) >= (local_minor, local_patch))
-
-        # Arrange
-        local_version = f"{local_major}.{local_minor}.{local_patch}"
-        worker_version = f"{local_major}.{worker_minor}.{worker_patch}"
-        mocker.patch.object(protocol, "__version__", local_version)
-
-        worker = WorkerMetadata(
-            uid=uuid.uuid4(),
-            address="127.0.0.1:50051",
-            pid=1234,
-            version=worker_version,
-        )
-
-        proxy = WorkerProxy(workers=[worker])
-
-        # Act
-        await proxy.start()
-        await asyncio.sleep(0.05)
-
-        # Assert
-        assert worker in proxy.workers
-
-        # Cleanup
-        await proxy.stop()
-
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(
-        local_major=st.integers(min_value=0, max_value=100),
-        local_minor=st.integers(min_value=1, max_value=100),
-        local_patch=st.integers(min_value=0, max_value=100),
-        worker_minor=st.integers(min_value=0, max_value=100),
-        worker_patch=st.integers(min_value=0, max_value=100),
-    )
-    @pytest.mark.asyncio
-    async def test__worker_sentinel_with_older_worker_same_major(
-        self,
-        mock_proxy_session,
-        local_major,
-        local_minor,
-        local_patch,
-        worker_minor,
-        worker_patch,
-        mocker: MockerFixture,
-    ):
-        """Test workers older than client are rejected.
-
-        Given:
-            A proxy with version X.a.b and a worker with version
-            X.c.d where (c, d) < (a, b) (same major, worker older)
-        When:
-            The worker is discovered via static workers list
-        Then:
-            The worker is rejected from the load balancer context.
-        """
-        from hypothesis import assume
-
-        assume((worker_minor, worker_patch) < (local_minor, local_patch))
-
-        # Arrange
-        local_version = f"{local_major}.{local_minor}.{local_patch}"
-        worker_version = f"{local_major}.{worker_minor}.{worker_patch}"
-        mocker.patch.object(protocol, "__version__", local_version)
-
-        worker = WorkerMetadata(
-            uid=uuid.uuid4(),
-            address="127.0.0.1:50051",
-            pid=1234,
-            version=worker_version,
-        )
-
-        proxy = WorkerProxy(workers=[worker])
-
-        # Act
-        await proxy.start()
-        await asyncio.sleep(0.05)
-
-        # Assert
-        assert worker not in proxy.workers
-
-        # Cleanup
-        await proxy.stop()
-
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(
-        local_major=st.integers(min_value=0, max_value=100),
-        worker_major=st.integers(min_value=0, max_value=100),
-    )
-    @pytest.mark.asyncio
-    async def test__worker_sentinel_with_incompatible_major_version(
-        self,
-        mock_proxy_session,
-        local_major,
-        worker_major,
-        mocker: MockerFixture,
-    ):
-        """Test workers with different major version are rejected.
-
-        Given:
-            A proxy with major version X and a worker with a
-            different major version Y
-        When:
-            The worker is discovered via static workers list
-        Then:
-            The worker is rejected from the load balancer context.
-        """
-        from hypothesis import assume
-
-        assume(local_major != worker_major)
-
-        # Arrange
-        local_version = f"{local_major}.0.0"
-        worker_version = f"{worker_major}.0.0"
-        mocker.patch.object(protocol, "__version__", local_version)
-
-        worker = WorkerMetadata(
-            uid=uuid.uuid4(),
-            address="127.0.0.1:50051",
-            pid=1234,
-            version=worker_version,
-        )
-
-        proxy = WorkerProxy(workers=[worker])
-
-        # Act
-        await proxy.start()
-        await asyncio.sleep(0.05)
-
-        # Assert
-        assert worker not in proxy.workers
-
-        # Cleanup
-        await proxy.stop()
-
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(
-        version_text=st.text(min_size=0, max_size=20).filter(
-            lambda s: not s or not s.split(".")[0].strip().isdigit()
-        ),
-    )
-    @pytest.mark.asyncio
-    async def test__worker_sentinel_with_unparseable_version(
-        self,
-        mock_proxy_session,
-        version_text,
-        mocker: MockerFixture,
-    ):
-        """Test workers with unparseable version are rejected.
-
-        Given:
-            A proxy with a valid version and a worker whose
-            version string is not valid PEP 440
-        When:
-            The worker is discovered via static workers list
-        Then:
-            The worker is rejected from the load balancer context.
-        """
-        # Arrange
-        mocker.patch.object(protocol, "__version__", "1.0.0")
-
-        worker = WorkerMetadata(
-            uid=uuid.uuid4(),
-            address="127.0.0.1:50051",
-            pid=1234,
-            version=version_text,
-        )
-
-        proxy = WorkerProxy(workers=[worker])
-
-        # Act
-        await proxy.start()
-        await asyncio.sleep(0.05)
-
-        # Assert
-        assert worker not in proxy.workers
-
-        # Cleanup
-        await proxy.stop()
-
-    @pytest.mark.asyncio
-    async def test__worker_sentinel_with_combined_security_and_version_filter(
-        self,
-        mock_proxy_session,
-        mocker: MockerFixture,
-    ):
-        """Test version filter applies alongside security filter.
-
-        Given:
-            A proxy with credentials and version 1.x
-        When:
-            A secure worker with version 2.y is discovered
-        Then:
-            The worker is rejected (version filter applies alongside
-            security filter).
-        """
-        # Arrange
-        mocker.patch.object(protocol, "__version__", "1.0.0")
-        mock_credentials = object()
-
-        worker = WorkerMetadata(
-            uid=uuid.uuid4(),
-            address="127.0.0.1:50051",
-            pid=1234,
-            version="2.0.0",
-            secure=True,
-        )
-
-        proxy = WorkerProxy(
-            workers=[worker],
-            credentials=mock_credentials,
-        )
-
-        # Act
-        await proxy.start()
-        await asyncio.sleep(0.05)
-
-        # Assert
-        assert worker not in proxy.workers
-
-        # Cleanup
-        await proxy.stop()
-
-
-# ============================================================================
-# Property-Based Tests
-# ============================================================================
-
-
-class TestWorkerProxyProperties:
-    """Property-based tests for WorkerProxy invariants."""
 
     @given(worker_count=st.integers(min_value=0, max_value=10))
     @settings(
@@ -1941,7 +1788,7 @@ class TestWorkerProxyProperties:
         Then:
             It should succeed without error
         """
-        # Arrange & Act & Assert
+        # Arrange, act, & assert
         proxy = WorkerProxy(pool_uri)
         assert isinstance(proxy, WorkerProxy)
         assert not proxy.started

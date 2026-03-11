@@ -280,7 +280,7 @@ class TestEventHandler:
         def handler(event, timestamp):
             pass
 
-        # Act & Assert - can use isinstance without error
+        # Act & assert - can use isinstance without error
         assert isinstance(handler, EventHandler)
 
 
@@ -302,7 +302,7 @@ class TestAsyncEventHandler:
         async def handler(event, timestamp, context=None):
             pass
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(handler, AsyncEventHandler)
 
     def test_sync_callable_is_also_async_handler(self):
@@ -320,7 +320,7 @@ class TestAsyncEventHandler:
         def handler(event, timestamp, context=None):
             pass
 
-        # Act & Assert
+        # Act & assert
         # runtime_checkable Protocol only checks for __call__ existence
         assert isinstance(handler, AsyncEventHandler)
 
@@ -462,7 +462,7 @@ class TestEvent:
         Then:
             Event inherits from ABC
         """
-        # Act & Assert
+        # Act & assert
         assert issubclass(Event, ABC)
         # Note: Event can be instantiated because it has no abstract methods,
         # but it's not meant to be used directly - subclasses should define type
@@ -707,7 +707,7 @@ class TestEvent:
         # Arrange
         event = concrete_event_class("test-event")
 
-        # Act & Assert - no exception raised
+        # Act & assert - no exception raised
         event.emit()
         event.emit(context={"key": "value"})
 

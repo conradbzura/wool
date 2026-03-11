@@ -71,7 +71,7 @@ class TestRoundRobinLoadBalancer:
         Then:
             It should satisfy the protocol
         """
-        # Act & Assert
+        # Act & assert
         assert isinstance(RoundRobinLoadBalancer(), LoadBalancerLike)
 
     @pytest.mark.asyncio
@@ -106,7 +106,7 @@ class TestRoundRobinLoadBalancer:
             proxy=mock_proxy,
         )
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(NoWorkersAvailable):
             await lb.dispatch(task, context=ctx)
 
@@ -552,7 +552,7 @@ class TestRoundRobinLoadBalancer:
             proxy=mock_proxy,
         )
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(NoWorkersAvailable):
             await lb.dispatch(task, context=ctx)
 

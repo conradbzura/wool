@@ -96,7 +96,7 @@ class TestWorkerProxyLike:
 
         proxy = NonConformingProxy()
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(TypeError, match="proxy must conform to WorkerProxyLike"):
             Task(
                 id=uuid4(),
@@ -155,7 +155,7 @@ def test_do_dispatch_with_default_context():
     Then:
         It should return ``True``.
     """
-    # Arrange & Act & Assert
+    # Arrange, act, & assert
     assert do_dispatch() is True
 
 
@@ -170,7 +170,7 @@ def test_do_dispatch_with_false_flag():
         It should return ``False`` inside the context and
         ``True`` after exiting.
     """
-    # Act & Assert
+    # Act & assert
     with do_dispatch(False):
         assert not do_dispatch()
     assert do_dispatch()
@@ -188,7 +188,7 @@ def test_do_dispatch_with_nested_contexts():
         It should return the value matching the innermost active
         context and restore correctly on exit.
     """
-    # Arrange & Act & Assert
+    # Arrange, act, & assert
     with do_dispatch(True):
         assert do_dispatch() is True
         with do_dispatch(False):
@@ -294,7 +294,7 @@ async def test_current_task_with_variable_nesting_depth(
 
     tasks = [sample_task()]
 
-    # Act & Assert — build nested contexts iteratively
+    # Act & assert — build nested contexts iteratively
     with ExitStack() as stack:
         stack.enter_context(tasks[0])
         assert current_task() is tasks[0]
@@ -460,7 +460,7 @@ class TestTask:
 
         task = sample_task(callable=not_async)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(
             ValueError,
             match="Expected coroutine function or async generator function",
@@ -482,7 +482,7 @@ class TestTask:
         # Arrange
         task = sample_task()
 
-        # Act & Assert (no exception should be raised)
+        # Act & assert (no exception should be raised)
         with task:
             pass
 
@@ -501,7 +501,7 @@ class TestTask:
         # Arrange
         task = sample_task()
 
-        # Act & Assert
+        # Act & assert
         async def run_with_exception():
             with pytest.raises(ValueError, match="test error"):
                 with task:
@@ -1032,7 +1032,7 @@ class TestTask:
         # Arrange
         task = sample_task()
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(
             RuntimeError,
             match="No proxy pool available for task execution",
@@ -1070,7 +1070,7 @@ class TestTask:
             proxy=picklable_proxy,
         )
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises((TypeError, AttributeError)):
             task.to_protobuf()
 
@@ -1160,7 +1160,7 @@ class TestTask:
 
         task = sample_task(callable=not_async)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(
             ValueError,
             match="Expected routine to be coroutine or async generator",
@@ -1190,7 +1190,7 @@ class TestTask:
 
         task = sample_task(callable=test_generator)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(
             RuntimeError,
             match="No proxy pool available for task execution",
@@ -1223,7 +1223,7 @@ class TestTask:
 
         task = sample_task(callable=failing_generator)
 
-        # Act & Assert
+        # Act & assert
         results = []
         with pytest.raises(ValueError, match="Generator error"):
             async for value in task.dispatch():
@@ -1471,7 +1471,7 @@ class TestTaskEvent:
         task = sample_task()
         event = TaskEvent("task-created", task=task)
 
-        # Act & Assert (no exception should be raised)
+        # Act & assert (no exception should be raised)
         event.emit()
 
     def test_emit_with_raising_handler(self, sample_task, clear_event_handlers, caplog):

@@ -315,7 +315,7 @@ class TestResourcePool:
 
         assert pool.stats.referenced_entries == 2
 
-        # Act & Assert
+        # Act & assert
         await pool.release("key1")
         assert pool.stats.referenced_entries == 1
 
@@ -345,7 +345,7 @@ class TestResourcePool:
 
         initial_cache_size = pool.stats.total_entries
 
-        # Act & Assert
+        # Act & assert
         # Try to release a nonexistent key
         await pool.release("nonexistent")
 
@@ -379,7 +379,7 @@ class TestResourcePool:
         mock_resource.name = unique_key
         mock_factory.return_value = mock_resource
 
-        # Act & Assert
+        # Act & assert
         # Acquire and release once to get ref count to 0 (but stays in cache due to TTL)
         async with ttl_pool.get(unique_key):
             pass
@@ -500,7 +500,7 @@ class TestResourcePool:
             pass  # Resource created and cached with TTL > 0
         assert pool.stats.total_entries == 1
 
-        # Act & Assert
+        # Act & assert
         # Try to clear a non-existent key - should raise KeyError
         with pytest.raises(KeyError):
             await pool.clear("nonexistent-key")
@@ -671,7 +671,7 @@ class TestResourcePool:
         mock_factory = Mock()
         mock_finalizer = AsyncMock()
 
-        # Act & Assert
+        # Act & assert
         async with ResourcePool(factory=mock_factory, finalizer=mock_finalizer) as pool:
             mock_resource = Mock()
             mock_factory.return_value = mock_resource
@@ -708,7 +708,7 @@ class TestResourcePool:
                 await finalizer_called.wait()
             # Don't actually sleep, just record the call
 
-        # Act & Assert
+        # Act & assert
         # Patch asyncio.sleep globally to ensure it captures calls from background tasks
         with patch("asyncio.sleep", side_effect=mock_sleep):
             mock_factory = Mock(return_value=Mock(name="test-obj"))
@@ -777,7 +777,7 @@ class TestResourcePool:
 
         key = "test"
 
-        # Act & Assert
+        # Act & assert
         # This should not raise despite finalizer failing
         async with pool.get(key):
             pass
@@ -804,7 +804,7 @@ class TestResourcePool:
         async with pool.get("valid-key"):
             pass
 
-        # Act & Assert
+        # Act & assert
         # Non-existent keys should raise KeyError
         with pytest.raises(KeyError):
             await pool.clear("nonexistent-key")
@@ -890,7 +890,7 @@ class TestResourcePool:
         mock_factory.return_value = mock_resource
         pool = ResourcePool(factory=mock_factory, ttl=0)
 
-        # Act & Assert
+        # Act & assert
         # None should be treated as a valid key
         async with pool.get(None) as resource:
             assert resource is mock_resource
@@ -921,7 +921,7 @@ class TestResource:
 
         pool = ResourcePool(factory=mock_factory, ttl=0)
 
-        # Act & Assert
+        # Act & assert
         # Use Resource as context manager
         async with pool.get("test-key") as resource:
             assert resource is mock_resource
@@ -951,7 +951,7 @@ class TestResource:
 
         resource_acquisition = pool.get("test-key")
 
-        # Act & Assert
+        # Act & assert
         # Manual release method should not exist
         assert not hasattr(resource_acquisition, "release")
 
@@ -1002,7 +1002,7 @@ class TestResource:
 
         pool = ResourcePool(factory=mock_factory, ttl=0)
 
-        # Act & Assert
+        # Act & assert
         # Use only as context manager
         async with pool.get("test-key") as resource:
             assert resource is mock_resource
@@ -1057,7 +1057,7 @@ class TestResource:
 
         resource = Resource(pool=mock_pool, key="test-key")
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(RuntimeError, match="Acquire failed"):
             async with resource:
                 pass
@@ -1082,7 +1082,7 @@ class TestResource:
 
         resource = Resource(pool=mock_pool, key="test-key")
 
-        # Act & Assert - manually call __aexit__ without calling __aenter__
+        # Act & assert - manually call __aexit__ without calling __aenter__
         with pytest.raises(
             RuntimeError, match="Cannot release a resource that was not acquired"
         ):
@@ -1112,7 +1112,7 @@ class TestResource:
         async with resource:
             pass
 
-        # Act & Assert - manually call __aexit__ again
+        # Act & assert - manually call __aexit__ again
         with pytest.raises(
             RuntimeError,
             match="Cannot release a resource that has already been released",

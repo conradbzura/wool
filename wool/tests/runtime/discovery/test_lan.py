@@ -275,7 +275,7 @@ class TestLanDiscoveryPublisher:
         # Arrange
         publisher = LanDiscovery.Publisher()
 
-        # Act & Assert
+        # Act & assert
         async with publisher:
             assert publisher.aiozc is not None
 
@@ -379,7 +379,7 @@ class TestLanDiscoveryPublisher:
         # Arrange
         publisher = LanDiscovery.Publisher()
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(RuntimeError, match="not properly initialized"):
             await publisher.publish("worker-added", metadata)
 
@@ -397,7 +397,7 @@ class TestLanDiscoveryPublisher:
         # Arrange
         publisher = LanDiscovery.Publisher()
 
-        # Act & Assert
+        # Act & assert
         async with publisher:
             with pytest.raises(
                 RuntimeError,

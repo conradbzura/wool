@@ -710,7 +710,7 @@ async def test_routine_with_asend_causing_exhaustion():
         got = await gen.asend("continue")
         assert got == "got:continue"
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(StopAsyncIteration):
             await gen.asend("stop")
 
@@ -786,7 +786,7 @@ async def test_routine_with_athrow_unhandled_exception():
         gen = fragile_gen()
         await gen.__anext__()  # "one"
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(Resettable):
             await gen.athrow(Resettable)
 
@@ -810,7 +810,7 @@ async def test_routine_with_athrow_causing_return():
         v = await gen.__anext__()
         assert v == "before"
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(StopAsyncIteration):
             await gen.athrow(Resettable)
 

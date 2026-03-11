@@ -1,6 +1,4 @@
 import signal
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
 
 import grpc
 import pytest
@@ -17,191 +15,200 @@ from wool.runtime.worker.process import _signal_handlers
 from wool.runtime.worker.process import _sigterm_handler
 
 
-class TestSignalHandlers:
-    """Test suite for signal handler functions."""
+def test__sigterm_handler_calls_service_stop_when_loop_is_running(mocker):
+    """Test _sigterm_handler calls service.stop when loop is running.
 
-    def test__sigterm_handler_calls_service_stop_when_loop_is_running(self, mocker):
-        """Test _sigterm_handler calls service.stop when loop is running.
+    Given:
+        A running event loop and WorkerService
+    When:
+        _sigterm_handler is called with SIGTERM
+    Then:
+        It should schedule service.stop with timeout=0 via call_soon_threadsafe
+    """
+    # Arrange
+    mock_loop = mocker.MagicMock()
+    mock_loop.is_running.return_value = True
+    mock_service = mocker.MagicMock()
 
-        Given:
-            A running event loop and WorkerService
-        When:
-            _sigterm_handler is called with SIGTERM
-        Then:
-            It should schedule service.stop with timeout=0 via call_soon_threadsafe
-        """
-        mock_loop = MagicMock()
-        mock_loop.is_running.return_value = True
-        mock_service = MagicMock()
+    mock_stop_request = mocker.MagicMock()
+    mocker.patch(
+        "wool.runtime.worker.process.protocol.worker.StopRequest",
+        return_value=mock_stop_request,
+    )
 
-        # Mock pb.worker.StopRequest
-        mock_stop_request = MagicMock()
-        mocker.patch(
-            "wool.runtime.worker.process.protocol.worker.StopRequest",
-            return_value=mock_stop_request,
-        )
+    # Act
+    _sigterm_handler(mock_loop, mock_service, signal.SIGTERM, None)
 
-        _sigterm_handler(mock_loop, mock_service, signal.SIGTERM, None)
+    # Assert
+    mock_loop.is_running.assert_called_once()
+    mock_loop.call_soon_threadsafe.assert_called_once()
 
-        mock_loop.is_running.assert_called_once()
-        mock_loop.call_soon_threadsafe.assert_called_once()
 
-    def test__sigterm_handler_does_nothing_when_loop_is_not_running(self):
-        """Test _sigterm_handler does nothing when loop is not running.
+def test__sigterm_handler_does_nothing_when_loop_is_not_running(mocker):
+    """Test _sigterm_handler does nothing when loop is not running.
 
-        Given:
-            An event loop that is not running
-        When:
-            _sigterm_handler is called
-        Then:
-            It should not call call_soon_threadsafe
-        """
-        mock_loop = MagicMock()
-        mock_loop.is_running.return_value = False
-        mock_service = MagicMock()
+    Given:
+        An event loop that is not running
+    When:
+        _sigterm_handler is called
+    Then:
+        It should not call call_soon_threadsafe
+    """
+    # Arrange
+    mock_loop = mocker.MagicMock()
+    mock_loop.is_running.return_value = False
+    mock_service = mocker.MagicMock()
 
-        _sigterm_handler(mock_loop, mock_service, signal.SIGTERM, None)
+    # Act
+    _sigterm_handler(mock_loop, mock_service, signal.SIGTERM, None)
 
-        mock_loop.is_running.assert_called_once()
-        mock_loop.call_soon_threadsafe.assert_not_called()
+    # Assert
+    mock_loop.is_running.assert_called_once()
+    mock_loop.call_soon_threadsafe.assert_not_called()
 
-    def test__sigint_handler_calls_service_stop_when_loop_is_running(self, mocker):
-        """Test _sigint_handler calls service.stop when loop is running.
 
-        Given:
-            A running event loop and WorkerService
-        When:
-            _sigint_handler is called with SIGINT
-        Then:
-            It should schedule service.stop with timeout=None via call_soon_threadsafe
-        """
-        mock_loop = MagicMock()
-        mock_loop.is_running.return_value = True
-        mock_service = MagicMock()
+def test__sigint_handler_calls_service_stop_when_loop_is_running(mocker):
+    """Test _sigint_handler calls service.stop when loop is running.
 
-        # Mock pb.worker.StopRequest
-        mock_stop_request = MagicMock()
-        mocker.patch(
-            "wool.runtime.worker.process.protocol.worker.StopRequest",
-            return_value=mock_stop_request,
-        )
+    Given:
+        A running event loop and WorkerService
+    When:
+        _sigint_handler is called with SIGINT
+    Then:
+        It should schedule service.stop with timeout=None via call_soon_threadsafe
+    """
+    # Arrange
+    mock_loop = mocker.MagicMock()
+    mock_loop.is_running.return_value = True
+    mock_service = mocker.MagicMock()
 
-        _sigint_handler(mock_loop, mock_service, signal.SIGINT, None)
+    mock_stop_request = mocker.MagicMock()
+    mocker.patch(
+        "wool.runtime.worker.process.protocol.worker.StopRequest",
+        return_value=mock_stop_request,
+    )
 
-        mock_loop.is_running.assert_called_once()
-        mock_loop.call_soon_threadsafe.assert_called_once()
+    # Act
+    _sigint_handler(mock_loop, mock_service, signal.SIGINT, None)
 
-    def test__sigint_handler_does_nothing_when_loop_is_not_running(self):
-        """Test _sigint_handler does nothing when loop is not running.
+    # Assert
+    mock_loop.is_running.assert_called_once()
+    mock_loop.call_soon_threadsafe.assert_called_once()
 
-        Given:
-            An event loop that is not running
-        When:
-            _sigint_handler is called
-        Then:
-            It should not call call_soon_threadsafe
-        """
-        mock_loop = MagicMock()
-        mock_loop.is_running.return_value = False
-        mock_service = MagicMock()
 
-        _sigint_handler(mock_loop, mock_service, signal.SIGINT, None)
+def test__sigint_handler_does_nothing_when_loop_is_not_running(mocker):
+    """Test _sigint_handler does nothing when loop is not running.
 
-        mock_loop.is_running.assert_called_once()
-        mock_loop.call_soon_threadsafe.assert_not_called()
+    Given:
+        An event loop that is not running
+    When:
+        _sigint_handler is called
+    Then:
+        It should not call call_soon_threadsafe
+    """
+    # Arrange
+    mock_loop = mocker.MagicMock()
+    mock_loop.is_running.return_value = False
+    mock_service = mocker.MagicMock()
 
-    @pytest.mark.asyncio
-    async def test__signal_handlers_installs_and_restores_handlers(self, mocker):
-        """Test _signal_handlers installs handlers and restores on exit.
+    # Act
+    _sigint_handler(mock_loop, mock_service, signal.SIGINT, None)
 
-        Given:
-            A WorkerService and existing signal handlers
-        When:
-            Entering and exiting the _signal_handlers context manager
-        Then:
-            It should install new handlers and restore old handlers on exit
-        """
-        mock_service = MagicMock()
+    # Assert
+    mock_loop.is_running.assert_called_once()
+    mock_loop.call_soon_threadsafe.assert_not_called()
 
-        # Mock existing signal handlers
-        old_sigterm = MagicMock()
-        old_sigint = MagicMock()
 
-        # Track signal.signal calls
-        signal_calls = []
-        original_signal = signal.signal
+@pytest.mark.asyncio
+async def test__signal_handlers_installs_and_restores_handlers(mocker):
+    """Test _signal_handlers installs handlers and restores on exit.
 
-        def mock_signal(sig, handler):
-            signal_calls.append((sig, handler))
-            if sig == signal.SIGTERM:
-                return old_sigterm
-            elif sig == signal.SIGINT:
-                return old_sigint
-            return original_signal(sig, handler)
+    Given:
+        A WorkerService and existing signal handlers
+    When:
+        Entering and exiting the _signal_handlers context manager
+    Then:
+        It should install new handlers and restore old handlers on exit
+    """
+    # Arrange
+    mock_service = mocker.MagicMock()
 
-        mocker.patch("signal.signal", side_effect=mock_signal)
+    old_sigterm = mocker.MagicMock()
+    old_sigint = mocker.MagicMock()
 
-        # Use the context manager
+    signal_calls = []
+    original_signal = signal.signal
+
+    def mock_signal(sig, handler):
+        signal_calls.append((sig, handler))
+        if sig == signal.SIGTERM:
+            return old_sigterm
+        elif sig == signal.SIGINT:
+            return old_sigint
+        return original_signal(sig, handler)
+
+    mocker.patch("signal.signal", side_effect=mock_signal)
+
+    # Act
+    with _signal_handlers(mock_service):
+        # Assert — handlers were installed
+        assert len(signal_calls) == 2
+        assert signal_calls[0][0] == signal.SIGTERM
+        assert signal_calls[1][0] == signal.SIGINT
+        assert callable(signal_calls[0][1])
+        assert callable(signal_calls[1][1])
+
+    # Assert — handlers were restored
+    assert len(signal_calls) == 4
+    assert signal_calls[2] == (signal.SIGTERM, old_sigterm)
+    assert signal_calls[3] == (signal.SIGINT, old_sigint)
+
+
+@pytest.mark.asyncio
+async def test__signal_handlers_restores_handlers_even_on_exception(mocker):
+    """Test _signal_handlers restores handlers even if exception occurs.
+
+    Given:
+        A WorkerService and existing signal handlers
+    When:
+        An exception is raised within the _signal_handlers context
+    Then:
+        It should still restore old handlers before propagating exception
+    """
+    # Arrange
+    mock_service = mocker.MagicMock()
+
+    old_sigterm = mocker.MagicMock()
+    old_sigint = mocker.MagicMock()
+
+    signal_calls = []
+    original_signal = signal.signal
+
+    def mock_signal(sig, handler):
+        signal_calls.append((sig, handler))
+        if sig == signal.SIGTERM:
+            return old_sigterm
+        elif sig == signal.SIGINT:
+            return old_sigint
+        return original_signal(sig, handler)
+
+    mocker.patch("signal.signal", side_effect=mock_signal)
+
+    # Act
+    with pytest.raises(RuntimeError, match="Test error"):
         with _signal_handlers(mock_service):
-            # Verify handlers were installed
-            assert len(signal_calls) == 2
-            assert signal_calls[0][0] == signal.SIGTERM
-            assert signal_calls[1][0] == signal.SIGINT
-            # Handlers should be partial functions
-            assert callable(signal_calls[0][1])
-            assert callable(signal_calls[1][1])
+            raise RuntimeError("Test error")
 
-        # Verify handlers were restored
-        assert len(signal_calls) == 4
-        assert signal_calls[2] == (signal.SIGTERM, old_sigterm)
-        assert signal_calls[3] == (signal.SIGINT, old_sigint)
-
-    @pytest.mark.asyncio
-    async def test__signal_handlers_restores_handlers_even_on_exception(self, mocker):
-        """Test _signal_handlers restores handlers even if exception occurs.
-
-        Given:
-            A WorkerService and existing signal handlers
-        When:
-            An exception is raised within the _signal_handlers context
-        Then:
-            It should still restore old handlers before propagating exception
-        """
-        mock_service = MagicMock()
-
-        # Mock existing signal handlers
-        old_sigterm = MagicMock()
-        old_sigint = MagicMock()
-
-        # Track signal.signal calls
-        signal_calls = []
-        original_signal = signal.signal
-
-        def mock_signal(sig, handler):
-            signal_calls.append((sig, handler))
-            if sig == signal.SIGTERM:
-                return old_sigterm
-            elif sig == signal.SIGINT:
-                return old_sigint
-            return original_signal(sig, handler)
-
-        mocker.patch("signal.signal", side_effect=mock_signal)
-
-        # Use the context manager with exception
-        with pytest.raises(RuntimeError, match="Test error"):
-            with _signal_handlers(mock_service):
-                raise RuntimeError("Test error")
-
-        # Verify handlers were still restored
-        assert len(signal_calls) == 4
-        assert signal_calls[2] == (signal.SIGTERM, old_sigterm)
-        assert signal_calls[3] == (signal.SIGINT, old_sigint)
+    # Assert
+    assert len(signal_calls) == 4
+    assert signal_calls[2] == (signal.SIGTERM, old_sigterm)
+    assert signal_calls[3] == (signal.SIGINT, old_sigint)
 
 
 class TestWorkerProcess:
     """Test suite for WorkerProcess."""
 
-    def test_init_with_default_parameters(self):
+    def test___init___with_default_parameters(self):
         """Test WorkerProcess initialization with default parameters.
 
         Given:
@@ -211,12 +218,15 @@ class TestWorkerProcess:
         Then:
             It should use default host 127.0.0.1, port None, and address None
         """
+        # Act
         process = WorkerProcess()
+
+        # Assert
         assert process.host == "127.0.0.1"
         assert process.port is None  # port 0 means not started
         assert process.address is None
 
-    def test_init_with_custom_host_and_port(self):
+    def test___init___with_custom_host_and_port(self):
         """Test WorkerProcess initialization with custom host and port.
 
         Given:
@@ -226,7 +236,10 @@ class TestWorkerProcess:
         Then:
             It should use those values for address
         """
+        # Act
         process = WorkerProcess(host="0.0.0.0", port=8080)
+
+        # Assert
         assert process.host == "0.0.0.0"
         assert process.port == 8080
         assert process.address == "0.0.0.0:8080"
@@ -235,7 +248,7 @@ class TestWorkerProcess:
         grace_period=st.floats(min_value=0.1, max_value=300.0),
         ttl=st.floats(min_value=0.1, max_value=300.0),
     )
-    def test_init_with_custom_timeouts(self, grace_period, ttl):
+    def test___init___with_custom_timeouts(self, grace_period, ttl):
         """Test WorkerProcess initialization with custom timeout parameters.
 
         Given:
@@ -245,12 +258,14 @@ class TestWorkerProcess:
         Then:
             It should initialize without error
         """
+        # Act
         process = WorkerProcess(shutdown_grace_period=grace_period, proxy_pool_ttl=ttl)
-        # Timeouts are internal config - just verify construction succeeds
+
+        # Assert
         assert process.host == "127.0.0.1"
         assert process.address is None
 
-    def test_init_raises_error_for_blank_host(self):
+    def test___init___raises_error_for_blank_host(self):
         """Test WorkerProcess initialization raises error for blank host.
 
         Given:
@@ -260,10 +275,11 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Host must be a non-blank string"):
             WorkerProcess(host="")
 
-    def test_init_raises_error_for_negative_port(self):
+    def test___init___raises_error_for_negative_port(self):
         """Test WorkerProcess initialization raises error for negative port.
 
         Given:
@@ -273,10 +289,11 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Port must be a positive integer"):
             WorkerProcess(port=-1)
 
-    def test_init_raises_error_for_non_positive_grace_period(self):
+    def test___init___raises_error_for_non_positive_grace_period(self):
         """Test WorkerProcess initialization raises error for non-positive grace period.
 
         Given:
@@ -286,10 +303,11 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Shutdown grace period must be positive"):
             WorkerProcess(shutdown_grace_period=0)
 
-    def test_init_raises_error_for_non_positive_ttl(self):
+    def test___init___raises_error_for_non_positive_ttl(self):
         """Test WorkerProcess initialization raises error for non-positive TTL.
 
         Given:
@@ -299,6 +317,7 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Proxy pool TTL must be positive"):
             WorkerProcess(proxy_pool_ttl=0)
 
@@ -312,7 +331,10 @@ class TestWorkerProcess:
         Then:
             It should return None
         """
+        # Arrange
         process = WorkerProcess(port=0)
+
+        # Act & assert
         assert process.address is None
 
     def test_address_returns_formatted_string_when_port_is_set(self):
@@ -325,7 +347,10 @@ class TestWorkerProcess:
         Then:
             It should return formatted "host:port" string
         """
+        # Arrange
         process = WorkerProcess(host="192.168.1.100", port=50051)
+
+        # Act & assert
         assert process.address == "192.168.1.100:50051"
 
     def test_host_returns_configured_host(self):
@@ -338,7 +363,10 @@ class TestWorkerProcess:
         Then:
             It should return the configured host
         """
+        # Arrange
         process = WorkerProcess(host="0.0.0.0")
+
+        # Act & assert
         assert process.host == "0.0.0.0"
 
     def test_port_returns_none_when_port_is_zero(self):
@@ -351,7 +379,10 @@ class TestWorkerProcess:
         Then:
             It should return None
         """
+        # Arrange
         process = WorkerProcess(port=0)
+
+        # Act & assert
         assert process.port is None
 
     def test_port_returns_configured_port(self):
@@ -364,11 +395,14 @@ class TestWorkerProcess:
         Then:
             It should return the configured port
         """
+        # Arrange
         process = WorkerProcess(port=8080)
+
+        # Act & assert
         assert process.port == 8080
 
     @given(port=st.integers(min_value=1, max_value=65535))
-    def test_init_accepts_all_valid_ports(self, port):
+    def test___init___accepts_all_valid_ports(self, port):
         """Test WorkerProcess accepts all valid port numbers.
 
         Given:
@@ -378,7 +412,10 @@ class TestWorkerProcess:
         Then:
             It should initialize successfully and expose the port
         """
+        # Act
         process = WorkerProcess(port=port)
+
+        # Assert
         assert process.port == port
         assert process.address and f":{port}" in process.address
 
@@ -402,11 +439,13 @@ class TestWorkerProcess:
         Then:
             Parsing the address should recover original host and port
         """
+        # Act
         process = WorkerProcess(host=host, port=port)
         address = process.address
+
+        # Assert
         assert address
 
-        # Parse address back
         parsed_host, parsed_port_str = address.split(":")
         parsed_port = int(parsed_port_str)
 
@@ -423,7 +462,7 @@ class TestWorkerProcess:
             ),
         )
     )
-    def test_init_accepts_various_host_formats(self, host):
+    def test___init___accepts_various_host_formats(self, host):
         """Test WorkerProcess accepts various valid host formats.
 
         Given:
@@ -433,12 +472,15 @@ class TestWorkerProcess:
         Then:
             It should initialize successfully
         """
+        # Act
         process = WorkerProcess(host=host, port=50051)
+
+        # Assert
         assert process.host == host
         assert host in process.address
 
     @given(port=st.one_of(st.integers(max_value=-1), st.integers(min_value=65536)))
-    def test_init_rejects_invalid_ports(self, port):
+    def test___init___rejects_invalid_ports(self, port):
         """Test WorkerProcess rejects invalid port numbers.
 
         Given:
@@ -448,6 +490,7 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Port must be a positive integer"):
             WorkerProcess(port=port)
 
@@ -457,7 +500,7 @@ class TestWorkerProcess:
             st.just(0),
         )
     )
-    def test_init_rejects_non_positive_grace_periods(self, grace_period):
+    def test___init___rejects_non_positive_grace_periods(self, grace_period):
         """Test WorkerProcess rejects all non-positive grace periods.
 
         Given:
@@ -467,6 +510,7 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Shutdown grace period must be positive"):
             WorkerProcess(shutdown_grace_period=grace_period)
 
@@ -475,7 +519,7 @@ class TestWorkerProcess:
             st.floats(max_value=0.0, allow_nan=False, allow_infinity=False), st.just(0)
         )
     )
-    def test_init_rejects_non_positive_ttls(self, ttl):
+    def test___init___rejects_non_positive_ttls(self, ttl):
         """Test WorkerProcess rejects all non-positive TTL values.
 
         Given:
@@ -485,6 +529,7 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Act & assert
         with pytest.raises(ValueError, match="Proxy pool TTL must be positive"):
             WorkerProcess(proxy_pool_ttl=ttl)
 
@@ -498,7 +543,10 @@ class TestWorkerProcess:
         Then:
             It should raise ValueError
         """
+        # Arrange
         process = WorkerProcess()
+
+        # Act & assert
         with pytest.raises(ValueError, match="Timeout must be positive"):
             process.start(timeout=0)
 
@@ -512,22 +560,24 @@ class TestWorkerProcess:
         Then:
             It should call multiprocessing.Process.start
         """
-        # Mock pipe connections
-        mock_get_port = MagicMock()
+        # Arrange
+        mock_get_port = mocker.MagicMock()
         mock_get_port.poll.return_value = True
         mock_get_port.recv.return_value = 50051
-        mock_set_port = MagicMock()
+        mock_set_port = mocker.MagicMock()
         mocker.patch(
             "wool.runtime.worker.process.Pipe",
             return_value=(mock_get_port, mock_set_port),
         )
 
-        # Mock parent start
         mock_parent_start = mocker.patch("multiprocessing.Process.start")
 
         process = WorkerProcess()
+
+        # Act
         process.start(timeout=60.0)
 
+        # Assert
         mock_parent_start.assert_called_once()
         mock_get_port.poll.assert_called_once_with(timeout=60.0)
         mock_get_port.recv.assert_called_once()
@@ -543,11 +593,11 @@ class TestWorkerProcess:
         Then:
             It should receive the port and provide correct address
         """
-        # Mock pipe connections
-        mock_get_port = MagicMock()
+        # Arrange
+        mock_get_port = mocker.MagicMock()
         mock_get_port.poll.return_value = True
         mock_get_port.recv.return_value = 50051
-        mock_set_port = MagicMock()
+        mock_set_port = mocker.MagicMock()
         mocker.patch(
             "wool.runtime.worker.process.Pipe",
             return_value=(mock_get_port, mock_set_port),
@@ -556,8 +606,11 @@ class TestWorkerProcess:
         mocker.patch("multiprocessing.Process.start")
 
         process = WorkerProcess()
+
+        # Act
         process.start()
 
+        # Assert
         assert process.port == 50051
         assert process.address == "127.0.0.1:50051"
 
@@ -571,10 +624,10 @@ class TestWorkerProcess:
         Then:
             It should raise RuntimeError and terminate the process
         """
-        # Mock pipe connections - poll returns False to simulate timeout
-        mock_get_port = MagicMock()
+        # Arrange
+        mock_get_port = mocker.MagicMock()
         mock_get_port.poll.return_value = False
-        mock_set_port = MagicMock()
+        mock_set_port = mocker.MagicMock()
         mocker.patch(
             "wool.runtime.worker.process.Pipe",
             return_value=(mock_get_port, mock_set_port),
@@ -586,6 +639,7 @@ class TestWorkerProcess:
         mock_terminate = mocker.patch.object(process, "terminate")
         mock_join = mocker.patch.object(process, "join")
 
+        # Act & assert
         with pytest.raises(
             RuntimeError, match="Worker process failed to start within .* seconds"
         ):
@@ -604,11 +658,11 @@ class TestWorkerProcess:
         Then:
             It should close the pipe connection
         """
-        # Mock pipe connections
-        mock_get_port = MagicMock()
+        # Arrange
+        mock_get_port = mocker.MagicMock()
         mock_get_port.poll.return_value = True
         mock_get_port.recv.return_value = 50051
-        mock_set_port = MagicMock()
+        mock_set_port = mocker.MagicMock()
         mocker.patch(
             "wool.runtime.worker.process.Pipe",
             return_value=(mock_get_port, mock_set_port),
@@ -617,8 +671,11 @@ class TestWorkerProcess:
         mocker.patch("multiprocessing.Process.start")
 
         process = WorkerProcess()
+
+        # Act
         process.start()
 
+        # Assert
         mock_get_port.close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -632,12 +689,15 @@ class TestWorkerProcess:
         Then:
             It should call proxy.start() and return the proxy
         """
+        # Arrange
         mock_proxy = mocker.MagicMock()
         mock_proxy.started = False
-        mock_proxy.start = AsyncMock()
+        mock_proxy.start = mocker.AsyncMock()
 
+        # Act
         result = await _proxy_factory(mock_proxy)
 
+        # Assert
         mock_proxy.start.assert_called_once()
         assert result is mock_proxy
 
@@ -654,12 +714,15 @@ class TestWorkerProcess:
         Then:
             It should not call proxy.start() but still return the proxy
         """
+        # Arrange
         mock_proxy = mocker.MagicMock()
         mock_proxy.started = True
-        mock_proxy.start = AsyncMock()
+        mock_proxy.start = mocker.AsyncMock()
 
+        # Act
         result = await _proxy_factory(mock_proxy)
 
+        # Assert
         mock_proxy.start.assert_not_called()
         assert result is mock_proxy
 
@@ -674,11 +737,14 @@ class TestWorkerProcess:
         Then:
             It should call proxy.stop() and complete without error
         """
+        # Arrange
         mock_proxy = mocker.MagicMock()
-        mock_proxy.stop = AsyncMock()
+        mock_proxy.stop = mocker.AsyncMock()
 
+        # Act
         await _proxy_finalizer(mock_proxy)
 
+        # Assert
         mock_proxy.stop.assert_called_once()
 
     @pytest.mark.asyncio
@@ -692,12 +758,14 @@ class TestWorkerProcess:
         Then:
             It should catch the exception and complete without propagating it
         """
+        # Arrange
         mock_proxy = mocker.MagicMock()
-        mock_proxy.stop = AsyncMock(side_effect=Exception("Stop failed"))
+        mock_proxy.stop = mocker.AsyncMock(side_effect=Exception("Stop failed"))
 
-        # Should not raise exception
+        # Act — should not raise exception
         await _proxy_finalizer(mock_proxy)
 
+        # Assert
         mock_proxy.stop.assert_called_once()
 
     def test_run_sets_up_proxy_pool_and_starts_server(self, mocker):
@@ -710,9 +778,9 @@ class TestWorkerProcess:
         Then:
             It should configure proxy pool and start the server
         """
+        # Arrange
         process = WorkerProcess(proxy_pool_ttl=120.0, shutdown_grace_period=30.0)
 
-        # Mock the context variable and ResourcePool
         mock_proxy_pool = mocker.MagicMock()
         mocker.patch("wool.runtime.worker.process.wool.__proxy_pool__", mock_proxy_pool)
 
@@ -721,42 +789,36 @@ class TestWorkerProcess:
             "wool.runtime.worker.process.ResourcePool", return_value=mock_resource_pool
         )
 
-        # Mock gRPC server
-        mock_server = MagicMock()
-        mock_server.add_insecure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.stopped.wait = AsyncMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
+        mock_service = mocker.MagicMock()
+        mock_service.stopped.wait = mocker.AsyncMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Mock pipe
         mock_send = mocker.patch.object(process._set_port, "send")
         mock_close = mocker.patch.object(process._set_port, "close")
 
-        # Let asyncio.run execute _serve
+        # Act
         process.run()
 
-        # Verify ResourcePool was created with correct TTL
+        # Assert
         mock_resource_pool_class.assert_called_once()
         call_kwargs = mock_resource_pool_class.call_args.kwargs
         assert call_kwargs["ttl"] == 120.0
         assert callable(call_kwargs["factory"])
         assert callable(call_kwargs["finalizer"])
 
-        # Verify proxy pool context variable was set
         mock_proxy_pool.set.assert_called_once_with(mock_resource_pool)
 
-        # Verify server lifecycle
         mock_server.start.assert_called_once()
         mock_send.assert_called_once_with(50051)
         mock_close.assert_called_once()
@@ -773,37 +835,34 @@ class TestWorkerProcess:
         Then:
             It should send the port through the pipe
         """
+        # Arrange
         process = WorkerProcess(host="0.0.0.0", port=8080)
 
-        # Mock infrastructure
         mocker.patch("wool.runtime.worker.process.wool.__proxy_pool__")
         mocker.patch("wool.runtime.worker.process.ResourcePool")
 
-        # Mock gRPC server with specific port
-        mock_server = MagicMock()
-        mock_server.add_insecure_port = MagicMock(return_value=8080)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=8080)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.stopped.wait = AsyncMock()
-        mock_service.configure_server = AsyncMock(return_value=8080)
+        mock_service = mocker.MagicMock()
+        mock_service.stopped.wait = mocker.AsyncMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=8080)
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Mock pipe
         mock_send = mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
+        # Act
         process.run()
 
-        # Verify port was sent
+        # Assert
         mock_send.assert_called_once_with(8080)
 
     def test_run_closes_pipe_even_on_error(self, mocker):
@@ -816,41 +875,36 @@ class TestWorkerProcess:
         Then:
             It should still close the pipe and stop server
         """
+        # Arrange
         process = WorkerProcess()
 
-        # Mock infrastructure
         mocker.patch("wool.runtime.worker.process.wool.__proxy_pool__")
         mocker.patch("wool.runtime.worker.process.ResourcePool")
 
-        # Mock gRPC server
-        mock_server = MagicMock()
-        mock_server.add_insecure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.stopped.wait = AsyncMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
+        mock_service = mocker.MagicMock()
+        mock_service.stopped.wait = mocker.AsyncMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Mock pipe with send error
         mocker.patch.object(
             process._set_port, "send", side_effect=Exception("Pipe error")
         )
         mock_close = mocker.patch.object(process._set_port, "close")
 
-        # Should raise the error
+        # Act & assert
         with pytest.raises(Exception, match="Pipe error"):
             process.run()
 
-        # But pipe should still be closed and server stopped
         mock_close.assert_called_once()
         mock_server.stop.assert_called_once()
 
@@ -864,40 +918,37 @@ class TestWorkerProcess:
         Then:
             It should still stop the server gracefully
         """
+        # Arrange
         process = WorkerProcess(shutdown_grace_period=45.0)
 
-        # Mock infrastructure
         mocker.patch("wool.runtime.worker.process.wool.__proxy_pool__")
         mocker.patch("wool.runtime.worker.process.ResourcePool")
 
-        # Mock gRPC server
-        mock_server = MagicMock()
-        mock_server.add_insecure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_stop = mocker.AsyncMock()
         mock_server.stop = mock_stop
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService with error
-        mock_service = MagicMock()
-        mock_service.stopped.wait = AsyncMock(side_effect=Exception("Service error"))
-        mock_service.configure_server = AsyncMock(return_value=50051)
+        mock_service = mocker.MagicMock()
+        mock_service.stopped.wait = mocker.AsyncMock(
+            side_effect=Exception("Service error")
+        )
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Should raise the error
+        # Act & assert
         with pytest.raises(Exception, match="Service error"):
             process.run()
 
-        # But server.stop should still be called with correct grace period
         mock_stop.assert_called_once_with(grace=45.0)
 
     # === SINGLE-PORT ARCHITECTURE TESTS ===
@@ -912,36 +963,32 @@ class TestWorkerProcess:
         Then:
             Only add_insecure_port is called, add_secure_port is not called
         """
-        # Mock server
-        mock_server = MagicMock()
-        mock_server.add_insecure_port = MagicMock(return_value=50051)
-        mock_server.add_secure_port = MagicMock()
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        # Arrange
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
+        mock_server.add_secure_port = mocker.MagicMock()
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create insecure worker
         process = WorkerProcess(host="127.0.0.1", port=0, server_credentials=None)
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Run process (will block, so we need to mock stopped.wait)
+        # Act
         process.run()
 
-        # Verify only insecure port was added
+        # Assert
         mock_server.add_insecure_port.assert_called_once()
         mock_server.add_secure_port.assert_not_called()
 
@@ -955,47 +1002,40 @@ class TestWorkerProcess:
         Then:
             Only add_secure_port is called with credentials, add_insecure_port is not called
         """
-        # Create server credentials
+        # Arrange
         dummy_key = (
             b"-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
         )
         dummy_cert = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
         server_creds = grpc.ssl_server_credentials([(dummy_key, dummy_cert)])
 
-        # Mock server
-        mock_server = MagicMock()
-        mock_server.add_secure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
-        mock_server.add_insecure_port = MagicMock()
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_secure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
+        mock_server.add_insecure_port = mocker.MagicMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create secure worker
         process = WorkerProcess(
             host="127.0.0.1", port=0, server_credentials=server_creds
         )
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify only secure port was added
+        # Assert
         mock_server.add_secure_port.assert_called_once()
         mock_server.add_insecure_port.assert_not_called()
 
@@ -1009,7 +1049,7 @@ class TestWorkerProcess:
         Then:
             Credentials are resolved and add_secure_port is called with resolved credentials
         """
-        # Create callable credentials
+        # Arrange
         dummy_key = (
             b"-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
         )
@@ -1018,37 +1058,32 @@ class TestWorkerProcess:
         def server_creds_factory():
             return grpc.ssl_server_credentials([(dummy_key, dummy_cert)])
 
-        # Mock server
-        mock_server = MagicMock()
-        mock_server.add_secure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_secure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create secure worker with callable
         process = WorkerProcess(
             host="127.0.0.1", port=0, server_credentials=server_creds_factory
         )
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify secure port was added (credentials were resolved)
+        # Assert
         mock_server.add_secure_port.assert_called_once()
 
     def test_serve_secure_worker_random_port_assignment(self, mocker):
@@ -1061,46 +1096,42 @@ class TestWorkerProcess:
         Then:
             A single random port is assigned and returned
         """
+        # Arrange
         dummy_key = (
             b"-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
         )
         dummy_cert = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
         server_creds = grpc.ssl_server_credentials([(dummy_key, dummy_cert)])
 
-        # Mock server to return random port
-        mock_server = MagicMock()
-        mock_server.add_secure_port = MagicMock(return_value=54321)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_secure_port = mocker.MagicMock(return_value=54321)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=54321)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=54321)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create secure worker with port=0
         process = WorkerProcess(
             host="127.0.0.1", port=0, server_credentials=server_creds
         )
 
-        # Mock pipe - capture the port that was sent
         sent_ports = []
         mocker.patch.object(
             process._set_port, "send", side_effect=lambda x: sent_ports.append(x)
         )
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify a port was assigned
+        # Assert
         assert len(sent_ports) == 1
         assert sent_ports[0] == 54321
 
@@ -1114,38 +1145,34 @@ class TestWorkerProcess:
         Then:
             A single random port is assigned and returned
         """
-        # Mock server to return random port
-        mock_server = MagicMock()
-        mock_server.add_insecure_port = MagicMock(return_value=54322)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
+        # Arrange
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=54322)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=54322)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=54322)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create insecure worker with port=0
         process = WorkerProcess(host="127.0.0.1", port=0, server_credentials=None)
 
-        # Mock pipe - capture the port that was sent
         sent_ports = []
         mocker.patch.object(
             process._set_port, "send", side_effect=lambda x: sent_ports.append(x)
         )
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify a port was assigned
+        # Assert
         assert len(sent_ports) == 1
         assert sent_ports[0] == 54322
 
@@ -1159,46 +1186,41 @@ class TestWorkerProcess:
         Then:
             Port number matches the secure port, no additional localhost port exists
         """
+        # Arrange
         dummy_key = (
             b"-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
         )
         dummy_cert = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
         server_creds = grpc.ssl_server_credentials([(dummy_key, dummy_cert)])
 
-        # Mock server
-        mock_server = MagicMock()
-        mock_server.add_secure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
-        mock_server.add_insecure_port = MagicMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_secure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
+        mock_server.add_insecure_port = mocker.MagicMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create secure worker
         process = WorkerProcess(
             host="127.0.0.1", port=0, server_credentials=server_creds
         )
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify no insecure port was added (no dual-port architecture)
+        # Assert
         mock_server.add_insecure_port.assert_not_called()
-        # Verify only one port was added
         assert mock_server.add_secure_port.call_count == 1
 
     def test_serve_no_insecure_backdoor(self, mocker):
@@ -1211,45 +1233,40 @@ class TestWorkerProcess:
         Then:
             Connection fails or is rejected (no insecure fallback port)
         """
+        # Arrange
         dummy_key = (
             b"-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
         )
         dummy_cert = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----"
         server_creds = grpc.ssl_server_credentials([(dummy_key, dummy_cert)])
 
-        # Mock server
-        mock_server = MagicMock()
-        mock_server.add_secure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
-        mock_server.add_insecure_port = MagicMock()
+        mock_server = mocker.MagicMock()
+        mock_server.add_secure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
+        mock_server.add_insecure_port = mocker.MagicMock()
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create secure worker
         process = WorkerProcess(
             host="127.0.0.1", port=0, server_credentials=server_creds
         )
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify no insecure port exists - no backdoor
-        # The key assertion: add_insecure_port was never called
+        # Assert
         mock_server.add_insecure_port.assert_not_called()
 
     @given(has_credentials=st.booleans())
@@ -1264,7 +1281,7 @@ class TestWorkerProcess:
         Then:
             Exactly one port is bound (either secure or insecure, never both)
         """
-        # Create credentials if needed
+        # Arrange
         if has_credentials:
             dummy_key = (
                 b"-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----"
@@ -1274,43 +1291,37 @@ class TestWorkerProcess:
         else:
             server_creds = None
 
-        # Mock server
-        mock_server = MagicMock()
-        mock_server.add_secure_port = MagicMock(return_value=50051)
-        mock_server.start = AsyncMock()
-        mock_server.stop = AsyncMock()
-        mock_server.add_insecure_port = MagicMock(return_value=50051)
+        mock_server = mocker.MagicMock()
+        mock_server.add_secure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
         mocker.patch("grpc.aio.server", return_value=mock_server)
 
-        # Mock WorkerService
-        mock_service = MagicMock()
-        mock_service.configure_server = AsyncMock(return_value=50051)
-        mock_service.stopped.wait = AsyncMock()
+        mock_service = mocker.MagicMock()
+        mock_service.configure_server = mocker.AsyncMock(return_value=50051)
+        mock_service.stopped.wait = mocker.AsyncMock()
         mocker.patch(
             "wool.runtime.worker.process.WorkerService", return_value=mock_service
         )
 
-        # Mock signal handlers
         mocker.patch("wool.runtime.worker.process._signal_handlers")
 
-        # Create worker
         process = WorkerProcess(
             host="127.0.0.1", port=0, server_credentials=server_creds
         )
 
-        # Mock pipe
         mocker.patch.object(process._set_port, "send")
         mocker.patch.object(process._set_port, "close")
 
-        # Run process
+        # Act
         process.run()
 
-        # Verify exactly one port binding method was called
+        # Assert
         secure_calls = mock_server.add_secure_port.call_count
         insecure_calls = mock_server.add_insecure_port.call_count
         assert secure_calls + insecure_calls == 1, "Exactly one port must be bound"
 
-        # Verify correct method was called based on credentials
         if has_credentials:
             assert secure_calls == 1, "Secure worker must use secure port"
             assert insecure_calls == 0, "Secure worker must not have insecure port"

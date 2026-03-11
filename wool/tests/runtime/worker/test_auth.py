@@ -125,69 +125,91 @@ class TestWorkerCredentials:
 
     # === WTC-001 through WTC-006: Basic instantiation tests ===
 
-    def test_instantiation_with_mtls(self, test_certificates):
-        """WTC-001: Basic instantiation with mTLS.
+    def test___init___with_mtls(self, test_certificates):
+        """Test basic instantiation with mTLS.
 
-        GIVEN CA cert, worker key, and worker cert as bytes
-        WHEN WorkerCredentials is instantiated with mutual=True
-        THEN Instance is created with all fields set correctly
+        Given:
+            CA cert, worker key, and worker cert as bytes.
+        When:
+            WorkerCredentials is instantiated with mutual=True.
+        Then:
+            Instance is created with all fields set correctly.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
 
+        # Act
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Assert
         assert creds.ca_cert == ca_pem
         assert creds.worker_key == key_pem
         assert creds.worker_cert == cert_pem
         assert creds.mutual is True
 
-    def test_instantiation_with_one_way_tls(self, test_certificates):
-        """WTC-002: Instantiation with one-way TLS.
+    def test___init___with_one_way_tls(self, test_certificates):
+        """Test instantiation with one-way TLS.
 
-        GIVEN CA cert, worker key, and worker cert as bytes
-        WHEN WorkerCredentials is instantiated with mutual=False
-        THEN Instance is created with mutual field set to False
+        Given:
+            CA cert, worker key, and worker cert as bytes.
+        When:
+            WorkerCredentials is instantiated with mutual=False.
+        Then:
+            Instance is created with mutual field set to False.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
 
+        # Act
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=False
         )
 
+        # Assert
         assert creds.mutual is False
 
-    def test_immutability_via_frozen_dataclass(self, test_certificates):
-        """WTC-003: Immutability via frozen dataclass.
+    def test___init___frozen_dataclass_immutability(self, test_certificates):
+        """Test immutability via frozen dataclass.
 
-        GIVEN WorkerCredentials instance is created
-        WHEN Attempting to modify fields
-        THEN FrozenInstanceError or AttributeError is raised
+        Given:
+            WorkerCredentials instance is created.
+        When:
+            Attempting to modify fields.
+        Then:
+            FrozenInstanceError or AttributeError is raised.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Act & assert
         # Dataclasses raise FrozenInstanceError or AttributeError
         with pytest.raises((FrozenInstanceError, AttributeError)):
             creds.mutual = False
 
     def test_from_files_with_mtls(self, temp_cert_files):
-        """WTC-004: from_files classmethod with mTLS.
+        """Test from_files classmethod with mTLS.
 
-        GIVEN Valid PEM file paths for CA, key, and cert
-        WHEN from_files() is called with mutual=True
-        THEN WorkerCredentials instance is created with loaded bytes
+        Given:
+            Valid PEM file paths for CA, key, and cert.
+        When:
+            from_files() is called with mutual=True.
+        Then:
+            WorkerCredentials instance is created with loaded bytes.
         """
+        # Arrange
         ca_path, key_path, cert_path = temp_cert_files
 
+        # Act
         creds = WorkerCredentials.from_files(
             ca_path=ca_path, key_path=key_path, cert_path=cert_path, mutual=True
         )
 
+        # Assert
         assert isinstance(creds, WorkerCredentials)
         assert len(creds.ca_cert) > 0
         assert len(creds.worker_key) > 0
@@ -195,93 +217,123 @@ class TestWorkerCredentials:
         assert creds.mutual is True
 
     def test_from_files_with_one_way_tls(self, temp_cert_files):
-        """WTC-005: from_files classmethod with one-way TLS.
+        """Test from_files classmethod with one-way TLS.
 
-        GIVEN Valid PEM file paths for CA, key, and cert
-        WHEN from_files() is called with mutual=False
-        THEN WorkerCredentials instance is created with mutual=False
+        Given:
+            Valid PEM file paths for CA, key, and cert.
+        When:
+            from_files() is called with mutual=False.
+        Then:
+            WorkerCredentials instance is created with mutual=False.
         """
+        # Arrange
         ca_path, key_path, cert_path = temp_cert_files
 
+        # Act
         creds = WorkerCredentials.from_files(
             ca_path=ca_path, key_path=key_path, cert_path=cert_path, mutual=False
         )
 
+        # Assert
         assert creds.mutual is False
 
     def test_from_files_default_mutual_parameter(self, temp_cert_files):
-        """WTC-006: Default mutual=True parameter.
+        """Test default mutual=True parameter.
 
-        GIVEN PEM files with valid TLS certificates
-        WHEN from_files() is called with default mutual parameter
-        THEN Instance is created with mutual=True (default)
+        Given:
+            PEM files with valid TLS certificates.
+        When:
+            from_files() is called with default mutual parameter.
+        Then:
+            Instance is created with mutual=True (default).
         """
+        # Arrange
         ca_path, key_path, cert_path = temp_cert_files
 
+        # Act
         creds = WorkerCredentials.from_files(
             ca_path=ca_path, key_path=key_path, cert_path=cert_path
         )
 
+        # Assert
         assert creds.mutual is True
 
     # === WTC-007 through WTC-010: Error handling ===
 
     def test_from_files_missing_ca_cert(self, temp_cert_files):
-        """WTC-007: Missing CA file error handling.
+        """Test missing CA file error handling.
 
-        GIVEN Non-existent CA certificate file path
-        WHEN from_files() is called
-        THEN FileNotFoundError is raised
+        Given:
+            Non-existent CA certificate file path.
+        When:
+            from_files() is called.
+        Then:
+            FileNotFoundError is raised.
         """
+        # Arrange
         _, key_path, cert_path = temp_cert_files
 
+        # Act & assert
         with pytest.raises(FileNotFoundError):
             WorkerCredentials.from_files(
                 ca_path="/nonexistent/ca.pem", key_path=key_path, cert_path=cert_path
             )
 
     def test_from_files_missing_key(self, temp_cert_files):
-        """WTC-008: Missing key file error handling.
+        """Test missing key file error handling.
 
-        GIVEN Non-existent worker key file path
-        WHEN from_files() is called
-        THEN FileNotFoundError is raised
+        Given:
+            Non-existent worker key file path.
+        When:
+            from_files() is called.
+        Then:
+            FileNotFoundError is raised.
         """
+        # Arrange
         ca_path, _, cert_path = temp_cert_files
 
+        # Act & assert
         with pytest.raises(FileNotFoundError):
             WorkerCredentials.from_files(
                 ca_path=ca_path, key_path="/nonexistent/key.pem", cert_path=cert_path
             )
 
     def test_from_files_missing_cert(self, temp_cert_files):
-        """WTC-009: Missing cert file error handling.
+        """Test missing cert file error handling.
 
-        GIVEN Non-existent worker cert file path
-        WHEN from_files() is called
-        THEN FileNotFoundError is raised
+        Given:
+            Non-existent worker cert file path.
+        When:
+            from_files() is called.
+        Then:
+            FileNotFoundError is raised.
         """
+        # Arrange
         ca_path, key_path, _ = temp_cert_files
 
+        # Act & assert
         with pytest.raises(FileNotFoundError):
             WorkerCredentials.from_files(
                 ca_path=ca_path, key_path=key_path, cert_path="/nonexistent/cert.pem"
             )
 
     def test_from_files_permission_error(self, temp_cert_files, tmp_path):
-        """WTC-010: Permission error handling.
+        """Test permission error handling.
 
-        GIVEN File path with insufficient read permissions
-        WHEN from_files() is called
-        THEN OSError is raised
+        Given:
+            File path with insufficient read permissions.
+        When:
+            from_files() is called.
+        Then:
+            OSError is raised.
         """
+        # Arrange
         ca_path, key_path, cert_path = temp_cert_files
-
-        # Create a file with no read permissions
         restricted_file = tmp_path / "restricted.pem"
         restricted_file.write_bytes(b"dummy")
         restricted_file.chmod(0o000)
 
+        # Act & assert
         try:
             with pytest.raises((OSError, PermissionError)):
                 WorkerCredentials.from_files(
@@ -293,129 +345,168 @@ class TestWorkerCredentials:
 
     # === WTC-011 through WTC-017: Credential property tests ===
 
-    def test_server_credentials_property_mtls(self, test_certificates):
-        """WTC-011: Server credentials property for mTLS.
+    def test_server_credentials_with_mtls(self, test_certificates):
+        """Test server credentials property for mTLS.
 
-        GIVEN WorkerCredentials with mutual=True
-        WHEN server_credentials property is accessed
-        THEN Returns grpc.ServerCredentials configured for mTLS
+        Given:
+            WorkerCredentials with mutual=True.
+        When:
+            server_credentials property is accessed.
+        Then:
+            Returns grpc.ServerCredentials configured for mTLS.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Act
         server_creds = creds.server_credentials
 
+        # Assert
         assert isinstance(server_creds, grpc.ServerCredentials)
 
-    def test_server_credentials_property_one_way_tls(self, test_certificates):
-        """WTC-012: Server credentials property for one-way TLS.
+    def test_server_credentials_with_one_way_tls(self, test_certificates):
+        """Test server credentials property for one-way TLS.
 
-        GIVEN WorkerCredentials with mutual=False
-        WHEN server_credentials property is accessed
-        THEN Returns grpc.ServerCredentials configured for one-way TLS
+        Given:
+            WorkerCredentials with mutual=False.
+        When:
+            server_credentials property is accessed.
+        Then:
+            Returns grpc.ServerCredentials configured for one-way TLS.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=False
         )
 
+        # Act
         server_creds = creds.server_credentials
 
+        # Assert
         assert isinstance(server_creds, grpc.ServerCredentials)
 
-    def test_client_credentials_property_mtls(self, test_certificates):
-        """WTC-013: Client credentials property for mTLS.
+    def test_client_credentials_with_mtls(self, test_certificates):
+        """Test client credentials property for mTLS.
 
-        GIVEN WorkerCredentials with mutual=True
-        WHEN client_credentials property is accessed
-        THEN Returns grpc.ChannelCredentials with worker cert and key
+        Given:
+            WorkerCredentials with mutual=True.
+        When:
+            client_credentials property is accessed.
+        Then:
+            Returns grpc.ChannelCredentials with worker cert and key.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Act
         client_creds = creds.client_credentials
 
+        # Assert
         assert isinstance(client_creds, grpc.ChannelCredentials)
 
-    def test_client_credentials_property_one_way_tls(self, test_certificates):
-        """WTC-014: Client credentials property for one-way TLS.
+    def test_client_credentials_with_one_way_tls(self, test_certificates):
+        """Test client credentials property for one-way TLS.
 
-        GIVEN WorkerCredentials with mutual=False
-        WHEN client_credentials property is accessed
-        THEN Returns grpc.ChannelCredentials without worker cert (anonymous)
+        Given:
+            WorkerCredentials with mutual=False.
+        When:
+            client_credentials property is accessed.
+        Then:
+            Returns grpc.ChannelCredentials without worker cert (anonymous).
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=False
         )
 
+        # Act
         client_creds = creds.client_credentials
 
+        # Assert
         assert isinstance(client_creds, grpc.ChannelCredentials)
 
-    def test_bidirectional_credential_generation(self, test_certificates):
-        """WTC-015: Bidirectional credential generation.
+    def test_server_credentials_and_client_credentials_bidirectional(
+        self, test_certificates
+    ):
+        """Test bidirectional credential generation.
 
-        GIVEN Same certificate files used for server and client
-        WHEN Both server_credentials and client_credentials properties are accessed
-        THEN Both return valid credentials using the same underlying certificates
+        Given:
+            Same certificate files used for server and client.
+        When:
+            Both server_credentials and client_credentials properties
+            are accessed.
+        Then:
+            Both return valid credentials using the same underlying
+            certificates.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Act
         server_creds = creds.server_credentials
         client_creds = creds.client_credentials
 
+        # Assert
         assert isinstance(server_creds, grpc.ServerCredentials)
         assert isinstance(client_creds, grpc.ChannelCredentials)
 
-    def test_server_credentials_property_idempotency(self, test_certificates):
-        """WTC-016: Server credentials property idempotency.
+    def test_server_credentials_idempotent_access(self, test_certificates):
+        """Test server credentials property idempotency.
 
-        GIVEN WorkerCredentials with valid certificates
-        WHEN server_credentials property is accessed multiple times
-        THEN Returns consistent grpc.ServerCredentials on each access
+        Given:
+            WorkerCredentials with valid certificates.
+        When:
+            server_credentials property is accessed multiple times.
+        Then:
+            Returns consistent grpc.ServerCredentials on each access.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Act
         server_creds_1 = creds.server_credentials
         server_creds_2 = creds.server_credentials
 
+        # Assert
         # Should return credentials each time (may not be same object)
         assert isinstance(server_creds_1, grpc.ServerCredentials)
         assert isinstance(server_creds_2, grpc.ServerCredentials)
 
-    def test_client_credentials_property_idempotency(self, test_certificates):
-        """WTC-017: Client credentials property idempotency.
+    def test_client_credentials_idempotent_access(self, test_certificates):
+        """Test client credentials property idempotency.
 
-        GIVEN WorkerCredentials with valid certificates
-        WHEN client_credentials property is accessed multiple times
-        THEN Returns consistent grpc.ChannelCredentials on each access
+        Given:
+            WorkerCredentials with valid certificates.
+        When:
+            client_credentials property is accessed multiple times.
+        Then:
+            Returns consistent grpc.ChannelCredentials on each access.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
-
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=True
         )
 
+        # Act
         client_creds_1 = creds.client_credentials
         client_creds_2 = creds.client_credentials
 
+        # Assert
         # Should return credentials each time (may not be same object)
         assert isinstance(client_creds_1, grpc.ChannelCredentials)
         assert isinstance(client_creds_2, grpc.ChannelCredentials)
@@ -424,30 +515,37 @@ class TestWorkerCredentials:
 
     @given(mutual=st.booleans())
     @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_credential_properties_idempotency(self, mutual, test_certificates):
-        """WTC-018: Property-based test for credential property idempotency.
+    def test_server_credentials_and_client_credentials_type_consistency(
+        self, mutual, test_certificates
+    ):
+        """Test property-based credential property idempotency.
 
-        GIVEN WorkerCredentials with valid certificates and any mutual flag value
-        WHEN server_credentials and client_credentials are accessed multiple times
-        THEN Both properties consistently return the same credential types
+        Given:
+            WorkerCredentials with valid certificates and any mutual
+            flag value.
+        When:
+            server_credentials and client_credentials are accessed
+            multiple times.
+        Then:
+            Both properties consistently return the same credential
+            types.
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=mutual
         )
 
-        # Property: Multiple accesses return consistent types
+        # Act
         server1 = creds.server_credentials
         server2 = creds.server_credentials
         client1 = creds.client_credentials
         client2 = creds.client_credentials
 
-        # Type consistency check
+        # Assert
         assert isinstance(server1, grpc.ServerCredentials)
         assert isinstance(server2, grpc.ServerCredentials)
         assert isinstance(client1, grpc.ChannelCredentials)
         assert isinstance(client2, grpc.ChannelCredentials)
-
-        # Verify they're the same type (both should be consistent)
         assert type(server1) == type(server2)
         assert type(client1) == type(client2)
