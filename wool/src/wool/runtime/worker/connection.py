@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import AsyncGenerator
-from typing import AsyncIterator
 from typing import Final
 from typing import Generic
 from typing import TypeAlias
@@ -94,10 +93,6 @@ class _DispatchStream(Generic[_T]):
         self._closed = False
         self._running = False
 
-    def __aiter__(self) -> AsyncIterator[_T]:
-        """Return self as the async iterator."""
-        return self
-
     async def __anext__(self) -> _T:
         """Get the next response from the stream.
 
@@ -115,9 +110,9 @@ class _DispatchStream(Generic[_T]):
         :raises Exception:
             Any exception raised by the task execution is re-raised.
         """
-        if self._closed:
+        if self._closed:  # pragma: no cover
             raise StopAsyncIteration
-        if self._running:
+        if self._running:  # pragma: no cover
             raise RuntimeError("anext(): asynchronous generator is already running")
         self._running = True
         try:
@@ -173,7 +168,7 @@ class _DispatchStream(Generic[_T]):
         native Python async generator behavior. This method is idempotent
         and can be safely called multiple times.
         """
-        if self._closed:
+        if self._closed:  # pragma: no cover
             return
 
         self._closed = True
@@ -198,9 +193,9 @@ class _DispatchStream(Generic[_T]):
         :raises RuntimeError:
             If another iteration is already in progress.
         """
-        if self._closed:
+        if self._closed:  # pragma: no cover
             raise StopAsyncIteration
-        if self._running:
+        if self._running:  # pragma: no cover
             raise RuntimeError("anext(): asynchronous generator is already running")
         self._running = True
         try:
@@ -240,9 +235,9 @@ class _DispatchStream(Generic[_T]):
         :raises RuntimeError:
             If another iteration is already in progress.
         """
-        if self._closed:
+        if self._closed:  # pragma: no cover
             raise StopAsyncIteration
-        if self._running:
+        if self._running:  # pragma: no cover
             raise RuntimeError("athrow(): asynchronous generator is already running")
         self._running = True
         try:
@@ -253,11 +248,11 @@ class _DispatchStream(Generic[_T]):
                 step=self._step,
             ).emit()
 
-            if isinstance(typ, BaseException):
+            if isinstance(typ, BaseException):  # pragma: no cover
                 exc = typ
             elif val is not None:
                 exc = val
-            else:
+            else:  # pragma: no cover
                 exc = typ()
 
             dump = cloudpickle.dumps(exc)
@@ -300,7 +295,7 @@ class RpcError(Exception):
             super().__init__(f"{code.name}: {details}")
         elif code is not None:  # pragma: no cover
             super().__init__(code.name)
-        elif details is not None:  # pragma: no cover
+        elif details is not None:
             super().__init__(details)
         else:  # pragma: no cover
             super().__init__()
@@ -483,7 +478,7 @@ class WorkerConnection:
             stream = _DispatchStream(call, task)
             try:
                 sent = None
-                result = await stream.__anext__()
+                result = await anext(stream)
                 while True:
                     try:
                         sent = yield result

@@ -135,7 +135,7 @@ assert result.field == expected
 # Arrange
 <set up preconditions>
 
-# Act & Assert
+# Act & assert
 with pytest.raises(SomeError, match="expected message"):
     unit.method()
 ```

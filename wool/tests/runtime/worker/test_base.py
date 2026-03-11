@@ -1,7 +1,6 @@
 import uuid
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import AsyncMock
 
 import grpc
 import pytest
@@ -49,7 +48,7 @@ class ConcreteWorker(Worker):
 class TestWorker:
     """Test suite for Worker abstract base class."""
 
-    def test_init_assigns_unique_uid(self):
+    def test___init___assigns_unique_uid(self):
         """Test Worker initialization assigns a unique UUID.
 
         Given:
@@ -59,10 +58,13 @@ class TestWorker:
         Then:
             It should have a unique UUID assigned
         """
+        # Act
         worker = ConcreteWorker()
+
+        # Assert
         assert isinstance(worker.uid, uuid.UUID)
 
-    def test_init_stores_tags_as_set(self, worker_tags):
+    def test___init___stores_tags_as_set(self, worker_tags):
         """Test Worker initialization stores tags as a set.
 
         Given:
@@ -72,10 +74,13 @@ class TestWorker:
         Then:
             Tags should be stored as a set
         """
+        # Act
         worker = ConcreteWorker(*worker_tags)
+
+        # Assert
         assert worker.tags == set(worker_tags)
 
-    def test_init_stores_extra_metadata(self, worker_extra):
+    def test___init___stores_extra_metadata(self, worker_extra):
         """Test Worker initialization stores extra metadata.
 
         Given:
@@ -85,10 +90,13 @@ class TestWorker:
         Then:
             Metadata should be stored and accessible
         """
+        # Act
         worker = ConcreteWorker(**worker_extra)
+
+        # Assert
         assert worker.extra == worker_extra
 
-    def test_info_property_returns_none_before_start(self):
+    def test_metadata_returns_none_before_start(self):
         """Test Worker info property returns None before starting.
 
         Given:
@@ -98,7 +106,10 @@ class TestWorker:
         Then:
             It should return None
         """
+        # Act
         worker = ConcreteWorker()
+
+        # Assert
         assert worker.metadata is None
 
     @pytest.mark.asyncio
@@ -112,15 +123,23 @@ class TestWorker:
         Then:
             It should call the _start implementation
         """
+        # Arrange
         worker = ConcreteWorker()
 
         async def mock_start_impl(timeout):
             worker._info = metadata
 
         mock_start = mocker.patch.object(
-            worker, "_start", side_effect=mock_start_impl, new_callable=AsyncMock
+            worker,
+            "_start",
+            side_effect=mock_start_impl,
+            new_callable=mocker.AsyncMock,
         )
+
+        # Act
         await worker.start(timeout=60.0)
+
+        # Assert
         mock_start.assert_called_once_with(timeout=60.0)
 
     @pytest.mark.asyncio
@@ -134,8 +153,13 @@ class TestWorker:
         Then:
             The worker should be operational (info is set)
         """
+        # Arrange
         worker = ConcreteWorker()
+
+        # Act
         await worker.start()
+
+        # Assert
         assert worker.metadata is not None
 
     @pytest.mark.asyncio
@@ -149,8 +173,11 @@ class TestWorker:
         Then:
             It should raise RuntimeError
         """
+        # Arrange
         worker = ConcreteWorker()
         await worker.start()
+
+        # Act & assert
         with pytest.raises(RuntimeError, match="already been started"):
             await worker.start()
 
@@ -165,7 +192,10 @@ class TestWorker:
         Then:
             It should raise ValueError
         """
+        # Arrange
         worker = ConcreteWorker()
+
+        # Act & assert
         with pytest.raises(ValueError, match="Timeout must be positive"):
             await worker.start(timeout=0)
 
@@ -181,12 +211,17 @@ class TestWorker:
         Then:
             It should complete without error and worker should be operational
         """
+        # Arrange
         worker = ConcreteWorker()
+
+        # Act
         await worker.start(timeout=timeout)
+
+        # Assert
         assert worker.metadata is not None
 
     @given(count=st.integers(min_value=2, max_value=100))
-    def test_multiple_workers_have_unique_uids(self, count):
+    def test___init___multiple_instances_have_unique_uids(self, count):
         """Test multiple Workers get unique UIDs.
 
         Given:
@@ -196,12 +231,15 @@ class TestWorker:
         Then:
             All should have unique UIDs
         """
+        # Act
         workers = [ConcreteWorker() for _ in range(count)]
         uids = [w.uid for w in workers]
+
+        # Assert
         assert len(uids) == len(set(uids))  # All unique
 
     @given(tags=st.lists(st.text(min_size=1, max_size=20), min_size=1, max_size=10))
-    def test_init_deduplicates_tags(self, tags):
+    def test___init___deduplicates_tags(self, tags):
         """Test Worker initialization deduplicates tags.
 
         Given:
@@ -211,7 +249,10 @@ class TestWorker:
         Then:
             Tags should be stored as a unique set
         """
+        # Act
         worker = ConcreteWorker(*tags)
+
+        # Assert
         assert len(worker.tags) == len(set(tags))
         assert worker.tags == set(tags)
 
@@ -234,7 +275,7 @@ class TestWorker:
             max_size=10,
         )
     )
-    def test_init_preserves_extra_metadata(self, extra):
+    def test___init___preserves_extra_metadata(self, extra):
         """Test Worker preserves arbitrary extra metadata.
 
         Given:
@@ -244,7 +285,10 @@ class TestWorker:
         Then:
             Metadata should be stored exactly as provided
         """
+        # Act
         worker = ConcreteWorker(**extra)
+
+        # Assert
         assert worker.extra == extra
 
     @pytest.mark.asyncio
@@ -258,10 +302,19 @@ class TestWorker:
         Then:
             It should call the _stop implementation
         """
+        # Arrange
         worker = ConcreteWorker()
         await worker.start()
-        mock_stop = mocker.patch.object(worker, "_stop", new_callable=AsyncMock)
+        mock_stop = mocker.patch.object(
+            worker,
+            "_stop",
+            new_callable=mocker.AsyncMock,
+        )
+
+        # Act
         await worker.stop(timeout=60.0)
+
+        # Assert
         mock_stop.assert_called_once_with(60.0)
 
     @pytest.mark.asyncio
@@ -275,11 +328,15 @@ class TestWorker:
         Then:
             The worker should be able to start again
         """
+        # Arrange
         worker = ConcreteWorker()
         await worker.start()
+
+        # Act
         await worker.stop()
-        # Should be able to start again without error
         await worker.start()
+
+        # Assert
         assert worker.metadata is not None
 
     @pytest.mark.asyncio
@@ -293,7 +350,10 @@ class TestWorker:
         Then:
             It should raise RuntimeError
         """
+        # Arrange
         worker = ConcreteWorker()
+
+        # Act & assert
         with pytest.raises(RuntimeError, match="has not been started"):
             await worker.stop()
 
@@ -308,16 +368,31 @@ class TestWorker:
         Then:
             The worker should still be able to restart
         """
+        # Arrange
         worker = ConcreteWorker()
         await worker.start()
         mocker.patch.object(
-            worker, "_stop", side_effect=Exception("Stop failed"), new_callable=AsyncMock
+            worker,
+            "_stop",
+            side_effect=Exception("Stop failed"),
+            new_callable=mocker.AsyncMock,
         )
+
+        # Act & assert
         with pytest.raises(Exception, match="Stop failed"):
             await worker.stop()
-        # Should still be able to restart despite error
-        mocker.patch.object(worker, "_stop", new_callable=AsyncMock)
+
+        # Arrange (restart)
+        mocker.patch.object(
+            worker,
+            "_stop",
+            new_callable=mocker.AsyncMock,
+        )
+
+        # Act
         await worker.start()
+
+        # Assert
         assert worker.metadata is not None
 
 
@@ -334,7 +409,10 @@ class TestWorkerLike:
         Then:
             It should return True
         """
+        # Act
         worker = ConcreteWorker()
+
+        # Assert
         assert isinstance(worker, WorkerLike)
 
     def test_isinstance_check_for_incompatible_implementation(self):
@@ -348,13 +426,17 @@ class TestWorkerLike:
             It should return False
         """
 
+        # Arrange
         class IncompatibleWorker:
             """Class missing required WorkerLike methods."""
 
             def __init__(self):
                 self.uid = uuid.uuid4()
 
+        # Act
         incompatible = IncompatibleWorker()
+
+        # Assert
         assert not isinstance(incompatible, WorkerLike)
 
 
@@ -372,9 +454,11 @@ class TestWorkerFactory:
             It should return True
         """
 
+        # Arrange
         def factory(*tags: str, **_) -> WorkerLike:
             return ConcreteWorker(*tags)
 
+        # Act & assert
         assert isinstance(factory, WorkerFactory)
 
     def test_isinstance_check_for_incompatible_factory(self):
@@ -393,10 +477,12 @@ class TestWorkerFactory:
             known limitation of Protocol type checking.
         """
 
+        # Arrange
         def incompatible_factory() -> str:
             """Factory with wrong signature."""
             return "not a worker"
 
+        # Act & assert
         # Protocol only checks for __call__ existence, not signature
         assert isinstance(incompatible_factory, WorkerFactory)
 
@@ -410,7 +496,10 @@ class TestWorkerFactory:
         Then:
             It should return False
         """
+        # Act
         not_a_factory = "not callable"
+
+        # Assert
         assert not isinstance(not_a_factory, WorkerFactory)
 
 
@@ -440,261 +529,285 @@ def channel_credentials():
     return grpc.ssl_channel_credentials()
 
 
-class TestResolveServerCredentials:
-    """Test suite for resolve_server_credentials function."""
-
-    @pytest.mark.parametrize(
-        "input_value,expected_result",
-        [
-            (None, None),
-            pytest.param(
-                "server_credentials",
-                "server_credentials",
-                id="direct_credentials",
-            ),
-        ],
-    )
-    def test_resolve_direct_values(
-        self, input_value, expected_result, server_credentials
-    ):
-        """Test resolve_server_credentials with direct values.
-
-        Given:
-            None or ServerCredentials instance
-        When:
-            resolve_server_credentials is called
-        Then:
-            Returns the input unchanged
-        """
-        # Handle fixture indirection
-        if input_value == "server_credentials":
-            input_value = server_credentials
-            expected_result = server_credentials
-
-        result = resolve_server_credentials(input_value)
-        assert result is expected_result
-
-    @pytest.mark.parametrize(
-        "return_value,expected_result",
-        [
-            (None, None),
-            pytest.param(
-                "server_credentials",
-                "server_credentials",
-                id="valid_credentials",
-            ),
-        ],
-    )
-    def test_resolve_callable_valid_returns(
-        self, return_value, expected_result, server_credentials
-    ):
-        """Test resolve_server_credentials with callable returning valid values.
-
-        Given:
-            Callable returning None or ServerCredentials
-        When:
-            resolve_server_credentials is called
-        Then:
-            Returns result from calling the callable
-        """
-        # Handle fixture indirection
-        if return_value == "server_credentials":
-            return_value = server_credentials
-            expected_result = server_credentials
-
-        callable_creds = lambda: return_value
-        result = resolve_server_credentials(callable_creds)
-        assert result is expected_result
-
-    @pytest.mark.parametrize(
-        "invalid_value,error_pattern",
-        [
-            ("invalid", "Server credentials callable"),
-            (42, r"grpc\.ServerCredentials.*got <class 'int'>"),
-        ],
-    )
-    def test_resolve_callable_invalid_returns(self, invalid_value, error_pattern):
-        """Test resolve_server_credentials with callable returning invalid types.
-
-        Given:
-            Callable returning non-ServerCredentials type
-        When:
-            resolve_server_credentials is called
-        Then:
-            Raises TypeError with appropriate message
-        """
-        callable_creds = lambda: invalid_value
-        with pytest.raises(TypeError, match=error_pattern):
-            resolve_server_credentials(callable_creds)
-
-    @given(
-        input_type=st.sampled_from(
-            ["none", "direct", "callable_none", "callable_creds"]
+@pytest.mark.parametrize(
+    "input_value,expected_result",
+    [
+        (None, None),
+        pytest.param(
+            "server_credentials",
+            "server_credentials",
+            id="direct_credentials",
         ),
-        call_count=st.integers(min_value=1, max_value=5),
-    )
-    @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_idempotency_and_type_safety_property(
-        self, input_type, call_count, server_credentials
-    ):
-        """Test resolve_server_credentials idempotency and type safety.
+    ],
+)
+def test_resolve_server_credentials_direct_values(
+    input_value, expected_result, server_credentials
+):
+    """Test resolve_server_credentials with direct values.
 
-        Given:
-            Any valid input (None, credentials, or callable)
-        When:
-            resolve_server_credentials is called multiple times
-        Then:
-            - All results are identical (idempotent)
-            - All results are ServerCredentials or None (type safe)
-        """
-        # Create input based on type
-        if input_type == "none":
-            input_val = None
-        elif input_type == "direct":
-            input_val = server_credentials
-        elif input_type == "callable_none":
-            input_val = lambda: None
-        else:  # callable_creds
-            input_val = lambda: server_credentials
+    Given:
+        None or ServerCredentials instance
+    When:
+        resolve_server_credentials is called
+    Then:
+        Returns the input unchanged
+    """
+    # Arrange
+    if input_value == "server_credentials":
+        input_value = server_credentials
+        expected_result = server_credentials
 
-        # Property: Multiple calls return consistent results
-        results = [resolve_server_credentials(input_val) for _ in range(call_count)]
+    # Act
+    result = resolve_server_credentials(input_value)
 
-        # Property 1: Idempotency
-        assert all(r == results[0] for r in results), "Results must be identical"
-
-        # Property 2: Type safety
-        for result in results:
-            assert result is None or isinstance(result, grpc.ServerCredentials), (
-                "Result must be ServerCredentials or None"
-            )
+    # Assert
+    assert result is expected_result
 
 
-class TestResolveChannelCredentials:
-    """Test suite for resolve_channel_credentials function."""
-
-    @pytest.mark.parametrize(
-        "input_value,expected_result",
-        [
-            (None, None),
-            pytest.param(
-                "channel_credentials",
-                "channel_credentials",
-                id="direct_credentials",
-            ),
-        ],
-    )
-    def test_resolve_direct_values(
-        self, input_value, expected_result, channel_credentials
-    ):
-        """Test resolve_channel_credentials with direct values.
-
-        Given:
-            None or ChannelCredentials instance
-        When:
-            resolve_channel_credentials is called
-        Then:
-            Returns the input unchanged
-        """
-        # Handle fixture indirection
-        if input_value == "channel_credentials":
-            input_value = channel_credentials
-            expected_result = channel_credentials
-
-        result = resolve_channel_credentials(input_value)
-        assert result is expected_result
-
-    @pytest.mark.parametrize(
-        "return_value,expected_result",
-        [
-            (None, None),
-            pytest.param(
-                "channel_credentials",
-                "channel_credentials",
-                id="valid_credentials",
-            ),
-        ],
-    )
-    def test_resolve_callable_valid_returns(
-        self, return_value, expected_result, channel_credentials
-    ):
-        """Test resolve_channel_credentials with callable returning valid values.
-
-        Given:
-            Callable returning None or ChannelCredentials
-        When:
-            resolve_channel_credentials is called
-        Then:
-            Returns result from calling the callable
-        """
-        # Handle fixture indirection
-        if return_value == "channel_credentials":
-            return_value = channel_credentials
-            expected_result = channel_credentials
-
-        callable_creds = lambda: return_value
-        result = resolve_channel_credentials(callable_creds)
-        assert result is expected_result
-
-    @pytest.mark.parametrize(
-        "invalid_value,error_pattern",
-        [
-            ("invalid", "Channel credentials callable"),
-            (42, r"grpc\.ChannelCredentials.*got <class 'int'>"),
-        ],
-    )
-    def test_resolve_callable_invalid_returns(self, invalid_value, error_pattern):
-        """Test resolve_channel_credentials with callable returning invalid types.
-
-        Given:
-            Callable returning non-ChannelCredentials type
-        When:
-            resolve_channel_credentials is called
-        Then:
-            Raises TypeError with appropriate message
-        """
-        callable_creds = lambda: invalid_value
-        with pytest.raises(TypeError, match=error_pattern):
-            resolve_channel_credentials(callable_creds)
-
-    @given(
-        input_type=st.sampled_from(
-            ["none", "direct", "callable_none", "callable_creds"]
+@pytest.mark.parametrize(
+    "return_value,expected_result",
+    [
+        (None, None),
+        pytest.param(
+            "server_credentials",
+            "server_credentials",
+            id="valid_credentials",
         ),
-        call_count=st.integers(min_value=1, max_value=5),
-    )
-    @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_idempotency_and_type_safety_property(
-        self, input_type, call_count, channel_credentials
-    ):
-        """Test resolve_channel_credentials idempotency and type safety.
+    ],
+)
+def test_resolve_server_credentials_callable_valid_returns(
+    return_value, expected_result, server_credentials
+):
+    """Test resolve_server_credentials with callable returning valid values.
 
-        Given:
-            Any valid input (None, credentials, or callable)
-        When:
-            resolve_channel_credentials is called multiple times
-        Then:
-            - All results are identical (idempotent)
-            - All results are ChannelCredentials or None (type safe)
-        """
-        # Create input based on type
-        if input_type == "none":
-            input_val = None
-        elif input_type == "direct":
-            input_val = channel_credentials
-        elif input_type == "callable_none":
-            input_val = lambda: None
-        else:  # callable_creds
-            input_val = lambda: channel_credentials
+    Given:
+        Callable returning None or ServerCredentials
+    When:
+        resolve_server_credentials is called
+    Then:
+        Returns result from calling the callable
+    """
+    # Arrange
+    if return_value == "server_credentials":
+        return_value = server_credentials
+        expected_result = server_credentials
+    callable_creds = lambda: return_value
 
-        # Property: Multiple calls return consistent results
-        results = [resolve_channel_credentials(input_val) for _ in range(call_count)]
+    # Act
+    result = resolve_server_credentials(callable_creds)
 
-        # Property 1: Idempotency
-        assert all(r == results[0] for r in results), "Results must be identical"
+    # Assert
+    assert result is expected_result
 
-        # Property 2: Type safety
-        for result in results:
-            assert result is None or isinstance(result, grpc.ChannelCredentials), (
-                "Result must be ChannelCredentials or None"
-            )
+
+@pytest.mark.parametrize(
+    "invalid_value,error_pattern",
+    [
+        ("invalid", "Server credentials callable"),
+        (42, r"grpc\.ServerCredentials.*got <class 'int'>"),
+    ],
+)
+def test_resolve_server_credentials_callable_invalid_returns(
+    invalid_value,
+    error_pattern,
+):
+    """Test resolve_server_credentials with callable returning invalid types.
+
+    Given:
+        Callable returning non-ServerCredentials type
+    When:
+        resolve_server_credentials is called
+    Then:
+        Raises TypeError with appropriate message
+    """
+    # Arrange
+    callable_creds = lambda: invalid_value
+
+    # Act & assert
+    with pytest.raises(TypeError, match=error_pattern):
+        resolve_server_credentials(callable_creds)
+
+
+@given(
+    input_type=st.sampled_from(["none", "direct", "callable_none", "callable_creds"]),
+    call_count=st.integers(min_value=1, max_value=5),
+)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_resolve_server_credentials_idempotency_and_type_safety(
+    input_type,
+    call_count,
+    server_credentials,
+):
+    """Test resolve_server_credentials idempotency and type safety.
+
+    Given:
+        Any valid input (None, credentials, or callable)
+    When:
+        resolve_server_credentials is called multiple times
+    Then:
+        All results are identical (idempotent) and are
+        ServerCredentials or None (type safe).
+    """
+    # Arrange
+    if input_type == "none":
+        input_val = None
+    elif input_type == "direct":
+        input_val = server_credentials
+    elif input_type == "callable_none":
+        input_val = lambda: None
+    else:  # callable_creds
+        input_val = lambda: server_credentials
+
+    # Act
+    results = [resolve_server_credentials(input_val) for _ in range(call_count)]
+
+    # Assert
+    assert all(r == results[0] for r in results), "Results must be identical"
+    for result in results:
+        assert result is None or isinstance(result, grpc.ServerCredentials), (
+            "Result must be ServerCredentials or None"
+        )
+
+
+@pytest.mark.parametrize(
+    "input_value,expected_result",
+    [
+        (None, None),
+        pytest.param(
+            "channel_credentials",
+            "channel_credentials",
+            id="direct_credentials",
+        ),
+    ],
+)
+def test_resolve_channel_credentials_direct_values(
+    input_value,
+    expected_result,
+    channel_credentials,
+):
+    """Test resolve_channel_credentials with direct values.
+
+    Given:
+        None or ChannelCredentials instance
+    When:
+        resolve_channel_credentials is called
+    Then:
+        Returns the input unchanged
+    """
+    # Arrange
+    if input_value == "channel_credentials":
+        input_value = channel_credentials
+        expected_result = channel_credentials
+
+    # Act
+    result = resolve_channel_credentials(input_value)
+
+    # Assert
+    assert result is expected_result
+
+
+@pytest.mark.parametrize(
+    "return_value,expected_result",
+    [
+        (None, None),
+        pytest.param(
+            "channel_credentials",
+            "channel_credentials",
+            id="valid_credentials",
+        ),
+    ],
+)
+def test_resolve_channel_credentials_callable_valid_returns(
+    return_value,
+    expected_result,
+    channel_credentials,
+):
+    """Test resolve_channel_credentials with callable returning valid values.
+
+    Given:
+        Callable returning None or ChannelCredentials
+    When:
+        resolve_channel_credentials is called
+    Then:
+        Returns result from calling the callable
+    """
+    # Arrange
+    if return_value == "channel_credentials":
+        return_value = channel_credentials
+        expected_result = channel_credentials
+    callable_creds = lambda: return_value
+
+    # Act
+    result = resolve_channel_credentials(callable_creds)
+
+    # Assert
+    assert result is expected_result
+
+
+@pytest.mark.parametrize(
+    "invalid_value,error_pattern",
+    [
+        ("invalid", "Channel credentials callable"),
+        (42, r"grpc\.ChannelCredentials.*got <class 'int'>"),
+    ],
+)
+def test_resolve_channel_credentials_callable_invalid_returns(
+    invalid_value,
+    error_pattern,
+):
+    """Test resolve_channel_credentials with callable returning invalid types.
+
+    Given:
+        Callable returning non-ChannelCredentials type
+    When:
+        resolve_channel_credentials is called
+    Then:
+        Raises TypeError with appropriate message
+    """
+    # Arrange
+    callable_creds = lambda: invalid_value
+
+    # Act & assert
+    with pytest.raises(TypeError, match=error_pattern):
+        resolve_channel_credentials(callable_creds)
+
+
+@given(
+    input_type=st.sampled_from(["none", "direct", "callable_none", "callable_creds"]),
+    call_count=st.integers(min_value=1, max_value=5),
+)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_resolve_channel_credentials_idempotency_and_type_safety(
+    input_type,
+    call_count,
+    channel_credentials,
+):
+    """Test resolve_channel_credentials idempotency and type safety.
+
+    Given:
+        Any valid input (None, credentials, or callable)
+    When:
+        resolve_channel_credentials is called multiple times
+    Then:
+        All results are identical (idempotent) and are
+        ChannelCredentials or None (type safe).
+    """
+    # Arrange
+    if input_type == "none":
+        input_val = None
+    elif input_type == "direct":
+        input_val = channel_credentials
+    elif input_type == "callable_none":
+        input_val = lambda: None
+    else:  # callable_creds
+        input_val = lambda: channel_credentials
+
+    # Act
+    results = [resolve_channel_credentials(input_val) for _ in range(call_count)]
+
+    # Assert
+    assert all(r == results[0] for r in results), "Results must be identical"
+    for result in results:
+        assert result is None or isinstance(result, grpc.ChannelCredentials), (
+            "Result must be ChannelCredentials or None"
+        )

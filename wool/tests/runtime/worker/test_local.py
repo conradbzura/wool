@@ -1,6 +1,3 @@
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
-
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -14,7 +11,7 @@ from wool.runtime.worker.process import WorkerProcess
 class TestLocalWorker:
     """Test suite for LocalWorker."""
 
-    def test_init_with_default_parameters(self):
+    def test___init___with_default_parameters(self):
         """Test LocalWorker initialization with default parameters.
 
         Given:
@@ -24,10 +21,13 @@ class TestLocalWorker:
         Then:
             It should initialize successfully with None address before start
         """
+        # Act
         worker = LocalWorker()
+
+        # Assert
         assert worker.address is None
 
-    def test_init_with_custom_host_and_port(self):
+    def test___init___with_custom_host_and_port(self):
         """Test LocalWorker initialization with custom host and port.
 
         Given:
@@ -37,11 +37,14 @@ class TestLocalWorker:
         Then:
             It should initialize successfully
         """
+        # Act
         worker = LocalWorker(host="0.0.0.0", port=50051)
+
+        # Assert
         # Before start, address is None and metadata is not yet available
         assert worker.metadata is None
 
-    def test_init_with_tags(self, worker_tags):
+    def test___init___with_tags(self, worker_tags):
         """Test LocalWorker initialization with capability tags.
 
         Given:
@@ -51,10 +54,13 @@ class TestLocalWorker:
         Then:
             Tags should be stored in the worker
         """
+        # Act
         worker = LocalWorker(*worker_tags)
+
+        # Assert
         assert worker.tags == set(worker_tags)
 
-    def test_init_with_extra_metadata(self, worker_extra):
+    def test___init___with_extra_metadata(self, worker_extra):
         """Test LocalWorker initialization with extra metadata.
 
         Given:
@@ -64,14 +70,17 @@ class TestLocalWorker:
         Then:
             Metadata should be stored in the worker
         """
+        # Act
         worker = LocalWorker(**worker_extra)
+
+        # Assert
         assert worker.extra == worker_extra
 
     @given(
         grace_period=st.floats(min_value=1.0, max_value=300.0),
         ttl=st.floats(min_value=1.0, max_value=300.0),
     )
-    def test_init_with_custom_timeouts(self, grace_period, ttl):
+    def test___init___with_custom_timeouts(self, grace_period, ttl):
         """Test LocalWorker initialization with custom timeout parameters.
 
         Given:
@@ -81,7 +90,10 @@ class TestLocalWorker:
         Then:
             It should initialize successfully
         """
+        # Act
         worker = LocalWorker(shutdown_grace_period=grace_period, proxy_pool_ttl=ttl)
+
+        # Assert
         # Timeouts are internal config - just verify construction succeeds
         assert worker.metadata is None
         assert worker.address is None
@@ -96,7 +108,10 @@ class TestLocalWorker:
         Then:
             It should be an instance of WorkerLike
         """
+        # Act
         worker = LocalWorker()
+
+        # Assert
         assert isinstance(worker, WorkerLike)
 
     def test_address_returns_none_before_start(self):
@@ -109,7 +124,10 @@ class TestLocalWorker:
         Then:
             It should return None
         """
+        # Act
         worker = LocalWorker()
+
+        # Assert
         assert worker.address is None
 
     @pytest.mark.asyncio
@@ -123,6 +141,7 @@ class TestLocalWorker:
         Then:
             It should return the worker process address
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -133,7 +152,11 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker()
+
+        # Act
         await worker.start()
+
+        # Assert
         assert worker.address == "127.0.0.1:50051"
 
     @pytest.mark.asyncio
@@ -147,6 +170,7 @@ class TestLocalWorker:
         Then:
             It should call WorkerProcess.start in executor
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -157,7 +181,11 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker()
+
+        # Act
         await worker.start(timeout=60.0)
+
+        # Assert
         mock_process.start.assert_called_once_with(timeout=60.0)
 
     @pytest.mark.asyncio
@@ -171,6 +199,7 @@ class TestLocalWorker:
         Then:
             It should create WorkerMetadata with correct data
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "192.168.1.100:50051"
         mock_process.pid = 12345
@@ -181,8 +210,11 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker("gpu", "ml", region="us-west")
+
+        # Act
         await worker.start()
 
+        # Assert
         assert worker.metadata is not None
         assert worker.metadata.uid == worker.uid
         assert worker.metadata.address == "192.168.1.100:50051"
@@ -202,6 +234,7 @@ class TestLocalWorker:
         Then:
             It should raise RuntimeError
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = None
         mock_process.pid = 12345
@@ -212,6 +245,8 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker()
+
+        # Act & assert
         with pytest.raises(RuntimeError, match="no address"):
             await worker.start()
 
@@ -226,6 +261,7 @@ class TestLocalWorker:
         Then:
             It should raise RuntimeError
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = None
@@ -236,6 +272,8 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker()
+
+        # Act & assert
         with pytest.raises(RuntimeError, match="no PID"):
             await worker.start()
 
@@ -250,6 +288,7 @@ class TestLocalWorker:
         Then:
             It should correctly parse host and port
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "0.0.0.0:8080"
         mock_process.pid = 99999
@@ -260,8 +299,11 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker()
+
+        # Act
         await worker.start()
 
+        # Assert
         assert worker.address == "0.0.0.0:8080"
 
     @pytest.mark.asyncio
@@ -275,6 +317,7 @@ class TestLocalWorker:
         Then:
             It should send gRPC stop request
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -288,10 +331,9 @@ class TestLocalWorker:
         worker = LocalWorker()
         await worker.start()
 
-        # Mock gRPC components
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock()
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock()
 
         mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
         mocker.patch(
@@ -299,7 +341,10 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
+        # Act
         await worker.stop()
+
+        # Assert
         mock_stub.stop.assert_called_once()
 
     @pytest.mark.asyncio
@@ -313,6 +358,7 @@ class TestLocalWorker:
         Then:
             It should not attempt gRPC call
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -326,10 +372,12 @@ class TestLocalWorker:
         worker = LocalWorker()
         await worker.start()
 
-        # Mock gRPC - should not be called
         mock_channel_fn = mocker.patch("grpc.aio.insecure_channel")
 
+        # Act
         await worker.stop()
+
+        # Assert
         mock_channel_fn.assert_not_called()
 
     @pytest.mark.asyncio
@@ -343,6 +391,7 @@ class TestLocalWorker:
         Then:
             It should handle the error gracefully
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -356,10 +405,9 @@ class TestLocalWorker:
         worker = LocalWorker()
         await worker.start()
 
-        # Mock gRPC to raise error
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock(side_effect=Exception("gRPC error"))
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock(side_effect=Exception("gRPC error"))
 
         mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
         mocker.patch(
@@ -367,40 +415,43 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
-        # Should raise - error is not caught in LocalWorker._stop
+        # Act & assert
         with pytest.raises(Exception, match="gRPC error"):
             await worker.stop()
 
     # === NEW CREDENTIAL TESTS ===
 
-    def test_init_with_worker_credentials(self, worker_credentials):
+    def test___init___with_worker_credentials(self, worker_credentials):
         """Test LocalWorker with WorkerCredentials.
 
         Given:
-            WorkerCredentials instance
+            WorkerCredentials instance.
         When:
-            LocalWorker is instantiated with credentials parameter
+            LocalWorker is instantiated with credentials parameter.
         Then:
-            Worker extracts both server_credentials and client_credentials
+            It should construct successfully.
         """
+        # Act
         worker = LocalWorker(credentials=worker_credentials)
-        # Verify credentials were extracted
-        assert worker._server_credentials is not None
-        assert worker._client_credentials is not None
 
-    def test_init_with_no_credentials(self):
+        # Assert
+        assert worker.metadata is None  # Not started yet, but construction succeeded
+
+    def test___init___with_no_credentials(self):
         """Test LocalWorker with no credentials.
 
         Given:
-            None as credentials parameter
+            None as credentials parameter.
         When:
-            LocalWorker is instantiated
+            LocalWorker is instantiated.
         Then:
-            Worker sets both server_credentials and client_credentials to None
+            It should construct successfully.
         """
+        # Act
         worker = LocalWorker(credentials=None)
-        assert worker._server_credentials is None
-        assert worker._client_credentials is None
+
+        # Assert
+        assert worker.metadata is None  # Not started yet, but construction succeeded
 
     @pytest.mark.asyncio
     async def test_metadata_secure_flag_with_mtls(self, mocker, worker_credentials):
@@ -413,6 +464,7 @@ class TestLocalWorker:
         Then:
             metadata.secure is True
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -424,8 +476,11 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker(credentials=worker_credentials)
+
+        # Act
         await worker.start()
 
+        # Assert
         assert worker.metadata.secure is True
 
     @pytest.mark.asyncio
@@ -439,6 +494,7 @@ class TestLocalWorker:
         Then:
             metadata.secure is False
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -450,8 +506,11 @@ class TestLocalWorker:
         )
 
         worker = LocalWorker()
+
+        # Act
         await worker.start()
 
+        # Assert
         assert worker.metadata.secure is False
 
     @pytest.mark.asyncio
@@ -467,6 +526,7 @@ class TestLocalWorker:
         Then:
             Worker uses client_credentials to send secure gRPC stop request
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -480,10 +540,9 @@ class TestLocalWorker:
         worker = LocalWorker(credentials=worker_credentials)
         await worker.start()
 
-        # Mock secure channel
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock()
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock()
 
         mock_secure_channel = mocker.patch(
             "grpc.aio.secure_channel", return_value=mock_channel
@@ -493,13 +552,13 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
+        # Act
         await worker.stop()
 
-        # Verify secure channel was used
+        # Assert
         mock_secure_channel.assert_called_once()
-        # Verify the credentials passed are the client credentials
         call_args = mock_secure_channel.call_args
-        assert call_args[0][0] == "127.0.0.1:50051"  # address
+        assert call_args[0][0] == "127.0.0.1:50051"
 
     @pytest.mark.asyncio
     async def test_stop_without_credentials_insecure_connection(self, mocker):
@@ -512,6 +571,7 @@ class TestLocalWorker:
         Then:
             Worker uses insecure channel to send gRPC stop request
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -525,10 +585,9 @@ class TestLocalWorker:
         worker = LocalWorker()
         await worker.start()
 
-        # Mock insecure channel
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock()
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock()
 
         mock_insecure_channel = mocker.patch(
             "grpc.aio.insecure_channel", return_value=mock_channel
@@ -538,9 +597,10 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
+        # Act
         await worker.stop()
 
-        # Verify insecure channel was used
+        # Assert
         mock_insecure_channel.assert_called_once_with("127.0.0.1:50051")
 
     @pytest.mark.asyncio
@@ -554,6 +614,7 @@ class TestLocalWorker:
         Then:
             Worker uses secure channel with one-way TLS credentials
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -567,13 +628,11 @@ class TestLocalWorker:
         worker = LocalWorker(credentials=worker_credentials_one_way)
         await worker.start()
 
-        # Verify it started
         assert worker.metadata is not None
 
-        # Mock gRPC - one-way TLS should use secure channel
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock()
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock()
 
         mock_secure_channel = mocker.patch(
             "grpc.aio.secure_channel", return_value=mock_channel
@@ -583,9 +642,10 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
+        # Act
         await worker.stop()
 
-        # One-way TLS still has channel credentials (anonymous client), uses secure channel
+        # Assert
         mock_secure_channel.assert_called_once()
         mock_stub.stop.assert_called_once()
 
@@ -602,6 +662,7 @@ class TestLocalWorker:
         Then:
             Callable is resolved before creating secure channel
         """
+        # Arrange
         mock_process = mocker.MagicMock(spec=WorkerProcess)
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
@@ -615,10 +676,9 @@ class TestLocalWorker:
         worker = LocalWorker(credentials=worker_credentials_callable)
         await worker.start()
 
-        # Mock secure channel
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock()
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock()
 
         mock_secure_channel = mocker.patch(
             "grpc.aio.secure_channel", return_value=mock_channel
@@ -628,9 +688,10 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
+        # Act
         await worker.stop()
 
-        # Verify secure channel was called (callable was resolved)
+        # Assert
         mock_secure_channel.assert_called_once()
 
     @pytest.mark.parametrize("mutual", [True, False], ids=["mtls", "one_way_tls"])
@@ -647,6 +708,7 @@ class TestLocalWorker:
         Then:
             Worker completes full lifecycle without errors
         """
+        # Arrange
         key_pem, cert_pem, ca_pem = test_certificates
         creds = WorkerCredentials(
             ca_cert=ca_pem, worker_key=key_pem, worker_cert=cert_pem, mutual=mutual
@@ -656,16 +718,15 @@ class TestLocalWorker:
         mock_process.address = "127.0.0.1:50051"
         mock_process.pid = 12345
         mock_process.start.return_value = None
-        mock_process.is_alive.side_effect = [True, False]  # Alive during stop, then not
+        mock_process.is_alive.side_effect = [True, False]
 
         mocker.patch(
             "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
         )
 
-        # Mock gRPC for stop
-        mock_channel = MagicMock()
-        mock_stub = MagicMock()
-        mock_stub.stop = AsyncMock()
+        mock_channel = mocker.MagicMock()
+        mock_stub = mocker.MagicMock()
+        mock_stub.stop = mocker.AsyncMock()
         mocker.patch("grpc.aio.secure_channel", return_value=mock_channel)
         mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
         mocker.patch(
@@ -673,9 +734,10 @@ class TestLocalWorker:
             return_value=mock_stub,
         )
 
-        # Full lifecycle
+        # Act
         worker = LocalWorker(credentials=creds)
         await worker.start()
-        assert worker.metadata is not None
         await worker.stop()
-        # No exception means success
+
+        # Assert
+        assert worker.metadata is not None

@@ -14,7 +14,7 @@ def test_public_symbol_accessibility():
     # Arrange
     expected_symbols = wool.__all__
 
-    # Act & Assert
+    # Act & assert
     for symbol in expected_symbols:
         assert hasattr(wool, symbol), f"Symbol '{symbol}' not found in wool package"
 

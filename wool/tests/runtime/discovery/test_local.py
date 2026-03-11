@@ -310,7 +310,7 @@ class TestLocalDiscovery:
         # Arrange
         discovery = LocalDiscovery(f"test-cm-{uuid.uuid4()}")
 
-        # Act & Assert
+        # Act & assert
         with discovery as ctx:
             assert ctx is discovery
 
@@ -348,7 +348,7 @@ class TestLocalDiscoveryPublisher:
         Then:
             It should raise ValueError.
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Block size must be positive"):
             LocalDiscovery.Publisher(namespace, block_size=-1)
 
@@ -367,7 +367,7 @@ class TestLocalDiscoveryPublisher:
         # Arrange
         publisher = LocalDiscovery.Publisher(namespace)
 
-        # Act & Assert
+        # Act & assert
         async with publisher as ctx:
             assert ctx is publisher
 
@@ -555,7 +555,7 @@ class TestLocalDiscoveryPublisher:
         with LocalDiscovery(namespace):
             publisher = LocalDiscovery.Publisher(namespace)
 
-            # Act & Assert
+            # Act & assert
             async with publisher:
                 with pytest.raises(
                     RuntimeError,
@@ -656,7 +656,7 @@ class TestLocalDiscoveryPublisher:
         with LocalDiscovery(namespace):
             publisher = LocalDiscovery.Publisher(namespace)
 
-            # Act & Assert
+            # Act & assert
             async with publisher:
                 with pytest.raises(KeyError, match=str(metadata.uid)):
                     await publisher.publish("worker-updated", metadata)
@@ -689,7 +689,7 @@ class TestLocalDiscoveryPublisher:
             for i in range(0, len(buf), 16):
                 struct.pack_into("16s", buf, i, b"\xff" * 16)
 
-            # Act & Assert
+            # Act & assert
             async with publisher:
                 with pytest.raises(RuntimeError, match="No available slots"):
                     await publisher.publish("worker-added", worker)
@@ -835,7 +835,7 @@ class TestLocalDiscoverySubscriber:
         Then:
             It should raise ValueError.
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Expected positive poll interval"):
             LocalDiscovery.Subscriber(namespace, poll_interval=-1.0)
 
