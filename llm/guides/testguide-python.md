@@ -143,7 +143,7 @@ with pytest.raises(SomeError, match="expected message"):
 *Trivial one-liner:*
 
 ```python
-# Arrange & Act & Assert
+# Arrange, act, & assert
 async with SomePool(size=3) as pool:
     assert pool is not None
 ```

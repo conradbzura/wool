@@ -160,733 +160,743 @@ class Foo:
     assert baz_gen.__module__ == "runtime.routine.test_wrapper"
 
 
-class TestRoutine:
-    @settings(
-        max_examples=20,
-        deadline=None,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(
-        test_case=st.sampled_from(
-            [
-                ("function", lambda: foo(5, 3), 8, False),
-                ("method", lambda: Foo().foo(5), 10, False),
-                ("classmethod", lambda: Foo.bar(5), 15, False),
-                ("staticmethod", lambda: Foo.baz(5), 20, False),
-                ("async-gen-function", lambda: foo_gen(3), [0, 1, 2], True),
-                ("async-gen-method", lambda: Foo().foo_gen(3), [0, 2, 4], True),
-                ("async-gen-classmethod", lambda: Foo.bar_gen(3), [0, 3, 6], True),
-                ("async-gen-staticmethod", lambda: Foo.baz_gen(3), [0, 4, 8], True),
-            ]
-        ),
-        use_dispatch=st.booleans(),
-    )
-    @pytest.mark.asyncio
-    async def test(
-        self,
-        test_case,
-        use_dispatch,
-        mocker: MockerFixture,
-        mock_proxy_context,
+@settings(
+    max_examples=20,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(function_type=st.sampled_from(["function", "generator", "class"]))
+def test_routine_with_invalid_types(function_type):
+    """Test @routine rejects invalid callable types.
+
+    Given:
+        The @routine decorator applied to invalid function types
+        (non-coroutine, sync generator, class).
+    When:
+        The decorator is applied.
+    Then:
+        It should raise ``ValueError``.
+    """
+    # Arrange, act, & assert
+    with pytest.raises(
+        ValueError, match="Expected a coroutine function or async generator function"
     ):
-        """Property-based test: Routine decorator with various function types.
-
-        Given:
-            The @routine decorator applied to different function types (module
-            function, instance method, classmethod, staticmethod, async generators)
-            with do_dispatch set to either True or False
-        When:
-            The decorated function is called with appropriate arguments
-        Then:
-            Task is either dispatched (when do_dispatch=True) or executed
-            locally (when do_dispatch=False) and result is returned
-            correctly for all function types, including async generators
-        """
-        # Arrange
-        _, call_factory, expected, is_async_gen = test_case
-
-        if use_dispatch:
-            # Test dispatch path
-            if is_async_gen:
-
-                async def mock_dispatch_stream():
-                    for value in expected:
-                        yield value
-
-                # proxy.dispatch() is async and returns an async generator
-                mock_proxy_context.dispatch = mocker.AsyncMock(
-                    return_value=mock_dispatch_stream()
-                )
-
-                # Act - await to get the async generator, then collect all yielded values
-                result = []
-                gen = call_factory()
-                async for value in gen:
-                    result.append(value)
-
-                # Assert
-                assert result == expected
-                mock_proxy_context.dispatch.assert_called_once()
-            else:
-
-                async def mock_dispatch_stream():
-                    yield expected
-
-                # proxy.dispatch() is async and returns an async generator
-                mock_proxy_context.dispatch = mocker.AsyncMock(
-                    return_value=mock_dispatch_stream()
-                )
-
-                # Act
-                result = await call_factory()
-
-                # Assert
-                assert result == expected
-                mock_proxy_context.dispatch.assert_called_once()
-        else:
-            # Test execution path
-            from wool.runtime.routine.task import do_dispatch
-
-            with do_dispatch(False):
-                # Act
-                if is_async_gen:
-                    result = []
-                    gen_or_coro = call_factory()
-                    # Check if it's already an async generator or needs awaiting
-                    if isasyncgen(gen_or_coro):
-                        gen = gen_or_coro
-                    else:
-                        gen = await gen_or_coro
-                    async for value in gen:
-                        result.append(value)
-                else:
-                    result = await call_factory()
-
-                # Assert
-                assert result == expected
-
-    @settings(
-        max_examples=20,
-        deadline=None,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(
-        args=st.lists(
-            st.one_of(
-                st.integers(),
-                st.text(min_size=0, max_size=20),
-                st.lists(st.integers(), max_size=5),
-            ),
-            min_size=0,
-            max_size=2,  # Reduced for function signature
-        ),
-    )
-    @pytest.mark.asyncio
-    async def test_work_decorator_with_various_arguments(
-        self,
-        args,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Property-based test: Routine decorator with various argument patterns.
-
-        Given:
-            The @routine decorator with any valid combination of positional
-            arguments
-        When:
-            The decorated function is called with these arguments
-        Then:
-            All values should be preserved through execution
-        """
-        # Arrange
-        expected_result = (
-            sum(args) if len(args) == 2 and all(isinstance(x, int) for x in args) else 0
-        )
-
-        async def mock_dispatch_stream():
-            yield expected_result
-
-        async def mock_dispatch(*fargs, **fkwargs):
-            return mock_dispatch_stream()
-
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
-
-        # Act & assert
-        if len(args) == 2 and all(isinstance(x, int) for x in args):
-            result = await foo(*args)
-            assert result == expected_result
-            mock_proxy_context.dispatch.assert_called_once()
-
-    @settings(
-        max_examples=20,
-        deadline=None,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @given(function_type=st.sampled_from(["function", "generator", "class"]))
-    def test_invalid_wrapper(self, function_type):
-        """Property-based test: @routine decorator validation.
-
-        Given:
-            The @routine decorator applied to invalid function types
-            (non-coroutine, sync generator, class)
-        When:
-            Decorator is applied
-        Then:
-            ValueError is raised with appropriate message
-        """
-        # Arrange, act, & assert
-        with pytest.raises(
-            ValueError, match="Expected a coroutine function or async generator function"
-        ):
-            match function_type:
-                case "function":
-
-                    @routine  # type: ignore[arg-type]
-                    def invalid_foo(x: int):
-                        return x * 2
-
-                case "generator":
-
-                    @routine  # type: ignore[arg-type]
-                    def invalid_bar(x: int):
-                        yield x * 3
-
-                case "class":
-
-                    @routine  # type: ignore[arg-type]
-                    class InvalidFoo: ...
-
-    @pytest.mark.asyncio
-    async def test_stream_multiple_values(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test stream with multiple values returns final value.
-
-        Given:
-            A decorated async function returns multiple values via stream
-        When:
-            Wrapped function is called and awaited
-        Then:
-            Returns the final value from the execution stream
-        """
-
-        # Arrange
-        async def mock_dispatch_stream():
-            yield "first"
-            yield "second"
-            yield "final"
-
-        async def mock_dispatch(*args, **kwargs):
-            return mock_dispatch_stream()
-
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
-
-        # Act
-        result = await bar()
-
-        # Assert
-        assert result == "final"
-
-    @pytest.mark.asyncio
-    async def test_stream_empty(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test empty result handling.
-
-        Given:
-            A decorated async function with no return value
-        When:
-            Wrapped function is called and awaited
-        Then:
-            Returns None
-        """
-
-        # Arrange
-        async def mock_dispatch_stream():
-            # Empty stream - no yields
-            return
-            yield  # Never reached
-
-        async def mock_dispatch(*args, **kwargs):
-            return mock_dispatch_stream()
-
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
-
-        # Act
-        result = await bar()
-
-        # Assert
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_stream_error_handling(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test stream error handling.
-
-        Given:
-            A decorated function whose execution stream raises an
-            exception
-        When:
-            The decorated function is called and awaited
-        Then:
-            Exception propagates to caller
-        """
-
-        # Arrange
-        async def mock_dispatch_stream():
-            raise ValueError("Stream error")
-            yield  # Never reached
-
-        async def mock_dispatch(*args, **kwargs):
-            return mock_dispatch_stream()
-
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
-
-        # Act & assert
-        with pytest.raises(ValueError, match="Stream error"):
-            await bar()
-
-    @pytest.mark.asyncio
-    async def test_async_generator_aclose_cleanup(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test async generator cleanup on aclose.
-
-        Given:
-            An async generator decorated with @routine
-        When:
-            The generator is closed via aclose() before exhaustion
-        Then:
-            The underlying stream's aclose() is called for cleanup
-        """
-
-        # Arrange
-        class MockStream:
-            def __init__(self):
-                self.aclose_called = False
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                # Yield a few values then wait
-                if not hasattr(self, "_count"):
-                    self._count = 0
-                if self._count < 3:
-                    self._count += 1
-                    return self._count
-                # Block forever on subsequent calls
-                await asyncio.Event().wait()
-
-            async def aclose(self):
-                self.aclose_called = True
-
-        mock_stream = MockStream()
-
-        async def mock_dispatch(*args, **kwargs):
-            return mock_stream
-
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
-
-        # Act
-        gen = foo_gen(10)
-        result = []
-        async for value in gen:
-            result.append(value)
-            if len(result) == 2:
-                # Close early
-                await gen.aclose()
-                break
-
-        # Assert
-        assert result == [1, 2]
-        assert mock_stream.aclose_called
-
-    @pytest.mark.asyncio
-    async def test_async_generator_exception_cleanup(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test async generator cleanup on exception.
-
-        Given:
-            An async generator that raises an exception during iteration
-        When:
-            The exception is raised
-        Then:
-            The underlying stream's aclose() is called for cleanup
-        """
-
-        # Arrange
-        class MockStream:
-            def __init__(self):
-                self.aclose_called = False
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                if not hasattr(self, "_count"):
-                    self._count = 0
-                self._count += 1
-                if self._count <= 2:
-                    return self._count
-                raise ValueError("Stream error during iteration")
-
-            async def aclose(self):
-                self.aclose_called = True
-
-        mock_stream = MockStream()
-
-        async def mock_dispatch(*args, **kwargs):
-            return mock_stream
-
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
-
-        # Act & assert
-        gen = foo_gen(10)
-        result = []
-        with pytest.raises(ValueError, match="Stream error during iteration"):
+        match function_type:
+            case "function":
+
+                @routine  # type: ignore[arg-type]
+                def invalid_foo(x: int):
+                    return x * 2
+
+            case "generator":
+
+                @routine  # type: ignore[arg-type]
+                def invalid_bar(x: int):
+                    yield x * 3
+
+            case "class":
+
+                @routine  # type: ignore[arg-type]
+                class InvalidFoo: ...
+
+
+@settings(
+    max_examples=20,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(
+    test_case=st.sampled_from(
+        [
+            ("function", lambda: foo(5, 3), 8, False),
+            ("method", lambda: Foo().foo(5), 10, False),
+            ("classmethod", lambda: Foo.bar(5), 15, False),
+            ("staticmethod", lambda: Foo.baz(5), 20, False),
+            ("async-gen-function", lambda: foo_gen(3), [0, 1, 2], True),
+            ("async-gen-method", lambda: Foo().foo_gen(3), [0, 2, 4], True),
+            ("async-gen-classmethod", lambda: Foo.bar_gen(3), [0, 3, 6], True),
+            ("async-gen-staticmethod", lambda: Foo.baz_gen(3), [0, 4, 8], True),
+        ]
+    ),
+    use_dispatch=st.booleans(),
+)
+@pytest.mark.asyncio
+async def test_routine_with_various_function_types(
+    test_case,
+    use_dispatch,
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test @routine dispatch and local execution across function types.
+
+    Given:
+        The @routine decorator applied to different function types (module
+        function, instance method, classmethod, staticmethod, async generators)
+        with do_dispatch set to either True or False.
+    When:
+        The decorated function is called with appropriate arguments.
+    Then:
+        The task is either dispatched (when do_dispatch=True) or
+        executed locally (when do_dispatch=False) and the result
+        is returned correctly for all function types.
+    """
+    # Arrange
+    _, call_factory, expected, is_async_gen = test_case
+
+    if use_dispatch:
+        # Test dispatch path
+        if is_async_gen:
+
+            async def mock_dispatch_stream():
+                for value in expected:
+                    yield value
+
+            # proxy.dispatch() is async and returns an async generator
+            mock_proxy_context.dispatch = mocker.AsyncMock(
+                return_value=mock_dispatch_stream()
+            )
+
+            # Act - await to get the async generator, then collect all yielded values
+            result = []
+            gen = call_factory()
             async for value in gen:
                 result.append(value)
 
-        # Assert cleanup happened
-        assert result == [1, 2]
-        assert mock_stream.aclose_called
+            # Assert
+            assert result == expected
+            mock_proxy_context.dispatch.assert_called_once()
+        else:
 
-    @pytest.mark.asyncio
-    async def test_async_generator_cancellation_cleanup(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test async generator cleanup on task cancellation.
+            async def mock_dispatch_stream():
+                yield expected
 
-        Given:
-            An async generator being consumed in a task
-        When:
-            The task is cancelled
-        Then:
-            The underlying stream's aclose() is called for cleanup
-        """
+            # proxy.dispatch() is async and returns an async generator
+            mock_proxy_context.dispatch = mocker.AsyncMock(
+                return_value=mock_dispatch_stream()
+            )
 
-        # Arrange
-        class MockStream:
-            def __init__(self):
-                self.aclose_called = False
+            # Act
+            result = await call_factory()
 
-            def __aiter__(self):
-                return self
+            # Assert
+            assert result == expected
+            mock_proxy_context.dispatch.assert_called_once()
+    else:
+        # Test execution path
+        from wool.runtime.routine.task import do_dispatch
 
-            async def __anext__(self):
-                if not hasattr(self, "_count"):
-                    self._count = 0
+        with do_dispatch(False):
+            # Act
+            if is_async_gen:
+                result = []
+                gen_or_coro = call_factory()
+                # Check if it's already an async generator or needs awaiting
+                if isasyncgen(gen_or_coro):
+                    gen = gen_or_coro
+                else:
+                    gen = await gen_or_coro
+                async for value in gen:
+                    result.append(value)
+            else:
+                result = await call_factory()
+
+            # Assert
+            assert result == expected
+
+
+@settings(
+    max_examples=20,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(
+    args=st.lists(
+        st.one_of(
+            st.integers(),
+            st.text(min_size=0, max_size=20),
+            st.lists(st.integers(), max_size=5),
+        ),
+        min_size=0,
+        max_size=2,  # Reduced for function signature
+    ),
+)
+@pytest.mark.asyncio
+async def test_routine_with_various_arguments(
+    args,
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test @routine preserves arguments through dispatch.
+
+    Given:
+        The @routine decorator with any valid combination of positional
+        arguments.
+    When:
+        The decorated function is called with these arguments.
+    Then:
+        All values are preserved through execution.
+    """
+    # Arrange
+    expected_result = (
+        sum(args) if len(args) == 2 and all(isinstance(x, int) for x in args) else 0
+    )
+
+    async def mock_dispatch_stream():
+        yield expected_result
+
+    async def mock_dispatch(*fargs, **fkwargs):
+        return mock_dispatch_stream()
+
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act & assert
+    if len(args) == 2 and all(isinstance(x, int) for x in args):
+        result = await foo(*args)
+        assert result == expected_result
+        mock_proxy_context.dispatch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_routine_with_multi_value_stream(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test stream with multiple values returns final value.
+
+    Given:
+        A decorated async function returns multiple values via stream.
+    When:
+        Wrapped function is called and awaited.
+    Then:
+        The final value from the execution stream is returned.
+    """
+
+    # Arrange
+    async def mock_dispatch_stream():
+        yield "first"
+        yield "second"
+        yield "final"
+
+    async def mock_dispatch(*args, **kwargs):
+        return mock_dispatch_stream()
+
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act
+    result = await bar()
+
+    # Assert
+    assert result == "final"
+
+
+@pytest.mark.asyncio
+async def test_routine_with_empty_stream(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test empty result handling.
+
+    Given:
+        A decorated async function with no return value.
+    When:
+        Wrapped function is called and awaited.
+    Then:
+        The result is ``None``.
+    """
+
+    # Arrange
+    async def mock_dispatch_stream():
+        # Empty stream - no yields
+        return
+        yield  # Never reached
+
+    async def mock_dispatch(*args, **kwargs):
+        return mock_dispatch_stream()
+
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act
+    result = await bar()
+
+    # Assert
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_routine_with_stream_error(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test stream error handling.
+
+    Given:
+        A decorated function whose execution stream raises an
+        exception.
+    When:
+        The decorated function is called and awaited.
+    Then:
+        The exception propagates to the caller.
+    """
+
+    # Arrange
+    async def mock_dispatch_stream():
+        raise ValueError("Stream error")
+        yield  # Never reached
+
+    async def mock_dispatch(*args, **kwargs):
+        return mock_dispatch_stream()
+
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act & assert
+    with pytest.raises(ValueError, match="Stream error"):
+        await bar()
+
+
+@pytest.mark.asyncio
+async def test_routine_with_aclose_during_iteration(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test async generator cleanup on aclose.
+
+    Given:
+        An async generator decorated with @routine.
+    When:
+        The generator is closed via aclose() before exhaustion.
+    Then:
+        The underlying stream's aclose() is called for cleanup.
+    """
+
+    # Arrange
+    class MockStream:
+        def __init__(self):
+            self.aclose_called = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            # Yield a few values then wait
+            if not hasattr(self, "_count"):
+                self._count = 0
+            if self._count < 3:
                 self._count += 1
-                if self._count <= 2:
-                    return self._count
-                # Block forever
-                await asyncio.Event().wait()
+                return self._count
+            # Block forever on subsequent calls
+            await asyncio.Event().wait()
 
-            async def aclose(self):
-                self.aclose_called = True
+        async def aclose(self):
+            self.aclose_called = True
 
-        mock_stream = MockStream()
+    mock_stream = MockStream()
 
-        async def mock_dispatch(*args, **kwargs):
-            return mock_stream
+    async def mock_dispatch(*args, **kwargs):
+        return mock_stream
 
-        mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act
+    gen = foo_gen(10)
+    result = []
+    async for value in gen:
+        result.append(value)
+        if len(result) == 2:
+            # Close early
+            await gen.aclose()
+            break
+
+    # Assert
+    assert result == [1, 2]
+    assert mock_stream.aclose_called
+
+
+@pytest.mark.asyncio
+async def test_routine_with_exception_during_iteration(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test async generator cleanup on exception.
+
+    Given:
+        An async generator that raises an exception during iteration.
+    When:
+        The exception is raised.
+    Then:
+        The underlying stream's aclose() is called for cleanup.
+    """
+
+    # Arrange
+    class MockStream:
+        def __init__(self):
+            self.aclose_called = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not hasattr(self, "_count"):
+                self._count = 0
+            self._count += 1
+            if self._count <= 2:
+                return self._count
+            raise ValueError("Stream error during iteration")
+
+        async def aclose(self):
+            self.aclose_called = True
+
+    mock_stream = MockStream()
+
+    async def mock_dispatch(*args, **kwargs):
+        return mock_stream
+
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act & assert
+    gen = foo_gen(10)
+    result = []
+    with pytest.raises(ValueError, match="Stream error during iteration"):
+        async for value in gen:
+            result.append(value)
+
+    # Assert cleanup happened
+    assert result == [1, 2]
+    assert mock_stream.aclose_called
+
+
+@pytest.mark.asyncio
+async def test_routine_with_task_cancellation(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test async generator cleanup on task cancellation.
+
+    Given:
+        An async generator being consumed in a task.
+    When:
+        The task is cancelled.
+    Then:
+        The underlying stream's aclose() is called for cleanup.
+    """
+
+    # Arrange
+    class MockStream:
+        def __init__(self):
+            self.aclose_called = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not hasattr(self, "_count"):
+                self._count = 0
+            self._count += 1
+            if self._count <= 2:
+                return self._count
+            # Block forever
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.aclose_called = True
+
+    mock_stream = MockStream()
+
+    async def mock_dispatch(*args, **kwargs):
+        return mock_stream
+
+    mock_proxy_context.dispatch = mocker.MagicMock(side_effect=mock_dispatch)
+
+    # Act
+    async def consume_generator():
+        result = []
+        async for value in foo_gen(10):
+            result.append(value)
+        return result
+
+    task = asyncio.create_task(consume_generator())
+    # Wait a bit to let it consume some values
+    await asyncio.sleep(0.01)
+    # Cancel the task
+    task.cancel()
+
+    # Assert
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Assert cleanup happened
+    assert mock_stream.aclose_called
+
+
+# ── Bilateral streaming tests (BS-xxx) ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_routine_with_asend_single_value():
+    """Test asend forwards a single value to the generator.
+
+    Given:
+        A @routine-decorated async generator that echoes sent
+        values.
+    When:
+        asend() is called with a non-None value after the first
+        __anext__().
+    Then:
+        It should yield back the sent value.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = echo_send(1)
 
         # Act
-        async def consume_generator():
-            result = []
-            async for value in foo_gen(10):
-                result.append(value)
-            return result
-
-        task = asyncio.create_task(consume_generator())
-        # Wait a bit to let it consume some values
-        await asyncio.sleep(0.01)
-        # Cancel the task
-        task.cancel()
+        first = await gen.__anext__()
+        echoed = await gen.asend("hello")
 
         # Assert
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        assert first == "ready"
+        assert echoed == "echo:hello"
+        await gen.aclose()
 
-        # Assert cleanup happened
-        assert mock_stream.aclose_called
 
-    # ── Bilateral streaming tests (BS-xxx) ───────────────────────
+@pytest.mark.asyncio
+async def test_routine_with_asend_multiple_values():
+    """Test asend forwards multiple values in sequence.
 
-    @pytest.mark.asyncio
-    async def test_routine_asend_with_single_value(self):
-        """Test asend forwards a single value to the generator.
+    Given:
+        A @routine-decorated async generator that accumulates
+        sent integers.
+    When:
+        asend() is called multiple times in sequence.
+    Then:
+        It should forward each sent value and yield updated
+        state.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = accumulator()
 
-        Given:
-            A @routine-decorated async generator that echoes sent
-            values.
-        When:
-            asend() is called with a non-None value after the first
-            __anext__().
-        Then:
-            It should yield back the sent value.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = echo_send(1)
+        # Act
+        initial = await gen.__anext__()
+        r1 = await gen.asend(10)
+        r2 = await gen.asend(20)
+        r3 = await gen.asend(30)
 
-            # Act
-            first = await gen.__anext__()
-            echoed = await gen.asend("hello")
+        # Assert
+        assert initial == 0
+        assert r1 == 10
+        assert r2 == 20
+        assert r3 == 30
+        await gen.aclose()
 
-            # Assert
-            assert first == "ready"
-            assert echoed == "echo:hello"
-            await gen.aclose()
 
-    @pytest.mark.asyncio
-    async def test_routine_asend_with_multiple_values(self):
-        """Test asend forwards multiple values in sequence.
+@pytest.mark.asyncio
+async def test_routine_with_asend_causing_exhaustion():
+    """Test asend causing generator exhaustion.
 
-        Given:
-            A @routine-decorated async generator that accumulates
-            sent integers.
-        When:
-            asend() is called multiple times in sequence.
-        Then:
-            It should forward each sent value and yield updated
-            state.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = accumulator()
+    Given:
+        A @routine-decorated async generator that stops when
+        sent "stop".
+    When:
+        asend() is called with "stop".
+    Then:
+        It should raise StopAsyncIteration after the generator
+        returns.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = stop_on_signal()
+        await gen.__anext__()  # "waiting"
 
-            # Act
-            initial = await gen.__anext__()
-            r1 = await gen.asend(10)
-            r2 = await gen.asend(20)
-            r3 = await gen.asend(30)
+        # Act
+        got = await gen.asend("continue")
+        assert got == "got:continue"
 
-            # Assert
-            assert initial == 0
-            assert r1 == 10
-            assert r2 == 20
-            assert r3 == 30
-            await gen.aclose()
+        # Act & Assert
+        with pytest.raises(StopAsyncIteration):
+            await gen.asend("stop")
 
-    @pytest.mark.asyncio
-    async def test_routine_asend_with_termination_signal(self):
-        """Test asend causing generator exhaustion.
 
-        Given:
-            A @routine-decorated async generator that stops when
-            sent "stop".
-        When:
-            asend() is called with "stop".
-        Then:
-            It should raise StopAsyncIteration after the generator
-            returns.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = stop_on_signal()
-            await gen.__anext__()  # "waiting"
+@pytest.mark.asyncio
+async def test_routine_with_anext_implicit_none():
+    """Test __anext__() works as implicit None send.
 
-            # Act
-            got = await gen.asend("continue")
-            assert got == "got:continue"
+    Given:
+        A @routine-decorated async generator yielding its first
+        value.
+    When:
+        __anext__() is called (no prior send).
+    Then:
+        It should yield the first value with None as the implicit
+        send.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = echo_send(2)
 
-            # Act & Assert
-            with pytest.raises(StopAsyncIteration):
-                await gen.asend("stop")
+        # Act
+        first = await gen.__anext__()
+        second = await gen.__anext__()
 
-    @pytest.mark.asyncio
-    async def test_routine_anext_with_implicit_none_send(self):
-        """Test __anext__() works as implicit None send.
+        # Assert
+        assert first == "ready"
+        assert second == "echo:None"
+        await gen.aclose()
 
-        Given:
-            A @routine-decorated async generator yielding its first
-            value.
-        When:
-            __anext__() is called (no prior send).
-        Then:
-            It should yield the first value with None as the implicit
-            send.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = echo_send(2)
 
-            # Act
-            first = await gen.__anext__()
-            second = await gen.__anext__()
+@pytest.mark.asyncio
+async def test_routine_with_athrow_handled_exception():
+    """Test athrow with an exception the generator catches.
 
-            # Assert
-            assert first == "ready"
-            assert second == "echo:None"
-            await gen.aclose()
+    Given:
+        A @routine-decorated async generator that catches
+        Resettable and yields a recovery value.
+    When:
+        athrow() is called with Resettable.
+    Then:
+        It should yield the recovery value instead of propagating
+        the exception.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = resilient_counter(5)
+        v1 = await gen.__anext__()
+        assert v1 == 5
 
-    @pytest.mark.asyncio
-    async def test_routine_athrow_with_handled_exception(self):
-        """Test athrow with an exception the generator catches.
+        # Act
+        recovered = await gen.athrow(Resettable)
 
-        Given:
-            A @routine-decorated async generator that catches
-            Resettable and yields a recovery value.
-        When:
-            athrow() is called with Resettable.
-        Then:
-            It should yield the recovery value instead of propagating
-            the exception.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = resilient_counter(5)
-            v1 = await gen.__anext__()
-            assert v1 == 5
+        # Assert
+        assert recovered == 0
+        await gen.aclose()
 
-            # Act
-            recovered = await gen.athrow(Resettable)
 
-            # Assert
-            assert recovered == 0
-            await gen.aclose()
+@pytest.mark.asyncio
+async def test_routine_with_athrow_unhandled_exception():
+    """Test athrow with an exception the generator does not catch.
 
-    @pytest.mark.asyncio
-    async def test_routine_athrow_with_unhandled_exception(self):
-        """Test athrow with an exception the generator does not catch.
+    Given:
+        A @routine-decorated async generator that does not catch
+        the thrown exception.
+    When:
+        athrow() is called with an unhandled exception.
+    Then:
+        It should propagate the exception to the caller.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = fragile_gen()
+        await gen.__anext__()  # "one"
 
-        Given:
-            A @routine-decorated async generator that does not catch
-            the thrown exception.
-        When:
-            athrow() is called with an unhandled exception.
-        Then:
-            It should propagate the exception to the caller.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = fragile_gen()
-            await gen.__anext__()  # "one"
+        # Act & Assert
+        with pytest.raises(Resettable):
+            await gen.athrow(Resettable)
 
-            # Act & Assert
-            with pytest.raises(Resettable):
-                await gen.athrow(Resettable)
 
-    @pytest.mark.asyncio
-    async def test_routine_athrow_with_generator_return(self):
-        """Test athrow causing the generator to return.
+@pytest.mark.asyncio
+async def test_routine_with_athrow_causing_return():
+    """Test athrow causing the generator to return.
 
-        Given:
-            A @routine-decorated async generator that catches a
-            thrown exception and then returns.
-        When:
-            athrow() is called causing the generator to return after
-            handling.
-        Then:
-            It should raise StopAsyncIteration.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = catch_and_return()
-            v = await gen.__anext__()
-            assert v == "before"
+    Given:
+        A @routine-decorated async generator that catches a
+        thrown exception and then returns.
+    When:
+        athrow() is called causing the generator to return after
+        handling.
+    Then:
+        It should raise StopAsyncIteration.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = catch_and_return()
+        v = await gen.__anext__()
+        assert v == "before"
 
-            # Act & Assert
-            with pytest.raises(StopAsyncIteration):
-                await gen.athrow(Resettable)
+        # Act & Assert
+        with pytest.raises(StopAsyncIteration):
+            await gen.athrow(Resettable)
 
-    @pytest.mark.asyncio
-    async def test_routine_aclose_with_partial_consumption(self):
-        """Test aclose on a partially consumed generator.
 
-        Given:
-            A @routine-decorated async generator that is partially
-            consumed.
-        When:
-            aclose() is called before exhaustion.
-        Then:
-            It should close cleanly and subsequent __anext__() should
-            raise StopAsyncIteration.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = echo_send(5)
-            await gen.__anext__()  # "ready"
+@pytest.mark.asyncio
+async def test_routine_with_aclose_partial_consumption():
+    """Test aclose on a partially consumed generator.
 
-            # Act
-            await gen.aclose()
+    Given:
+        A @routine-decorated async generator that is partially
+        consumed.
+    When:
+        aclose() is called before exhaustion.
+    Then:
+        It should close cleanly and subsequent __anext__() should
+        raise StopAsyncIteration.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = echo_send(5)
+        await gen.__anext__()  # "ready"
 
-            # Assert
-            with pytest.raises(StopAsyncIteration):
-                await gen.__anext__()
+        # Act
+        await gen.aclose()
 
-    @pytest.mark.asyncio
-    async def test_routine_interleaved_send_and_throw(self):
-        """Test interleaving asend and athrow calls.
+        # Assert
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
 
-        Given:
-            A @routine-decorated async generator with bilateral
-            protocol.
-        When:
-            asend() is called, then athrow(), then asend() again.
-        Then:
-            It should correctly alternate between send and throw
-            forwarding.
-        """
-        with do_dispatch(False):
-            # Arrange
-            gen = resilient_counter(0)
-            v = await gen.__anext__()
-            assert v == 0
 
-            # Act — send to advance
-            v = await gen.asend(None)
-            assert v == 1
-            v = await gen.asend(None)
-            assert v == 2
+@pytest.mark.asyncio
+async def test_routine_with_interleaved_send_and_throw():
+    """Test interleaving asend and athrow calls.
 
-            # Act — throw to reset
-            v = await gen.athrow(Resettable)
-            assert v == 0
+    Given:
+        A @routine-decorated async generator with bilateral
+        protocol.
+    When:
+        asend() is called, then athrow(), then asend() again.
+    Then:
+        It should correctly alternate between send and throw
+        forwarding.
+    """
+    with do_dispatch(False):
+        # Arrange
+        gen = resilient_counter(0)
+        v = await gen.__anext__()
+        assert v == 0
 
-            # Act — send again after reset
-            v = await gen.asend(None)
-            assert v == 1
+        # Act — send to advance
+        v = await gen.asend(None)
+        assert v == 1
+        v = await gen.asend(None)
+        assert v == 2
 
-            # Assert final state
-            await gen.aclose()
+        # Act — throw to reset
+        v = await gen.athrow(Resettable)
+        assert v == 0
 
-    @pytest.mark.asyncio
-    async def test_routine_async_for_backward_compatibility(self):
-        """Test async for iteration still works after refactor.
+        # Act — send again after reset
+        v = await gen.asend(None)
+        assert v == 1
 
-        Given:
-            A @routine-decorated async generator using async for
-            iteration.
-        When:
-            The generator is consumed via async for (not asend or
-            athrow).
-        Then:
-            It should yield all values identically to the pre-change
-            behavior.
-        """
-        with do_dispatch(False):
-            # Act
-            result = []
-            async for value in foo_gen(5):
-                result.append(value)
+        # Assert final state
+        await gen.aclose()
 
-            # Assert
-            assert result == [0, 1, 2, 3, 4]
+
+@pytest.mark.asyncio
+async def test_routine_with_async_for_iteration():
+    """Test async for iteration still works after refactor.
+
+    Given:
+        A @routine-decorated async generator using async for
+        iteration.
+    When:
+        The generator is consumed via async for (not asend or
+        athrow).
+    Then:
+        It should yield all values identically to the pre-change
+        behavior.
+    """
+    with do_dispatch(False):
+        # Act
+        result = []
+        async for value in foo_gen(5):
+            result.append(value)
+
+        # Assert
+        assert result == [0, 1, 2, 3, 4]

@@ -10,6 +10,7 @@ from pytest_mock import MockerFixture
 
 import wool
 from wool.runtime.routine.task import Task
+from wool.runtime.routine.task import WorkerProxyLike
 
 
 class PicklableProxy:
@@ -34,7 +35,7 @@ def mock_proxy(mocker: MockerFixture):
     Creates a mock proxy with the minimal interface needed for task
     execution and dispatch.
     """
-    mock_proxy = mocker.MagicMock()
+    mock_proxy = mocker.MagicMock(spec=WorkerProxyLike)
     mock_proxy.id = uuid4()
 
     # Mock dispatch to return an async generator

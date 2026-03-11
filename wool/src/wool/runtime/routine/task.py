@@ -26,6 +26,7 @@ from typing import TypeAlias
 from typing import TypeVar
 from typing import cast
 from typing import overload
+from typing import runtime_checkable
 from uuid import UUID
 
 import cloudpickle
@@ -70,6 +71,7 @@ def do_dispatch(flag: bool | None = None, /) -> bool | ContextManager[None]:
 
 
 # public
+@runtime_checkable
 class WorkerProxyLike(Protocol):
     """Protocol defining the interface required by Task for proxy objects.
 
@@ -145,6 +147,10 @@ class Task(Generic[W]):
         :param kwargs:
             Additional keyword arguments (unused).
         """
+        if not isinstance(self.proxy, WorkerProxyLike):
+            raise TypeError(
+                f"proxy must conform to WorkerProxyLike, got {type(self.proxy).__name__}"
+            )
         if caller := _current_task.get():
             self.caller = caller.id
         TaskEvent("task-created", task=self).emit()

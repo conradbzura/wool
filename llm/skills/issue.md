@@ -19,6 +19,17 @@ This skill is part of the development workflow pipeline: `/issue` → `/pr` → 
 
 ## Workflow
 
+### TL;DR
+
+1. Determine the source
+2. Draft interactively
+3. Suggest labels
+4. Show draft for approval
+5. Push the issue
+6. Clean up `.issue.md` (if applicable)
+7. Return the issue URL
+8. Prompt the user to move onto the PR step
+
 ### 1. Determine the source
 
 Check whether `.issue.md` exists in the repository root:
@@ -198,6 +209,6 @@ The issue URL returned by `gh issue create` MUST be printed so the user can acce
 
 The user SHOULD be prompted with the next pipeline step: "Ready to plan this? Run `/pr <number>` to create a branch and draft PR."
 
-### 8. Verify
+### 8. Prompt the user to move onto the PR step
 
-Compile a structured action summary of the actions performed and outputs produced during this skill invocation, then invoke the `/verify` skill: `/verify issue`.
+The user MUST be prompted with the next pipeline step: "Ready to plan this? Run `/pr <number>` to create a branch and draft PR." DO NOT proceed on your own.

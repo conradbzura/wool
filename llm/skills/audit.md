@@ -1,8 +1,8 @@
 ---
-name: verify
+name: audit
 description: >
   Post-skill compliance checker. Use this skill whenever the user says
-  "/verify <skill-name>", "verify the last skill run", "check compliance",
+  "/audit <skill-name>", "audit the last skill run", "check compliance",
   or similar. Spawns a fresh subagent with no shared context to evaluate
   whether a skill's MUST/SHALL requirements were actually met, using binary
   checklist decomposition for unbiased assessment.
@@ -10,24 +10,31 @@ description: >
 
 The key words MUST, MUST NOT, SHALL, SHALL NOT, SHOULD, SHOULD NOT, REQUIRED, RECOMMENDED, MAY, and OPTIONAL in this document are to be interpreted as described in RFC 2119.
 
-# Verify Skill
+# Audit Skill
 
 Spawn a fresh subagent to evaluate whether a skill's requirements were met during its most recent invocation. The subagent receives the skill definition and a structured action summary, extracts binary checklist items from every normative requirement, and reports a pass/fail verdict per item.
 
 ## Pipeline Context
 
-This skill is a **cross-cutting quality gate** invoked at the end of every SDLC pipeline stage: `/issue` → verify → `/pr` → verify → `/implement` → verify → `/commit` → verify → `/pr` (update) → verify.
+This skill is a **cross-cutting quality gate** invoked at the end of every SDLC pipeline stage: `/issue` → audit → `/pr` → audit → `/implement` → audit → `/commit` → audit → `/pr` (update) → audit → `/review` → audit.
 
 ## Arguments
 
 ```
-/verify <skill-name> [summary]
+/audit <skill-name> [summary]
 ```
 
-- `<skill-name>` — REQUIRED. The name of the skill to verify (e.g., `issue`, `pr`, `implement`, `commit`, `test`).
+- `<skill-name>` — REQUIRED. The name of the skill to audit (e.g., `issue`, `pr`, `implement`, `commit`, `test`).
 - `[summary]` — OPTIONAL. An inline action summary. If omitted, the primary agent MUST compile one from the current conversation context before spawning the subagent.
 
 ## Workflow
+
+### TL;DR
+
+1. Resolve the skill definition
+2. Compile the action summary
+3. Spawn the verification subagent
+4. Present the report
 
 ### 1. Resolve the skill definition
 

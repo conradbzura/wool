@@ -19,10 +19,13 @@ from wool.runtime.event import Event
 from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskEvent
+from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.worker.connection import RpcError
 from wool.runtime.worker.connection import TransientRpcError
 from wool.runtime.worker.connection import UnexpectedResponse
 from wool.runtime.worker.connection import WorkerConnection
+
+from .conftest import PicklableMock
 
 
 @pytest.fixture
@@ -36,8 +39,7 @@ def sample_task(mocker: MockerFixture):
     async def sample_task():
         return "test_result"
 
-    mock_proxy = mocker.MagicMock()
-    mock_proxy.id = "test-proxy-id"
+    mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
     return Task(
         id=uuid4(),
@@ -394,8 +396,7 @@ class TestWorkerConnection:
         async def test_callable():
             return "test"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         work_task = Task(
             id=uuid4(),
