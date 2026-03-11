@@ -9,8 +9,6 @@ import asyncio
 import time
 from contextlib import contextmanager
 from typing import cast
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
 
 import pytest
 from hypothesis import HealthCheck
@@ -33,7 +31,7 @@ class TestWorkerPool:
     # Constructor Tests
     # =========================================================================
 
-    def test_constructor_uses_cpu_count_as_default_size(self, mocker: MockerFixture):
+    def test___init___uses_cpu_count_as_default_size(self, mocker: MockerFixture):
         """Test successfully create a pool using CPU count.
 
         Given:
@@ -53,7 +51,7 @@ class TestWorkerPool:
         assert isinstance(pool, WorkerPool)
         mock_cpu_count.assert_called_once()
 
-    def test_constructor_raises_error_when_cpu_count_unavailable(
+    def test___init___raises_error_when_cpu_count_unavailable(
         self, mocker: MockerFixture
     ):
         """Test raise ValueError with appropriate message.
@@ -68,13 +66,13 @@ class TestWorkerPool:
         # Arrange
         mock_cpu_count = mocker.patch("os.cpu_count", return_value=None)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Unable to determine CPU count"):
             WorkerPool(size=0)
 
         mock_cpu_count.assert_called_once()
 
-    def test_constructor_raises_error_when_cpu_count_unavailable_default_size(
+    def test___init___raises_error_when_cpu_count_unavailable_default_size(
         self, mocker: MockerFixture
     ):
         """Test raise ValueError indicating CPU count cannot be determined.
@@ -89,11 +87,11 @@ class TestWorkerPool:
         # Arrange
         mocker.patch("os.cpu_count", return_value=None)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Unable to determine CPU count"):
             WorkerPool()
 
-    def test_constructor_raises_error_with_negative_size(self):
+    def test___init___raises_error_with_negative_size(self):
         """Test raise ValueError with appropriate message.
 
         Given:
@@ -106,11 +104,11 @@ class TestWorkerPool:
         # Arrange
         invalid_size = -1
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Size must be non-negative"):
             WorkerPool(size=invalid_size)
 
-    def test_constructor_with_zero_size_and_available_cpu_count(
+    def test___init___with_zero_size_and_available_cpu_count(
         self, mocker: MockerFixture
     ):
         """Test use CPU count as the pool size.
@@ -132,7 +130,7 @@ class TestWorkerPool:
         assert isinstance(pool, WorkerPool)
         mock_cpu_count.assert_called_once()
 
-    def test_constructor_accepts_tags_and_size_parameters(self):
+    def test___init___accepts_tags_and_size_parameters(self):
         """Test successfully create a pool with the specified configuration.
 
         Given:
@@ -152,7 +150,7 @@ class TestWorkerPool:
         # Assert
         assert isinstance(pool, WorkerPool)
 
-    def test_constructor_with_empty_tags(self):
+    def test___init___with_empty_tags(self):
         """Test create pool successfully.
 
         Given:
@@ -168,7 +166,7 @@ class TestWorkerPool:
         # Assert
         assert isinstance(pool, WorkerPool)
 
-    def test_constructor_with_multiple_tags(self):
+    def test___init___with_multiple_tags(self):
         """Test accept all tags for worker configuration.
 
         Given:
@@ -187,7 +185,7 @@ class TestWorkerPool:
         # Assert
         assert isinstance(pool, WorkerPool)
 
-    def test_constructor_accepts_custom_worker_factory(self, mocker: MockerFixture):
+    def test___init___accepts_custom_worker_factory(self, mocker: MockerFixture):
         """Test accept the factory for later worker creation.
 
         Given:
@@ -207,7 +205,7 @@ class TestWorkerPool:
         # Assert
         assert isinstance(pool, WorkerPool)
 
-    def test_constructor_durable_mode_with_discovery(self):
+    def test___init___durable_mode_with_discovery(self, mocker):
         """Test configure for durable mode (no local workers).
 
         Given:
@@ -218,7 +216,7 @@ class TestWorkerPool:
             Should configure for durable mode (no local workers)
         """
         # Arrange
-        mock_discovery = MagicMock()
+        mock_discovery = mocker.MagicMock()
 
         # Act
         pool = WorkerPool(discovery=mock_discovery)
@@ -325,7 +323,7 @@ class TestWorkerPool:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_context_manager_lifecycle(self, mock_worker_factory):
+    async def test___aenter___lifecycle(self, mock_worker_factory):
         """Test workers are started and stopped correctly.
 
         Given:
@@ -349,7 +347,7 @@ class TestWorkerPool:
         assert pool_instance is not None
 
     @pytest.mark.asyncio
-    async def test_context_manager_cleanup_on_error(self, mock_worker_factory):
+    async def test___aexit___cleanup_on_error(self, mock_worker_factory):
         """Test cleanup still occurs and exception propagates correctly.
 
         Given:
@@ -363,7 +361,7 @@ class TestWorkerPool:
         pool_created = False
         exception_caught = False
 
-        # Act & Assert
+        # Act & assert
         try:
             async with WorkerPool(worker=mock_worker_factory, size=2):
                 pool_created = True
@@ -378,7 +376,7 @@ class TestWorkerPool:
         assert exception_caught, "Exception should have been propagated"
 
     @pytest.mark.asyncio
-    async def test_context_manager_lifecycle_returns_pool_instance(
+    async def test___aenter___lifecycle_returns_pool_instance(
         self,
         mock_shared_memory,
         mock_worker_proxy,
@@ -405,7 +403,7 @@ class TestWorkerPool:
         mock_worker_proxy.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_context_manager_with_exception_in_user_code(
+    async def test___aexit___with_exception_in_user_code(
         self,
         mock_shared_memory,
         mock_worker_proxy,
@@ -421,7 +419,7 @@ class TestWorkerPool:
         Then:
             Should clean up pool properly and propagate the exception
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="User error"):
             async with WorkerPool(size=2) as pool:
                 assert pool is not None
@@ -431,7 +429,7 @@ class TestWorkerPool:
         mock_worker_proxy.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_context_manager_with_worker_startup_failure(
+    async def test___aenter___with_worker_startup_failure(
         self,
         mock_shared_memory,
         mock_worker_proxy,
@@ -450,7 +448,7 @@ class TestWorkerPool:
         # Arrange
         mock_local_worker.start.side_effect = RuntimeError("Worker startup failed")
 
-        # Act & Assert
+        # Act & assert
         async with WorkerPool(size=1) as pool:
             # Pool should still be created even if workers fail to start
             assert pool is not None
@@ -459,7 +457,7 @@ class TestWorkerPool:
         mock_worker_proxy.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_context_manager_handles_exceptions_gracefully(
+    async def test___aexit___handles_exceptions_gracefully(
         self,
         mock_shared_memory,
         mock_worker_proxy,
@@ -478,7 +476,7 @@ class TestWorkerPool:
         # Arrange - Make cleanup operations potentially fail but be handled
         mock_shared_memory.unlink.side_effect = OSError("Cleanup failed")
 
-        # Act & Assert - Should not raise exception from cleanup
+        # Act & assert - Should not raise exception from cleanup
         async with WorkerPool(size=1) as pool:
             assert pool is not None
 
@@ -486,7 +484,7 @@ class TestWorkerPool:
         assert isinstance(pool, WorkerPool)
 
     @pytest.mark.asyncio
-    async def test_context_manager_handles_shared_memory_cleanup_exceptions(
+    async def test___aexit___handles_shared_memory_cleanup_exceptions(
         self, mocker: MockerFixture, mock_local_worker, mock_worker_proxy
     ):
         """Test handle exceptions gracefully without propagating them.
@@ -512,7 +510,7 @@ class TestWorkerPool:
             pass
 
     @pytest.mark.asyncio
-    async def test_context_manager_default_case_covers_shared_memory_creation(
+    async def test___aenter___default_case_covers_shared_memory_creation(
         self,
         mocker: MockerFixture,
         mock_local_worker,
@@ -548,7 +546,7 @@ class TestWorkerPool:
         Then:
             The pool successfully starts and stops
         """
-        # Arrange & Act & Assert
+        # Arrange, act, & assert
         async with WorkerPool(worker=mock_worker_factory, size=3) as pool:
             # Pool started successfully - this validates workers were created
             assert pool is not None
@@ -564,7 +562,7 @@ class TestWorkerPool:
         Then:
             1 worker is created
         """
-        # Arrange & Act & Assert
+        # Arrange, act, & assert
         async with WorkerPool(worker=mock_worker_factory, size=1) as pool:
             assert pool is not None
 
@@ -579,7 +577,7 @@ class TestWorkerPool:
         Then:
             10 workers are created
         """
-        # Arrange & Act & Assert
+        # Arrange, act, & assert
         async with WorkerPool(worker=mock_worker_factory, size=10) as pool:
             assert pool is not None
 
@@ -607,7 +605,7 @@ class TestWorkerPool:
 
         pool = WorkerPool(worker=failing_factory, size=1)
 
-        # Act & Assert - pool starts even with failing workers
+        # Act & assert - pool starts even with failing workers
         # (WorkerPool uses return_exceptions=True to handle failures gracefully)
         async with pool:
             # Pool context manager completes successfully
@@ -648,7 +646,7 @@ class TestWorkerPool:
         Then:
             Should start and clean up successfully
         """
-        # Act & Assert - Context manager should complete without error
+        # Act & assert - Context manager should complete without error
         async with WorkerPool(size=3) as pool:
             assert pool is not None
             assert isinstance(pool, WorkerPool)
@@ -656,7 +654,7 @@ class TestWorkerPool:
         # Context exits cleanly (implicit assertion - no exception raised)
 
     @pytest.mark.asyncio
-    async def test_context_manager_preserves_metadata(
+    async def test___aenter___preserves_metadata(
         self,
         mock_shared_memory,
         mock_worker_proxy,
@@ -710,7 +708,7 @@ class TestWorkerPool:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_context_manager_with_custom_worker_factory(
+    async def test___aenter___with_custom_worker_factory(
         self,
         mocker: MockerFixture,
         mock_shared_memory,
@@ -743,7 +741,7 @@ class TestWorkerPool:
         custom_worker.start.assert_called()
 
     @pytest.mark.asyncio
-    async def test_context_manager_with_durable_pool_configuration(
+    async def test___aenter___with_durable_pool_configuration(
         self, mock_worker_proxy, mock_discovery_service_for_pool
     ):
         """Test connect to existing workers via discovery.
@@ -767,8 +765,9 @@ class TestWorkerPool:
         mock_worker_proxy.__aexit__.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_context_manager_with_custom_loadbalancer(
+    async def test___aenter___with_custom_loadbalancer(
         self,
+        mocker,
         mock_shared_memory,
         mock_worker_proxy,
         mock_local_worker,
@@ -784,7 +783,7 @@ class TestWorkerPool:
             Should pass load balancer to WorkerProxy correctly
         """
         # Arrange
-        custom_loadbalancer = MagicMock()
+        custom_loadbalancer = mocker.MagicMock()
 
         # Act
         async with WorkerPool(size=1, loadbalancer=custom_loadbalancer) as pool:
@@ -819,8 +818,9 @@ class TestWorkerPool:
         # Assert - pool lifecycle completes without deadlock
 
     @pytest.mark.asyncio
-    async def test_context_manager_concurrent_operations(
+    async def test___aenter___concurrent_operations(
         self,
+        mocker,
         mock_shared_memory,
         mock_worker_proxy,
         mock_local_worker,
@@ -836,7 +836,7 @@ class TestWorkerPool:
             Should handle concurrency correctly
         """
         # Arrange
-        mock_local_worker.start = AsyncMock()
+        mock_local_worker.start = mocker.AsyncMock()
 
         # Act
         async with WorkerPool(size=3) as pool:
@@ -874,7 +874,7 @@ class TestWorkerPool:
 
         pool = WorkerPool(worker=slow_factory, size=1)
 
-        # Act & Assert - with a 1 second timeout
+        # Act & assert - with a 1 second timeout
         with pytest.raises(asyncio.TimeoutError):
             async with asyncio.timeout(1.0):
                 async with pool:
@@ -1105,6 +1105,7 @@ class TestWorkerPool:
     @pytest.mark.asyncio
     async def test_hybrid_mode_with_custom_loadbalancer(
         self,
+        mocker,
         mock_shared_memory,
         mock_worker_proxy,
         mock_local_worker,
@@ -1121,7 +1122,7 @@ class TestWorkerPool:
         """
         # Arrange
         discovery_service = mock_discovery_service_for_pool
-        custom_lb = MagicMock()
+        custom_lb = mocker.MagicMock()
 
         # Act
         async with WorkerPool(
@@ -1159,7 +1160,7 @@ class TestWorkerPool:
 
         invalid_discovery = InvalidDiscovery()
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError):
             async with WorkerPool(discovery=invalid_discovery):
                 pass
@@ -1191,7 +1192,7 @@ class TestWorkerPool:
 
         invalid_discovery = InvalidDiscovery()
 
-        # Act & Assert - This tests line 212 (TypeError)
+        # Act & assert - This tests line 212 (TypeError)
         with pytest.raises(TypeError, match="Expected DiscoveryLike"):
             async with WorkerPool(size=2, discovery=invalid_discovery):
                 pass
@@ -1212,7 +1213,7 @@ class TestWorkerPool:
         # Arrange
         discovery_service = mock_discovery_service_for_pool
 
-        # Act & Assert - This tests line 230
+        # Act & assert - This tests line 230
         with pytest.raises(ValueError, match="Size must be non-negative"):
             WorkerPool(size=-1, discovery=discovery_service)
 
@@ -1230,18 +1231,18 @@ class TestWorkerPool:
         """
         # Arrange
         mocker.patch("os.cpu_count", return_value=None)
-        discovery_service = MagicMock()
+        discovery_service = mocker.MagicMock()
 
-        # Act & Assert - This tests line 227
+        # Act & assert - This tests line 227
         with pytest.raises(ValueError, match="Unable to determine CPU count"):
             WorkerPool(size=0, discovery=discovery_service)
 
-
-class TestWorkerPoolProperties:
-    """Property-based tests for WorkerPool invariants."""
+    # =========================================================================
+    # Property-Based Tests
+    # =========================================================================
 
     @given(st.integers(min_value=1, max_value=10))
-    def test_constructor_accepts_valid_sizes(self, size):
+    def test___init___accepts_valid_sizes(self, size):
         """Test create pool successfully.
 
         Given:
@@ -1258,7 +1259,7 @@ class TestWorkerPoolProperties:
         assert isinstance(pool, WorkerPool)
 
     @given(st.integers(min_value=-100, max_value=-1))
-    def test_constructor_rejects_negative_sizes(self, negative_size):
+    def test___init___rejects_negative_sizes(self, negative_size):
         """Test raise ValueError.
 
         Given:
@@ -1268,7 +1269,7 @@ class TestWorkerPoolProperties:
         Then:
             Should raise ValueError
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError, match="Size must be non-negative"):
             WorkerPool(size=negative_size)
 
@@ -1420,9 +1421,9 @@ class TestWorkerPoolProperties:
         )
         assert str(caught_exception) == exception_message
 
-
-class TestWorkerPoolContextHelpers:
-    """Test suite for WorkerPool internal context helper methods."""
+    # =========================================================================
+    # Context Helper Tests
+    # =========================================================================
 
     @pytest.mark.asyncio
     async def test_enter_context_with_awaitable(
@@ -1467,7 +1468,7 @@ class TestWorkerPoolContextHelpers:
 
         pool = WorkerPool(discovery=discovery_awaitable)
 
-        # Act & Assert - should not raise
+        # Act & assert - should not raise
         async with pool:
             pass
 
@@ -1514,7 +1515,7 @@ class TestWorkerPoolContextHelpers:
 
         pool = WorkerPool(discovery=mock_discovery)
 
-        # Act & Assert - should not raise
+        # Act & assert - should not raise
         async with pool:
             pass
 
@@ -1611,7 +1612,7 @@ class TestWorkerPoolContextHelpers:
 
         pool = WorkerPool(size=1)
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError):
             async with pool:
                 pass

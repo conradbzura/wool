@@ -66,7 +66,7 @@ class TestWorkerMetadata:
         Then:
             It should raise AttributeError (frozen dataclass)
         """
-        # Act & Assert
+        # Act & assert
         with pytest.raises(AttributeError):
             metadata.address = "newhost:50051"
 
@@ -108,7 +108,7 @@ class TestWorkerMetadata:
         worker1 = WorkerMetadata(uid=uid, address="host1:5001", pid=123, version="1.0.0")
         worker2 = WorkerMetadata(uid=uid, address="host2:5002", pid=456, version="2.0.0")
 
-        # Act & Assert
+        # Act & assert
         assert hash(worker1) == hash(worker2)
 
     def test_eq(self):
@@ -126,7 +126,7 @@ class TestWorkerMetadata:
         worker1 = WorkerMetadata(uid=uid, address="host1:5001", pid=123, version="1.0.0")
         worker2 = WorkerMetadata(uid=uid, address="host2:5002", pid=456, version="2.0.0")
 
-        # Act & Assert
+        # Act & assert
         assert worker1 != worker2
 
         # Workers with all same fields should be equal
@@ -172,7 +172,7 @@ class TestWorkerMetadata:
             version="1.0.0",
         )
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError):
             WorkerMetadata.from_protobuf(protobuf)
 
@@ -338,7 +338,7 @@ class TestDiscoveryPublisherLike:
 
         publisher = ConformingPublisher()
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(publisher, DiscoveryPublisherLike)
 
     def test_nonconforming_protocol(self):
@@ -358,7 +358,7 @@ class TestDiscoveryPublisherLike:
 
         publisher = NonConformingPublisher()
 
-        # Act & Assert
+        # Act & assert
         assert not isinstance(publisher, DiscoveryPublisherLike)
 
     def test_runtime_checkable(self):
@@ -380,7 +380,7 @@ class TestDiscoveryPublisherLike:
 
         publisher = Publisher()
 
-        # Act & Assert
+        # Act & assert
         isinstance(publisher, DiscoveryPublisherLike)
 
 
@@ -410,7 +410,7 @@ class TestDiscoverySubscriberLike:
 
         subscriber = ConformingSubscriber()
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(subscriber, DiscoverySubscriberLike)
 
     def test_nonconforming_protocol(self):
@@ -430,7 +430,7 @@ class TestDiscoverySubscriberLike:
 
         subscriber = NonConformingSubscriber()
 
-        # Act & Assert
+        # Act & assert
         assert not isinstance(subscriber, DiscoverySubscriberLike)
 
     def test_runtime_checkable(self):
@@ -450,7 +450,7 @@ class TestDiscoverySubscriberLike:
 
         subscriber = Subscriber()
 
-        # Act & Assert
+        # Act & assert
         isinstance(subscriber, DiscoverySubscriberLike)
 
 
@@ -484,7 +484,7 @@ class TestDiscoveryLike:
 
         instance = ConformingDiscovery()
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(instance, DiscoveryLike)
 
     def test_nonconforming_missing_subscribe(self):
@@ -508,7 +508,7 @@ class TestDiscoveryLike:
 
         instance = MissingSubscribe()
 
-        # Act & Assert
+        # Act & assert
         assert not isinstance(instance, DiscoveryLike)
 
     def test_nonconforming_missing_publisher(self):
@@ -531,7 +531,7 @@ class TestDiscoveryLike:
 
         instance = MissingPublisher()
 
-        # Act & Assert
+        # Act & assert
         assert not isinstance(instance, DiscoveryLike)
 
 
@@ -591,7 +591,7 @@ class TestDiscovery:
             def subscribe(self, filter=None) -> DiscoverySubscriberLike:
                 return None  # type: ignore
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(TypeError):
             IncompleteDiscovery()  # type: ignore
 
@@ -621,5 +621,5 @@ class TestDiscovery:
 
         instance = ConcreteDiscovery()
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(instance, DiscoveryLike)

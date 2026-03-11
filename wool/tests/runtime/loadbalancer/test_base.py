@@ -66,7 +66,7 @@ class TestLoadBalancerContextLike:
             def remove_worker(self, metadata):
                 pass
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(Conforming(), LoadBalancerContextLike)
 
     def test_isinstance_with_non_conforming_class(self):
@@ -90,7 +90,7 @@ class TestLoadBalancerContextLike:
             def add_worker(self, metadata, connection):
                 pass
 
-        # Act & Assert
+        # Act & assert
         assert not isinstance(NonConforming(), LoadBalancerContextLike)
 
 
@@ -111,7 +111,7 @@ class TestLoadBalancerLike:
             async def dispatch(self, task, *, context, timeout=None):
                 pass
 
-        # Act & Assert
+        # Act & assert
         assert isinstance(Conforming(), LoadBalancerLike)
 
     def test_isinstance_with_non_conforming_class(self):
@@ -129,7 +129,7 @@ class TestLoadBalancerLike:
         class NonConforming:
             pass
 
-        # Act & Assert
+        # Act & assert
         assert not isinstance(NonConforming(), LoadBalancerLike)
 
 
@@ -144,7 +144,7 @@ class TestLoadBalancerContext:
         Then:
             It should satisfy the protocol
         """
-        # Act & Assert
+        # Act & assert
         assert isinstance(LoadBalancerContext(), LoadBalancerContextLike)
 
     @given(loadbalancer_context())
@@ -159,7 +159,7 @@ class TestLoadBalancerContext:
         Then:
             The returned value is an immutable mapping proxy
         """
-        # Act & Assert
+        # Act & assert
         assert isinstance(context.workers, MappingProxyType)
 
     @given(loadbalancer_context())

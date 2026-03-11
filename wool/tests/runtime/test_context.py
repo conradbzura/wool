@@ -199,7 +199,7 @@ class TestRuntimeContext:
         original_value = dispatch_timeout.get()
         outer_timeout = 15.0
 
-        # Act & Assert
+        # Act & assert
         with RuntimeContext(dispatch_timeout=outer_timeout):
             assert dispatch_timeout.get() == outer_timeout
 
@@ -227,7 +227,7 @@ class TestRuntimeContext:
         original_value = dispatch_timeout.get()
         outer_timeout = 20.0
 
-        # Act & Assert
+        # Act & assert
         with RuntimeContext(dispatch_timeout=outer_timeout):
             assert dispatch_timeout.get() == outer_timeout
 
@@ -253,7 +253,7 @@ class TestRuntimeContext:
         outer_timeout = 8.0
         inner_timeout = 12.0
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(RuntimeError, match="inner error"):
             with RuntimeContext(dispatch_timeout=outer_timeout):
                 assert dispatch_timeout.get() == outer_timeout
@@ -280,7 +280,7 @@ class TestRuntimeContext:
         # Arrange
         original_value = dispatch_timeout.get()
 
-        # Act & Assert
+        # Act & assert
         with RuntimeContext(dispatch_timeout=timeout):
             pass  # Exit immediately
 
@@ -300,7 +300,7 @@ class TestRuntimeContext:
         # Arrange
         original_value = dispatch_timeout.get()
 
-        # Act & Assert
+        # Act & assert
         with RuntimeContext(dispatch_timeout=timeout):
             assert dispatch_timeout.get() == timeout
 
@@ -324,7 +324,7 @@ class TestRuntimeContext:
         # Arrange
         original_value = dispatch_timeout.get()
 
-        # Act & Assert
+        # Act & assert
         with RuntimeContext(dispatch_timeout=outer):
             assert dispatch_timeout.get() == outer
 
@@ -353,7 +353,7 @@ class TestRuntimeContext:
         # Arrange
         original_value = dispatch_timeout.get()
 
-        # Act & Assert
+        # Act & assert
         for timeout in timeouts:
             with RuntimeContext(dispatch_timeout=timeout):
                 assert dispatch_timeout.get() == timeout
@@ -374,7 +374,7 @@ class TestRuntimeContext:
         # Arrange
         original_value = dispatch_timeout.get()
 
-        # Act & Assert
+        # Act & assert
         with pytest.raises(ValueError):
             with RuntimeContext(dispatch_timeout=timeout):
                 assert dispatch_timeout.get() == timeout
@@ -425,7 +425,7 @@ class TestRuntimeContext:
         # Arrange
         original_value = dispatch_timeout.get()
 
-        # Act & Assert - build up nested contexts recursively
+        # Act & assert - build up nested contexts recursively
         def nest_contexts(remaining_levels):
             if not remaining_levels:
                 return

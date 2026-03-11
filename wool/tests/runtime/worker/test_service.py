@@ -21,11 +21,9 @@ from wool import protocol
 from wool.protocol.worker import WorkerStub
 from wool.protocol.worker import add_WorkerServicer_to_server
 from wool.runtime.event import Event
-from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskEvent
 from wool.runtime.routine.task import WorkerProxyLike
-from wool.runtime.routine.task import do_dispatch
 from wool.runtime.worker.interceptor import VersionInterceptor
 from wool.runtime.worker.service import WorkerService
 from wool.runtime.worker.service import _ReadOnlyEvent
@@ -137,7 +135,7 @@ class TestReadOnlyEvent:
     set_event.set()
 
     @pytest.mark.parametrize("event", (unset_event, set_event))
-    def test_init(self, event):
+    def test___init___wraps_asyncio_event(self, event):
         """Test :class:`_ReadOnlyEvent` initialization.
 
         Given:
@@ -159,7 +157,7 @@ class TestReadOnlyEvent:
         with pytest.raises(AttributeError):
             getattr(read_only_event, "clear")
 
-    def test_is_set(self, mocker: MockerFixture):
+    def test_is_set_delegates_to_underlying_event(self, mocker: MockerFixture):
         """Test :class:`_ReadOnlyEvent.is_set` calls :meth:`~asyncio.Event.is_set` on its
         underlying event.
 
@@ -182,7 +180,7 @@ class TestReadOnlyEvent:
         is_set_spy.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_wait(self, mocker: MockerFixture):
+    async def test_wait_delegates_to_underlying_event(self, mocker: MockerFixture):
         """Test :class:`_ReadOnlyEvent.wait` calls :meth:`~asyncio.Event.wait` on its
         underlying event.
 
@@ -207,7 +205,7 @@ class TestReadOnlyEvent:
 
 
 class TestWorkerService:
-    def test_init(self):
+    def test___init___with_defaults(self):
         """Test :class:`WorkerService` initialization.
 
         Given:
@@ -227,7 +225,6 @@ class TestWorkerService:
         assert not service.stopped.is_set()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_init")
     async def test_dispatch_task_that_returns(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -273,14 +270,13 @@ class TestWorkerService:
         assert reponse.HasField("result")
         assert cloudpickle.loads(reponse.result.dump) == "test_result"
 
-        # Verify
+        # Assert
         emit_spy.assert_called()
         event_calls = [call[0][0] for call in emit_spy.call_args_list]
         scheduled_events = [e for e in event_calls if e.type == "task-scheduled"]
         assert len(scheduled_events) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_init")
     async def test_dispatch_task_that_raises(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -333,7 +329,6 @@ class TestWorkerService:
         assert len(scheduled_events) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_init")
     async def test_dispatch_while_stopping(
         self, service_fixture, mock_worker_proxy_cache, mocker: MockerFixture
     ):
@@ -377,7 +372,7 @@ class TestWorkerService:
 
             request = protocol.worker.Request(task=wool_task.to_protobuf())
 
-            # Act & Assert
+            # Act & assert
             with pytest.raises(grpc.RpcError) as exc_info:
                 stream = stub.dispatch()
                 await stream.write(request)
@@ -387,7 +382,7 @@ class TestWorkerService:
 
             assert exc_info.value.code() == StatusCode.UNAVAILABLE
 
-            # Verify no task-scheduled event was emitted for the new task
+            # Assert no task-scheduled event was emitted for the new task
             scheduled_events = [
                 call
                 for call in emit_spy.call_args_list[initial_emit_count:]
@@ -400,7 +395,6 @@ class TestWorkerService:
             await stop_task
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_init")
     async def test_dispatch_while_stopped(self, service_fixture, mocker: MockerFixture):
         """Test :class:`WorkerService` dispatch aborts when stopped.
 
@@ -417,7 +411,7 @@ class TestWorkerService:
             event.set()
             await stub.stop(protocol.worker.StopRequest(timeout=5))
 
-            # Verify service is stopped
+            # Assert service is stopped
             assert service.stopping.is_set()
             assert service.stopped.is_set()
 
@@ -440,7 +434,7 @@ class TestWorkerService:
 
             request = protocol.worker.Request(task=wool_task.to_protobuf())
 
-            # Act & Assert
+            # Act & assert
             with pytest.raises(grpc.RpcError) as exc_info:
                 stream = stub.dispatch()
                 await stream.write(request)
@@ -450,7 +444,7 @@ class TestWorkerService:
 
             assert exc_info.value.code() == StatusCode.UNAVAILABLE
 
-            # Verify no task-scheduled event was emitted
+            # Assert no task-scheduled event was emitted
             scheduled_events = [
                 call
                 for call in emit_spy.call_args_list[initial_emit_count:]
@@ -459,7 +453,6 @@ class TestWorkerService:
             assert len(scheduled_events) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_init")
     async def test_dispatch_non_async_callable(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -489,7 +482,7 @@ class TestWorkerService:
 
         request = protocol.worker.Request(task=wool_task.to_protobuf())
 
-        # Act & Assert
+        # Act & assert
         async with grpc_aio_stub() as stub:
             with pytest.raises(grpc.RpcError) as exc_info:
                 stream = stub.dispatch()
@@ -501,7 +494,6 @@ class TestWorkerService:
             assert exc_info.value.code() == StatusCode.UNKNOWN
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_stop_and_cancel(
         self,
         grpc_aio_stub,
@@ -564,7 +556,6 @@ class TestWorkerService:
             mock_worker_proxy_cache.clear.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_stop_and_wait(
         self,
         grpc_aio_stub,
@@ -626,7 +617,6 @@ class TestWorkerService:
             mock_worker_proxy_cache.clear.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_stop_and_cancel")
     async def test_dispatch_task_that_self_cancels(
         self,
         grpc_aio_stub,
@@ -676,7 +666,6 @@ class TestWorkerService:
         assert isinstance(exception, asyncio.CancelledError)
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_stop_and_cancel")
     async def test_stop_timeout_then_cancel(
         self, service_fixture, mock_worker_proxy_cache
     ):
@@ -703,7 +692,6 @@ class TestWorkerService:
             assert service.stopped.is_set()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_stop_while_idle(
         self, grpc_aio_stub, grpc_servicer, mock_worker_proxy_cache
     ):
@@ -727,11 +715,10 @@ class TestWorkerService:
         assert isinstance(stop_result, protocol.worker.Void)
         assert grpc_servicer.stopping.is_set()
         assert grpc_servicer.stopped.is_set()
-        # Verify proxy_pool.clear() was called
+        # Assert proxy_pool.clear() was called
         mock_worker_proxy_cache.clear.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_stop_while_idle")
     async def test_stop_while_stopping(self, service_fixture, mock_worker_proxy_cache):
         """Test :class:`WorkerService` stop is idempotent.
 
@@ -764,11 +751,10 @@ class TestWorkerService:
             event.set()
             await stop_task
 
-            # Verify service is now fully stopped
+            # Assert service is now fully stopped
             assert service.stopped.is_set()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_stop_while_idle")
     async def test_stop_while_stopped(self, service_fixture, mock_worker_proxy_cache):
         """Test :class:`WorkerService` stop when already stopped.
 
@@ -785,7 +771,7 @@ class TestWorkerService:
             event.set()
             await stub.stop(protocol.worker.StopRequest(timeout=5))
 
-            # Verify service is fully stopped
+            # Assert service is fully stopped
             assert service.stopping.is_set()
             assert service.stopped.is_set()
 
@@ -798,7 +784,6 @@ class TestWorkerService:
             assert service.stopped.is_set()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_stop_while_idle")
     async def test_stop_negative_timeout_waits_indefinitely(
         self, service_fixture, mock_worker_proxy_cache
     ):
@@ -826,13 +811,12 @@ class TestWorkerService:
             # Let the task complete so stop can finish
             event.set()
 
-            # Act & Assert
+            # Act & assert
             stop_result = await asyncio.wait_for(stop_task, 5)
             assert isinstance(stop_result, protocol.worker.Void)
             assert service.stopped.is_set()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_async_generator_task(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -892,14 +876,13 @@ class TestWorkerService:
         assert results == ["gen_value_0", "gen_value_1", "gen_value_2"]
         assert len(remaining) == 0
 
-        # Verify task-scheduled event was emitted
+        # Assert task-scheduled event was emitted
         emit_spy.assert_called()
         event_calls = [call[0][0] for call in emit_spy.call_args_list]
         scheduled_events = [e for e in event_calls if e.type == "task-scheduled"]
         assert len(scheduled_events) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_async_generator_raises_during_iteration(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -955,7 +938,6 @@ class TestWorkerService:
             assert str(exception) == "Generator error"
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_async_generator_completes_normally(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1015,7 +997,6 @@ class TestWorkerService:
             assert len(remaining) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_async_generator_empty(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1065,7 +1046,6 @@ class TestWorkerService:
         assert len(remaining) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_coroutine_for_comparison(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1110,7 +1090,6 @@ class TestWorkerService:
         assert result == "coroutine_result"
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_stop_cancels_async_generator_task(
         self,
         grpc_aio_stub,
@@ -1175,7 +1154,6 @@ class TestWorkerService:
             assert grpc_servicer.stopped.is_set()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_run_on_worker_done_callback_tolerates_already_cancelled_future(
         self,
         mocker: MockerFixture,
@@ -1265,7 +1243,6 @@ class TestWorkerService:
             WorkerService._destroy_worker_loop(entry.obj)
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_with_version_in_ack(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1308,7 +1285,6 @@ class TestWorkerService:
         assert ack_response.ack.version == protocol.__version__
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_with_empty_client_version(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1362,7 +1338,6 @@ class TestWorkerService:
         client_major=st.integers(min_value=0, max_value=100),
     )
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_with_incompatible_major_version(
         self,
         grpc_aio_stub,
@@ -1428,7 +1403,6 @@ class TestWorkerService:
         client_minor=st.integers(min_value=1, max_value=100),
     )
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_with_newer_client_same_major(
         self,
         grpc_aio_stub,
@@ -1483,7 +1457,6 @@ class TestWorkerService:
         assert "Incompatible version" in responses[0].nack.reason
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_task_that_returns")
     async def test_dispatch_with_unparseable_client_version(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1528,7 +1501,6 @@ class TestWorkerService:
         assert "Unparseable version" in responses[0].nack.reason
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_async_generator_with_send(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1608,7 +1580,6 @@ class TestWorkerService:
             assert len(remaining) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_async_generator_send_then_close(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1678,7 +1649,6 @@ class TestWorkerService:
             assert len(remaining) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_pull_only_async_generator(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1738,7 +1708,6 @@ class TestWorkerService:
         assert len(remaining) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_pull_only_async_generator_partial_consumption(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1797,7 +1766,6 @@ class TestWorkerService:
         assert len(remaining) == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_with_send")
     async def test_dispatch_async_generator_interleaved_next_and_send(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1873,7 +1841,6 @@ class TestWorkerService:
             await stream.done_writing()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_async_generator_throw_terminates(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -1935,7 +1902,6 @@ class TestWorkerService:
             assert str(exception) == "injected"
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_stream_dispatch_emits_iteration_events(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2015,7 +1981,6 @@ class TestWorkerService:
             TaskEvent._handlers = saved
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_with_send")
     async def test_stream_dispatch_send_emits_iteration_events(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2094,7 +2059,6 @@ class TestWorkerService:
             TaskEvent._handlers = saved
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_throw_terminates")
     async def test_stream_dispatch_throw_emits_iteration_events(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2176,7 +2140,6 @@ class TestWorkerService:
             TaskEvent._handlers = saved
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_raises_during_iteration")
     async def test_stream_dispatch_iteration_events_on_error(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2255,7 +2218,6 @@ class TestWorkerService:
             TaskEvent._handlers = saved
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_streaming_with_proxy_and_dispatch_context(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2317,7 +2279,6 @@ class TestWorkerService:
         assert result["has_proxy"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_streaming_without_proxy_pool(
         self, grpc_aio_stub, mocker: MockerFixture
     ):
@@ -2372,7 +2333,6 @@ class TestWorkerService:
         assert result["has_proxy"] is False
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_task")
     async def test_dispatch_streaming_proxy_cleanup_on_error(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2435,7 +2395,6 @@ class TestWorkerService:
         mock_worker_proxy_cache.get.return_value.__aexit__.assert_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_with_send")
     async def test_dispatch_streaming_asend_with_proxy_context(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
@@ -2520,7 +2479,6 @@ class TestWorkerService:
         assert result2 == {"echo": "world", "do_dispatch": False}
 
     @pytest.mark.asyncio
-    @pytest.mark.dependency("test_dispatch_async_generator_throw_terminates")
     async def test_dispatch_streaming_athrow_with_proxy_context(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
     ):
