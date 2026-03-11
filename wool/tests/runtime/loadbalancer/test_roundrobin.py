@@ -15,6 +15,7 @@ from wool.runtime.loadbalancer.base import LoadBalancerLike
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
 from wool.runtime.routine.task import Task
+from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.worker.connection import RpcError
 from wool.runtime.worker.connection import TransientRpcError
 from wool.runtime.worker.connection import WorkerConnection
@@ -95,7 +96,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         task = Task(
             id=uuid4(),
@@ -157,7 +158,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         task = Task(
             id=uuid4(),
@@ -288,7 +289,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         task = Task(
             id=uuid4(),
@@ -404,7 +405,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         tasks = [
             Task(
@@ -472,7 +473,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         task1 = Task(
             id=uuid4(),
@@ -541,7 +542,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         task = Task(
             id=uuid4(),
@@ -608,7 +609,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         task = Task(
             id=uuid4(),
@@ -676,7 +677,7 @@ class TestRoundRobinLoadBalancer:
         async def routine():
             return "Hello world!"
 
-        mock_proxy = mocker.MagicMock(id="mock-proxy")
+        mock_proxy = mocker.MagicMock(spec=WorkerProxyLike, id="mock-proxy")
 
         tasks = [
             Task(

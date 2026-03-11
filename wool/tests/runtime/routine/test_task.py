@@ -415,6 +415,60 @@ class TestTask:
             assert callable(run_method)
 
     @pytest.mark.asyncio
+    async def test___enter___with_async_generator(
+        self, sample_task, clear_event_handlers
+    ):
+        """Test __enter__ returns a callable for generator tasks.
+
+        Given:
+            A :py:class:`Task` with an async generator callable.
+        When:
+            The task is used as a context manager.
+        Then:
+            It should return a callable from ``__enter__``.
+        """
+
+        # Arrange
+        async def test_generator():
+            yield "value"
+
+        task = sample_task(callable=test_generator)
+
+        # Act
+        with task as run_method:
+            # Assert
+            assert callable(run_method)
+
+    @pytest.mark.asyncio
+    async def test___enter___with_invalid_callable(
+        self, sample_task, clear_event_handlers
+    ):
+        """Test __enter__ raises ValueError for non-async callable.
+
+        Given:
+            A :py:class:`Task` with neither a coroutine nor an
+            async generator callable.
+        When:
+            The task is used as a context manager.
+        Then:
+            It should raise ``ValueError``.
+        """
+
+        # Arrange
+        def not_async():
+            return "not async"
+
+        task = sample_task(callable=not_async)
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match="Expected coroutine function or async generator function",
+        ):
+            with task:
+                pass
+
+    @pytest.mark.asyncio
     async def test___exit___without_exception(self, sample_task, clear_event_handlers):
         """Test __exit__ completes cleanly without exceptions.
 
@@ -490,60 +544,6 @@ class TestTask:
         assert task.exception is not None
         assert task.exception.type == "RuntimeError"
         assert any("runtime error" in line for line in task.exception.traceback)
-
-    @pytest.mark.asyncio
-    async def test___enter___with_async_generator(
-        self, sample_task, clear_event_handlers
-    ):
-        """Test __enter__ returns a callable for generator tasks.
-
-        Given:
-            A :py:class:`Task` with an async generator callable.
-        When:
-            The task is used as a context manager.
-        Then:
-            It should return a callable from ``__enter__``.
-        """
-
-        # Arrange
-        async def test_generator():
-            yield "value"
-
-        task = sample_task(callable=test_generator)
-
-        # Act
-        with task as run_method:
-            # Assert
-            assert callable(run_method)
-
-    @pytest.mark.asyncio
-    async def test___enter___with_invalid_callable(
-        self, sample_task, clear_event_handlers
-    ):
-        """Test __enter__ raises ValueError for non-async callable.
-
-        Given:
-            A :py:class:`Task` with neither a coroutine nor an
-            async generator callable.
-        When:
-            The task is used as a context manager.
-        Then:
-            It should raise ``ValueError``.
-        """
-
-        # Arrange
-        def not_async():
-            return "not async"
-
-        task = sample_task(callable=not_async)
-
-        # Act & Assert
-        with pytest.raises(
-            ValueError,
-            match="Expected coroutine function or async generator function",
-        ):
-            with task:
-                pass
 
     @settings(max_examples=50, deadline=None)
     @given(

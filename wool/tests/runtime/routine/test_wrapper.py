@@ -167,15 +167,15 @@ class Foo:
 )
 @given(function_type=st.sampled_from(["function", "generator", "class"]))
 def test_routine_with_invalid_types(function_type):
-    """Property-based test: @routine decorator validation.
+    """Test @routine rejects invalid callable types.
 
     Given:
         The @routine decorator applied to invalid function types
         (non-coroutine, sync generator, class).
     When:
-        Decorator is applied.
+        The decorator is applied.
     Then:
-        ValueError is raised with appropriate message.
+        It should raise ``ValueError``.
     """
     # Arrange, act, & assert
     with pytest.raises(
@@ -227,7 +227,7 @@ async def test_routine_with_various_function_types(
     mocker: MockerFixture,
     mock_proxy_context,
 ):
-    """Property-based test: Routine decorator with various function types.
+    """Test @routine dispatch and local execution across function types.
 
     Given:
         The @routine decorator applied to different function types (module
@@ -236,9 +236,9 @@ async def test_routine_with_various_function_types(
     When:
         The decorated function is called with appropriate arguments.
     Then:
-        Task is either dispatched (when do_dispatch=True) or executed
-        locally (when do_dispatch=False) and result is returned
-        correctly for all function types, including async generators.
+        The task is either dispatched (when do_dispatch=True) or
+        executed locally (when do_dispatch=False) and the result
+        is returned correctly for all function types.
     """
     # Arrange
     _, call_factory, expected, is_async_gen = test_case
@@ -326,7 +326,7 @@ async def test_routine_with_various_arguments(
     mocker: MockerFixture,
     mock_proxy_context,
 ):
-    """Property-based test: Routine decorator with various argument patterns.
+    """Test @routine preserves arguments through dispatch.
 
     Given:
         The @routine decorator with any valid combination of positional
@@ -334,7 +334,7 @@ async def test_routine_with_various_arguments(
     When:
         The decorated function is called with these arguments.
     Then:
-        All values should be preserved through execution.
+        All values are preserved through execution.
     """
     # Arrange
     expected_result = (
@@ -368,7 +368,7 @@ async def test_routine_with_multi_value_stream(
     When:
         Wrapped function is called and awaited.
     Then:
-        Returns the final value from the execution stream.
+        The final value from the execution stream is returned.
     """
 
     # Arrange
@@ -401,7 +401,7 @@ async def test_routine_with_empty_stream(
     When:
         Wrapped function is called and awaited.
     Then:
-        Returns None.
+        The result is ``None``.
     """
 
     # Arrange
@@ -435,7 +435,7 @@ async def test_routine_with_stream_error(
     When:
         The decorated function is called and awaited.
     Then:
-        Exception propagates to caller.
+        The exception propagates to the caller.
     """
 
     # Arrange

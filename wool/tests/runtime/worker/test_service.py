@@ -24,10 +24,13 @@ from wool.runtime.event import Event
 from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskEvent
+from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.routine.task import do_dispatch
 from wool.runtime.worker.interceptor import VersionInterceptor
 from wool.runtime.worker.service import WorkerService
 from wool.runtime.worker.service import _ReadOnlyEvent
+
+from .conftest import PicklableMock
 
 
 @pytest.fixture(scope="function")
@@ -91,8 +94,7 @@ async def service_fixture(mocker: MockerFixture, grpc_aio_stub):
     service = WorkerService()
     _control_event = threading.Event()
 
-    mock_proxy = mocker.MagicMock()
-    mock_proxy.id = "test-proxy-id"
+    mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
     wool_task = Task(
         id=uuid4(),
@@ -244,8 +246,7 @@ class TestWorkerService:
         async def sample_task():
             return "test_result"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -298,8 +299,7 @@ class TestWorkerService:
         async def failing_task():
             raise ValueError("test_exception")
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -365,8 +365,7 @@ class TestWorkerService:
             async def another_task():
                 return "should_not_execute"
 
-            mock_proxy = mocker.MagicMock()
-            mock_proxy.id = "test-proxy-id-2"
+            mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id-2")
 
             wool_task = Task(
                 id=uuid4(),
@@ -429,8 +428,7 @@ class TestWorkerService:
             async def another_task():
                 return "should_not_execute"
 
-            mock_proxy = mocker.MagicMock()
-            mock_proxy.id = "test-proxy-id-2"
+            mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id-2")
 
             wool_task = Task(
                 id=uuid4(),
@@ -479,8 +477,7 @@ class TestWorkerService:
         def sync_function():
             return "sync_result"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -528,8 +525,7 @@ class TestWorkerService:
             await asyncio.sleep(10)
             return "should_not_complete"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -591,8 +587,7 @@ class TestWorkerService:
         async def quick_task():
             return "completed"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -654,8 +649,7 @@ class TestWorkerService:
             await asyncio.sleep(0)
             return "should_not_return"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -857,8 +851,7 @@ class TestWorkerService:
             for i in range(3):
                 yield f"gen_value_{i}"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -925,8 +918,7 @@ class TestWorkerService:
             yield "first_value"
             raise ValueError("Generator error")
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -982,8 +974,7 @@ class TestWorkerService:
             for i in range(2):
                 yield i
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1043,8 +1034,7 @@ class TestWorkerService:
             return
             yield  # unreachable, but makes it a generator
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1093,8 +1083,7 @@ class TestWorkerService:
         async def test_coroutine():
             return "coroutine_result"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1145,8 +1134,7 @@ class TestWorkerService:
             await asyncio.sleep(100)
             yield "should_not_reach"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1250,8 +1238,7 @@ class TestWorkerService:
         async def sample_task():
             return "completed"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         work_task = Task(
             id=uuid4(),
@@ -1296,8 +1283,7 @@ class TestWorkerService:
         async def sample_task():
             return "test_result"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1341,8 +1327,7 @@ class TestWorkerService:
         async def sample_task():
             return "test_result"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1406,8 +1391,7 @@ class TestWorkerService:
         async def sample_task():
             return "should_not_execute"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1473,8 +1457,7 @@ class TestWorkerService:
         async def sample_task():
             return "should_not_execute"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1519,8 +1502,7 @@ class TestWorkerService:
         async def sample_task():
             return "should_not_execute"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1568,8 +1550,7 @@ class TestWorkerService:
             while value is not None:
                 value = yield f"echo:{value}"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1652,8 +1633,7 @@ class TestWorkerService:
                 else:
                     count += 1
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1718,8 +1698,7 @@ class TestWorkerService:
             yield "beta"
             yield "gamma"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1779,8 +1758,7 @@ class TestWorkerService:
             for i in range(5):
                 yield i
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1844,8 +1822,7 @@ class TestWorkerService:
                 else:
                     total += 1
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1916,8 +1893,7 @@ class TestWorkerService:
             yield "first"
             yield "second"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -1979,8 +1955,7 @@ class TestWorkerService:
             yield "first"
             yield "second"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2060,8 +2035,7 @@ class TestWorkerService:
             value = yield "ready"
             yield f"echo:{value}"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2140,8 +2114,7 @@ class TestWorkerService:
             yield "first"
             yield "second"
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2223,8 +2196,7 @@ class TestWorkerService:
             yield "ok"
             raise RuntimeError("fail")
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2310,8 +2282,7 @@ class TestWorkerService:
                 "has_proxy": wool.__proxy__.get() is not None,
             }
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2367,8 +2338,7 @@ class TestWorkerService:
         async def capturing_generator():
             yield {"has_proxy": wool.__proxy__.get() is not None}
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2423,8 +2393,7 @@ class TestWorkerService:
             yield "before_error"
             raise ValueError("generator_error")
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2493,8 +2462,7 @@ class TestWorkerService:
             while value is not None:
                 value = yield {"echo": value, "do_dispatch": _dd()}
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
@@ -2581,8 +2549,7 @@ class TestWorkerService:
                     "has_proxy": wool.__proxy__.get() is not None,
                 }
 
-        mock_proxy = mocker.MagicMock()
-        mock_proxy.id = "test-proxy-id"
+        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
 
         wool_task = Task(
             id=uuid4(),
