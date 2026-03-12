@@ -14,7 +14,6 @@ import grpc.aio
 
 from wool import protocol
 from wool.runtime.resourcepool import ResourcePool
-from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.worker.base import ChannelCredentialsType
 from wool.runtime.worker.base import resolve_channel_credentials
@@ -116,12 +115,6 @@ class _DispatchStream(Generic[_T]):
             raise RuntimeError("anext(): asynchronous generator is already running")
         self._running = True
         try:
-            IterationEvent(
-                "task-iteration-initiated",
-                task=self._task,
-                kind="next",
-                step=self._step,
-            ).emit()
             request = protocol.worker.Request(next=protocol.worker.Void())
             await self._call.write(request)
             result = await self._read_next()
@@ -199,12 +192,6 @@ class _DispatchStream(Generic[_T]):
             raise RuntimeError("anext(): asynchronous generator is already running")
         self._running = True
         try:
-            IterationEvent(
-                "task-iteration-initiated",
-                task=self._task,
-                kind="send",
-                step=self._step,
-            ).emit()
             dump = cloudpickle.dumps(value)
             request = protocol.worker.Request(send=protocol.task.Message(dump=dump))
             await self._call.write(request)
@@ -241,13 +228,6 @@ class _DispatchStream(Generic[_T]):
             raise RuntimeError("athrow(): asynchronous generator is already running")
         self._running = True
         try:
-            IterationEvent(
-                "task-iteration-initiated",
-                task=self._task,
-                kind="throw",
-                step=self._step,
-            ).emit()
-
             if isinstance(typ, BaseException):  # pragma: no cover
                 exc = typ
             elif val is not None:
