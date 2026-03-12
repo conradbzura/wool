@@ -20,6 +20,7 @@ from pytest_mock import MockerFixture
 from wool.runtime.discovery.base import DiscoveryLike
 from wool.runtime.discovery.base import DiscoveryPublisherLike
 from wool.runtime.discovery.base import DiscoverySubscriberLike
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.local import LocalWorker
 from wool.runtime.worker.pool import WorkerPool
 
@@ -594,7 +595,7 @@ class TestWorkerPool:
         """
 
         # Arrange
-        def failing_factory(*tags, credentials=None):
+        def failing_factory(*tags, credentials=None, options=None):
             worker = mocker.MagicMock()
             worker.start = mocker.AsyncMock(
                 side_effect=RuntimeError("Mock worker startup failed")
@@ -730,7 +731,7 @@ class TestWorkerPool:
         custom_worker.stop = mocker.AsyncMock()
         custom_worker.metadata = mocker.MagicMock()
 
-        def custom_factory(*args, credentials=None):
+        def custom_factory(*args, credentials=None, options=None):
             return cast(LocalWorker, custom_worker)
 
         # Act
@@ -861,7 +862,7 @@ class TestWorkerPool:
         """
 
         # Arrange
-        def slow_factory(*tags, credentials=None):
+        def slow_factory(*tags, credentials=None, options=None):
             worker = mocker.MagicMock()
 
             async def slow_start():
@@ -1616,3 +1617,78 @@ class TestWorkerPool:
         with pytest.raises(ValueError):
             async with pool:
                 pass
+
+    @pytest.mark.asyncio
+    async def test___init___with_default_options(
+        self,
+        mocker: MockerFixture,
+        mock_worker_factory,
+        mock_local_worker,
+        mock_worker_proxy,
+    ):
+        """Test WorkerProxy and factory receive options=None by default.
+
+        Given:
+            No options parameter
+        When:
+            WorkerPool is entered as async context
+        Then:
+            WorkerProxy and worker factory both receive options=None
+        """
+        # Arrange
+        import wool.runtime.worker.pool as wp
+
+        mock_proxy_cls = mocker.patch.object(
+            wp, "WorkerProxy", return_value=mock_worker_proxy
+        )
+        pool = WorkerPool(worker=mock_worker_factory, size=1)
+
+        # Act
+        async with pool:
+            pass
+
+        # Assert
+        mock_proxy_cls.assert_called_once()
+        _, proxy_kwargs = mock_proxy_cls.call_args
+        assert proxy_kwargs.get("options") is None
+
+    @pytest.mark.asyncio
+    async def test___init___with_custom_options(
+        self,
+        mocker: MockerFixture,
+        mock_worker_factory,
+        mock_local_worker,
+        mock_worker_proxy,
+    ):
+        """Test WorkerProxy and factory receive the custom options.
+
+        Given:
+            A WorkerOptions instance
+        When:
+            WorkerPool is entered as async context
+        Then:
+            WorkerProxy and worker factory both receive the custom
+            options
+        """
+        # Arrange
+        import wool.runtime.worker.pool as wp
+
+        custom_options = WorkerOptions(
+            max_receive_message_length=200 * 1024 * 1024,
+            max_send_message_length=50 * 1024 * 1024,
+        )
+        mock_proxy_cls = mocker.patch.object(
+            wp, "WorkerProxy", return_value=mock_worker_proxy
+        )
+        pool = WorkerPool(
+            worker=mock_worker_factory, size=1, options=custom_options
+        )
+
+        # Act
+        async with pool:
+            pass
+
+        # Assert
+        mock_proxy_cls.assert_called_once()
+        _, proxy_kwargs = mock_proxy_cls.call_args
+        assert proxy_kwargs["options"] is custom_options

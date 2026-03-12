@@ -25,6 +25,7 @@ from wool.runtime.discovery.base import WorkerMetadata
 from wool.runtime.discovery.local import LocalDiscovery
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.routine.task import Task
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.connection import WorkerConnection
 from wool.runtime.worker.proxy import WorkerProxy
 from wool.runtime.worker.proxy import is_version_compatible
@@ -1824,6 +1825,92 @@ class TestWorkerProxy:
         # Assert
         assert isinstance(proxy, WorkerProxy)
         assert not proxy.started
+
+    @pytest.mark.asyncio
+    async def test___init___with_default_options(
+        self, mocker: MockerFixture, mock_discovery_service
+    ):
+        """Test WorkerConnection receives options=None by default.
+
+        Given:
+            No options parameter and a worker-added discovery event
+        When:
+            WorkerProxy starts and processes the event
+        Then:
+            WorkerConnection is created with options=None
+        """
+        # Arrange
+        mock_conn_cls = mocker.patch.object(
+            wp, "WorkerConnection", return_value=mocker.MagicMock()
+        )
+        await mock_discovery_service.start()
+
+        worker = WorkerMetadata(
+            uid=uuid.uuid4(),
+            address="192.168.1.100:50051",
+            pid=1001,
+            version="1.0.0",
+            tags=frozenset(["test"]),
+            extra=MappingProxyType({}),
+        )
+
+        # Act
+        proxy = WorkerProxy(discovery=mock_discovery_service)
+        async with proxy:
+            mock_discovery_service.inject_worker_added(worker)
+            await asyncio.sleep(0.2)
+
+        await mock_discovery_service.stop()
+
+        # Assert
+        mock_conn_cls.assert_called()
+        _, kwargs = mock_conn_cls.call_args
+        assert kwargs["options"] is None
+
+    @pytest.mark.asyncio
+    async def test___init___with_custom_options(
+        self, mocker: MockerFixture, mock_discovery_service
+    ):
+        """Test WorkerConnection receives custom options.
+
+        Given:
+            A WorkerOptions instance and a worker-added discovery event
+        When:
+            WorkerProxy starts and processes the event
+        Then:
+            WorkerConnection is created with the custom options
+        """
+        # Arrange
+        custom_options = WorkerOptions(
+            max_receive_message_length=200 * 1024 * 1024,
+            max_send_message_length=50 * 1024 * 1024,
+        )
+        mock_conn_cls = mocker.patch.object(
+            wp, "WorkerConnection", return_value=mocker.MagicMock()
+        )
+        await mock_discovery_service.start()
+
+        worker = WorkerMetadata(
+            uid=uuid.uuid4(),
+            address="192.168.1.100:50051",
+            pid=1001,
+            version="1.0.0",
+            tags=frozenset(["test"]),
+            extra=MappingProxyType({}),
+        )
+
+        # Act
+        proxy = WorkerProxy(discovery=mock_discovery_service, options=custom_options)
+        async with proxy:
+            mock_discovery_service.inject_worker_added(worker)
+            await asyncio.sleep(0.2)
+
+        await mock_discovery_service.stop()
+
+        # Assert
+        mock_conn_cls.assert_called()
+        _, kwargs = mock_conn_cls.call_args
+        assert kwargs["options"] is custom_options
 
 
 # ============================================================================
