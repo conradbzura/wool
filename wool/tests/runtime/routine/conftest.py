@@ -108,38 +108,6 @@ def sample_task(
     return _create_task
 
 
-@pytest.fixture
-def event_spy():
-    """Provides a spy for tracking event emissions.
-
-    Returns a function that can be used as an event handler and tracks
-    all calls made to it.
-    """
-    calls = []
-
-    def spy(event, timestamp, context=None):
-        calls.append((event, timestamp, context))
-
-    spy.calls = calls
-    spy.reset = lambda: calls.clear()
-
-    return spy
-
-
-@pytest.fixture
-def clear_event_handlers():
-    """Clears all event handlers before and after each test.
-
-    Ensures test isolation by preventing handler pollution between tests.
-    """
-    saved_handlers = wool.TaskEvent._handlers.copy()
-    wool.TaskEvent._handlers.clear()
-
-    yield
-
-    wool.TaskEvent._handlers = saved_handlers
-
-
 # Picklable test functions for decorator tests
 async def picklable_async_function(x: int) -> int:
     """A picklable async function for testing @routine decorator."""

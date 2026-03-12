@@ -20,9 +20,7 @@ import wool
 from wool import protocol
 from wool.protocol.worker import WorkerStub
 from wool.protocol.worker import add_WorkerServicer_to_server
-from wool.runtime.event import Event
 from wool.runtime.routine.task import Task
-from wool.runtime.routine.task import TaskEvent
 from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.worker.interceptor import VersionInterceptor
 from wool.runtime.worker.service import WorkerService
@@ -236,7 +234,7 @@ class TestWorkerService:
         When:
             Dispatch RPC is called with a task that returns a value
         Then:
-            It should emit task-scheduled event and return task result
+            It should return the task result
         """
 
         # Arrange
@@ -255,8 +253,6 @@ class TestWorkerService:
 
         request = protocol.worker.Request(task=wool_task.to_protobuf())
 
-        emit_spy = mocker.spy(TaskEvent, "emit")
-
         # Act
         async with grpc_aio_stub() as stub:
             stream = stub.dispatch()
@@ -270,12 +266,6 @@ class TestWorkerService:
         assert reponse.HasField("result")
         assert cloudpickle.loads(reponse.result.dump) == "test_result"
 
-        # Assert
-        emit_spy.assert_called()
-        event_calls = [call[0][0] for call in emit_spy.call_args_list]
-        scheduled_events = [e for e in event_calls if e.type == "task-scheduled"]
-        assert len(scheduled_events) == 1
-
     @pytest.mark.asyncio
     async def test_dispatch_task_that_raises(
         self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
@@ -288,7 +278,7 @@ class TestWorkerService:
         When:
             Dispatch RPC is called with a task that raises an exception
         Then:
-            It should emit task-scheduled event and return task exception as the result
+            It should return the task exception as the result
         """
 
         # Arrange
@@ -307,8 +297,6 @@ class TestWorkerService:
 
         request = protocol.worker.Request(task=wool_task.to_protobuf())
 
-        emit_spy = mocker.spy(TaskEvent, "emit")
-
         # Act
         async with grpc_aio_stub() as stub:
             stream = stub.dispatch()
@@ -323,10 +311,6 @@ class TestWorkerService:
         exception = cloudpickle.loads(response.exception.dump)
         assert isinstance(exception, ValueError)
         assert str(exception) == "test_exception"
-        emit_spy.assert_called()
-        event_calls = [call[0][0] for call in emit_spy.call_args_list]
-        scheduled_events = [e for e in event_calls if e.type == "task-scheduled"]
-        assert len(scheduled_events) == 1
 
     @pytest.mark.asyncio
     async def test_dispatch_while_stopping(
@@ -339,14 +323,10 @@ class TestWorkerService:
         When:
             stop is called and another dispatch RPC is attempted
         Then:
-            It should abort the new dispatch with UNAVAILABLE status without emitting
-            any task events
+            It should abort the new dispatch with UNAVAILABLE status
         """
         # Arrange
         async with service_fixture as (service, event, stub):
-            emit_spy = mocker.spy(TaskEvent, "emit")
-            initial_emit_count = emit_spy.call_count
-
             # Initiate stop (service enters stopping state)
             # Use wait=0 to immediately cancel tasks, but we'll check before tasks finish
             stop_task = asyncio.ensure_future(
@@ -382,14 +362,6 @@ class TestWorkerService:
 
             assert exc_info.value.code() == StatusCode.UNAVAILABLE
 
-            # Assert no task-scheduled event was emitted for the new task
-            scheduled_events = [
-                call
-                for call in emit_spy.call_args_list[initial_emit_count:]
-                if call[0][0].type == "task-scheduled"
-            ]
-            assert len(scheduled_events) == 0
-
             # Cleanup: let the original task complete so stop can finish
             event.set()
             await stop_task
@@ -403,7 +375,7 @@ class TestWorkerService:
         When:
             dispatch RPC is called with a task request
         Then:
-            It should abort with UNAVAILABLE status without emitting any task events
+            It should abort with UNAVAILABLE status
         """
         # Arrange
         async with service_fixture as (service, event, stub):
@@ -414,9 +386,6 @@ class TestWorkerService:
             # Assert service is stopped
             assert service.stopping.is_set()
             assert service.stopped.is_set()
-
-            emit_spy = mocker.spy(TaskEvent, "emit")
-            initial_emit_count = emit_spy.call_count
 
             # Create a new task to dispatch
             async def another_task():
@@ -443,14 +412,6 @@ class TestWorkerService:
                     pass
 
             assert exc_info.value.code() == StatusCode.UNAVAILABLE
-
-            # Assert no task-scheduled event was emitted
-            scheduled_events = [
-                call
-                for call in emit_spy.call_args_list[initial_emit_count:]
-                if call[0][0].type == "task-scheduled"
-            ]
-            assert len(scheduled_events) == 0
 
     @pytest.mark.asyncio
     async def test_dispatch_non_async_callable(
@@ -848,8 +809,6 @@ class TestWorkerService:
         request = protocol.worker.Request(task=wool_task.to_protobuf())
         next_request = protocol.worker.Request(next=protocol.worker.Void())
 
-        emit_spy = mocker.spy(TaskEvent, "emit")
-
         # Act
         async with grpc_aio_stub() as stub:
             stream = stub.dispatch()
@@ -875,12 +834,6 @@ class TestWorkerService:
         # Assert
         assert results == ["gen_value_0", "gen_value_1", "gen_value_2"]
         assert len(remaining) == 0
-
-        # Assert task-scheduled event was emitted
-        emit_spy.assert_called()
-        event_calls = [call[0][0] for call in emit_spy.call_args_list]
-        scheduled_events = [e for e in event_calls if e.type == "task-scheduled"]
-        assert len(scheduled_events) == 1
 
     @pytest.mark.asyncio
     async def test_dispatch_async_generator_raises_during_iteration(
@@ -1900,322 +1853,6 @@ class TestWorkerService:
             exception = cloudpickle.loads(response.exception.dump)
             assert isinstance(exception, ValueError)
             assert str(exception) == "injected"
-
-    @pytest.mark.asyncio
-    async def test_stream_dispatch_emits_iteration_events(
-        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
-    ):
-        """Test stream dispatch emits started/completed iteration events.
-
-        Given:
-            A service with an async generator task
-        When:
-            The client sends 2 next requests
-        Then:
-            task-iteration-started and task-iteration-completed events
-            are emitted for each iteration with correct kind and step
-        """
-
-        # Arrange
-        async def two_values():
-            yield "first"
-            yield "second"
-
-        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
-
-        wool_task = Task(
-            id=uuid4(),
-            callable=two_values,
-            args=(),
-            kwargs={},
-            proxy=mock_proxy,
-        )
-
-        saved = TaskEvent._handlers.copy()
-        TaskEvent._handlers.clear()
-
-        iteration_calls = []
-
-        def spy(event, timestamp, context=None):
-            iteration_calls.append((event, timestamp, context))
-
-        TaskEvent._handlers["task-iteration-started"] = [spy]
-        TaskEvent._handlers["task-iteration-completed"] = [spy]
-
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
-
-        try:
-            # Act
-            async with grpc_aio_stub() as stub:
-                stream = stub.dispatch()
-                await stream.write(request)
-                response = await anext(aiter(stream))
-                assert response.HasField("ack")
-
-                for _ in range(2):
-                    await stream.write(next_request)
-                    await anext(aiter(stream))
-
-                await stream.write(next_request)
-                await stream.done_writing()
-                [r async for r in stream]
-
-            Event.flush()
-
-            # Assert — 3 iterations: 2 that yield + 1 exhaustion
-            started = [
-                e for e, _, _ in iteration_calls if e.type == "task-iteration-started"
-            ]
-            completed = [
-                e for e, _, _ in iteration_calls if e.type == "task-iteration-completed"
-            ]
-            assert len(started) == 3
-            assert len(completed) == 3
-            for i, (s, c) in enumerate(zip(started, completed)):
-                assert s.kind == "next"
-                assert s.step == i
-                assert c.kind == "next"
-                assert c.step == i
-        finally:
-            TaskEvent._handlers = saved
-
-    @pytest.mark.asyncio
-    async def test_stream_dispatch_send_emits_iteration_events(
-        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
-    ):
-        """Test send-driven iteration emits events with kind="send".
-
-        Given:
-            A service with an echo async generator task
-        When:
-            The client sends a next then a send request
-        Then:
-            Iteration events record "next" for the first and "send"
-            for the second
-        """
-
-        # Arrange
-        async def echo_gen():
-            value = yield "ready"
-            yield f"echo:{value}"
-
-        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
-
-        wool_task = Task(
-            id=uuid4(),
-            callable=echo_gen,
-            args=(),
-            kwargs={},
-            proxy=mock_proxy,
-        )
-
-        saved = TaskEvent._handlers.copy()
-        TaskEvent._handlers.clear()
-
-        iteration_calls = []
-
-        def spy(event, timestamp, context=None):
-            iteration_calls.append((event, timestamp, context))
-
-        TaskEvent._handlers["task-iteration-started"] = [spy]
-        TaskEvent._handlers["task-iteration-completed"] = [spy]
-
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
-
-        try:
-            async with grpc_aio_stub() as stub:
-                stream = stub.dispatch()
-                await stream.write(request)
-                response = await anext(aiter(stream))
-                assert response.HasField("ack")
-
-                # next
-                await stream.write(next_request)
-                await anext(aiter(stream))
-
-                # send
-                msg = protocol.worker.Request(
-                    send=protocol.task.Message(dump=cloudpickle.dumps("hello"))
-                )
-                await stream.write(msg)
-                await anext(aiter(stream))
-
-                await stream.done_writing()
-                [r async for r in stream]
-
-            Event.flush()
-
-            started = [
-                e for e, _, _ in iteration_calls if e.type == "task-iteration-started"
-            ]
-            assert len(started) == 2
-            assert started[0].kind == "next"
-            assert started[0].step == 0
-            assert started[1].kind == "send"
-            assert started[1].step == 1
-        finally:
-            TaskEvent._handlers = saved
-
-    @pytest.mark.asyncio
-    async def test_stream_dispatch_throw_emits_iteration_events(
-        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
-    ):
-        """Test throw-driven iteration emits events with kind="throw".
-
-        Given:
-            A service with an async generator task
-        When:
-            The client sends a next then a throw request
-        Then:
-            Iteration events record "next" for the first and "throw"
-            for the second
-        """
-
-        # Arrange
-        async def gen():
-            yield "first"
-            yield "second"
-
-        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
-
-        wool_task = Task(
-            id=uuid4(),
-            callable=gen,
-            args=(),
-            kwargs={},
-            proxy=mock_proxy,
-        )
-
-        saved = TaskEvent._handlers.copy()
-        TaskEvent._handlers.clear()
-
-        iteration_calls = []
-
-        def spy(event, timestamp, context=None):
-            iteration_calls.append((event, timestamp, context))
-
-        TaskEvent._handlers["task-iteration-started"] = [spy]
-        TaskEvent._handlers["task-iteration-completed"] = [spy]
-
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
-
-        try:
-            async with grpc_aio_stub() as stub:
-                stream = stub.dispatch()
-                await stream.write(request)
-                response = await anext(aiter(stream))
-                assert response.HasField("ack")
-
-                # next
-                await stream.write(next_request)
-                await anext(aiter(stream))
-
-                # throw
-                throw_request = protocol.worker.Request(
-                    throw=protocol.task.Message(
-                        dump=cloudpickle.dumps(ValueError("boom"))
-                    )
-                )
-                await stream.write(throw_request)
-                response = await anext(aiter(stream))
-                assert response.HasField("exception")
-
-                await stream.done_writing()
-                [r async for r in stream]
-
-            Event.flush()
-
-            started = [
-                e for e, _, _ in iteration_calls if e.type == "task-iteration-started"
-            ]
-            assert len(started) == 2
-            assert started[0].kind == "next"
-            assert started[0].step == 0
-            assert started[1].kind == "throw"
-            assert started[1].step == 1
-        finally:
-            TaskEvent._handlers = saved
-
-    @pytest.mark.asyncio
-    async def test_stream_dispatch_iteration_events_on_error(
-        self, grpc_aio_stub, mocker: MockerFixture, mock_worker_proxy_cache
-    ):
-        """Test iteration events are emitted even when generator errors.
-
-        Given:
-            A service with an async generator that raises on second next
-        When:
-            The client sends two next requests
-        Then:
-            Both started and completed events are emitted for both
-            iterations, including the one that errors
-        """
-
-        # Arrange
-        async def failing_gen():
-            yield "ok"
-            raise RuntimeError("fail")
-
-        mock_proxy = PicklableMock(spec=WorkerProxyLike, id="test-proxy-id")
-
-        wool_task = Task(
-            id=uuid4(),
-            callable=failing_gen,
-            args=(),
-            kwargs={},
-            proxy=mock_proxy,
-        )
-
-        saved = TaskEvent._handlers.copy()
-        TaskEvent._handlers.clear()
-
-        iteration_calls = []
-
-        def spy(event, timestamp, context=None):
-            iteration_calls.append((event, timestamp, context))
-
-        TaskEvent._handlers["task-iteration-started"] = [spy]
-        TaskEvent._handlers["task-iteration-completed"] = [spy]
-
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
-
-        try:
-            async with grpc_aio_stub() as stub:
-                stream = stub.dispatch()
-                await stream.write(request)
-                response = await anext(aiter(stream))
-                assert response.HasField("ack")
-
-                # First next: ok
-                await stream.write(next_request)
-                response = await anext(aiter(stream))
-                assert response.HasField("result")
-
-                # Second next: generator raises
-                await stream.write(next_request)
-                response = await anext(aiter(stream))
-                assert response.HasField("exception")
-
-                await stream.done_writing()
-                [r async for r in stream]
-
-            Event.flush()
-
-            started = [
-                e for e, _, _ in iteration_calls if e.type == "task-iteration-started"
-            ]
-            completed = [
-                e for e, _, _ in iteration_calls if e.type == "task-iteration-completed"
-            ]
-            assert len(started) == 2
-            assert len(completed) == 2
-            assert completed[1].step == 1
-        finally:
-            TaskEvent._handlers = saved
 
     @pytest.mark.asyncio
     async def test_dispatch_streaming_with_proxy_and_dispatch_context(
