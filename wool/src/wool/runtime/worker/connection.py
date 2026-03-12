@@ -20,6 +20,8 @@ from wool.runtime.worker.base import ChannelCredentialsType
 from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_channel_credentials
 
+_DEFAULTS = WorkerOptions()
+
 _DispatchCall: TypeAlias = grpc.aio.StreamStreamCall[
     protocol.worker.Request, protocol.worker.Response
 ]
@@ -50,10 +52,9 @@ def _channel_factory(key):
     """
     target, credentials, limit = key
     resolved = resolve_channel_credentials(credentials)
-    _defaults = WorkerOptions()
     options = [
-        ("grpc.max_receive_message_length", _defaults.max_receive_message_length),
-        ("grpc.max_send_message_length", _defaults.max_send_message_length),
+        ("grpc.max_receive_message_length", _DEFAULTS.max_receive_message_length),
+        ("grpc.max_send_message_length", _DEFAULTS.max_send_message_length),
     ]
     if resolved is not None:
         channel = grpc.aio.secure_channel(target, resolved, options=options)

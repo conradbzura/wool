@@ -35,13 +35,14 @@ ChannelCredentialsType: TypeAlias = Union[
 ]
 
 
+# public
 @dataclass(frozen=True)
 class WorkerOptions:
     """Options for gRPC worker server and channel configuration.
 
     Controls the maximum message sizes for gRPC communication.
-    Defaults match the client-side values used in
-    :func:`_channel_factory` to ensure symmetric limits.
+    Defaults match the client-side channel factory values to
+    ensure symmetric limits between server and client.
 
     :param max_receive_message_length:
         Maximum inbound message size in bytes.
