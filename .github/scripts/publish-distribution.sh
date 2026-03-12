@@ -31,8 +31,11 @@ echo "Publishing artifacts in '$SOURCE' directory..."
 # Parse arguments
 case ${#ARGS[@]} in
     0)
-        # Attempt to retrieve token from default keychain
-        if command -v ks &> /dev/null; then
+        # Check for PYPI_TOKEN env var first, then fall back to keychain
+        if [[ -n "${PYPI_TOKEN:-}" ]]; then
+            echo "Publishing with token from environment..."
+            TOKEN="$PYPI_TOKEN"
+        elif command -v ks &> /dev/null; then
             if [[ -n $(ks -k $KEYCHAIN ls | grep "\b$SECRET\b") ]]; then
                 echo "Publishing with token from keychain..."
                 TOKEN=$(ks -k $KEYCHAIN show $SECRET)

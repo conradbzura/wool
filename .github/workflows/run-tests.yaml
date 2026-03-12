@@ -7,6 +7,10 @@ on:
       - master
       - release
 
+concurrency:
+  group: run-tests-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint / pyright
