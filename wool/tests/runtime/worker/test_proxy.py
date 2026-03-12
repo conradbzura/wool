@@ -1827,17 +1827,17 @@ class TestWorkerProxy:
         assert not proxy.started
 
     @pytest.mark.asyncio
-    async def test___init___with_default_options(
+    async def test___aenter___with_default_options(
         self, mocker: MockerFixture, mock_discovery_service
     ):
-        """Test WorkerConnection receives options=None by default.
+        """Test proxy forwards options=None to WorkerConnection.
 
         Given:
-            No options parameter and a worker-added discovery event
+            A WorkerProxy with no options parameter.
         When:
-            WorkerProxy starts and processes the event
+            The proxy is started and a worker-added event is processed.
         Then:
-            WorkerConnection is created with options=None
+            It should create WorkerConnection with options=None.
         """
         # Arrange
         mock_conn_cls = mocker.patch.object(
@@ -1868,17 +1868,17 @@ class TestWorkerProxy:
         assert kwargs["options"] is None
 
     @pytest.mark.asyncio
-    async def test___init___with_custom_options(
+    async def test___aenter___with_custom_options(
         self, mocker: MockerFixture, mock_discovery_service
     ):
-        """Test WorkerConnection receives custom options.
+        """Test proxy forwards custom options to WorkerConnection.
 
         Given:
-            A WorkerOptions instance and a worker-added discovery event
+            A WorkerProxy with a custom WorkerOptions instance.
         When:
-            WorkerProxy starts and processes the event
+            The proxy is started and a worker-added event is processed.
         Then:
-            WorkerConnection is created with the custom options
+            It should create WorkerConnection with the custom options.
         """
         # Arrange
         custom_options = WorkerOptions(

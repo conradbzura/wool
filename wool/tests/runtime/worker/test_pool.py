@@ -1619,21 +1619,21 @@ class TestWorkerPool:
                 pass
 
     @pytest.mark.asyncio
-    async def test___init___with_default_options(
+    async def test___aenter___with_default_options(
         self,
         mocker: MockerFixture,
         mock_worker_factory,
         mock_local_worker,
         mock_worker_proxy,
     ):
-        """Test WorkerProxy and factory receive options=None by default.
+        """Test pool startup forwards options=None to WorkerProxy.
 
         Given:
-            No options parameter
+            A WorkerPool with no options parameter.
         When:
-            WorkerPool is entered as async context
+            The pool is entered as an async context.
         Then:
-            WorkerProxy and worker factory both receive options=None
+            It should forward options=None to WorkerProxy.
         """
         # Arrange
         import wool.runtime.worker.pool as wp
@@ -1653,22 +1653,21 @@ class TestWorkerPool:
         assert proxy_kwargs.get("options") is None
 
     @pytest.mark.asyncio
-    async def test___init___with_custom_options(
+    async def test___aenter___with_custom_options(
         self,
         mocker: MockerFixture,
         mock_worker_factory,
         mock_local_worker,
         mock_worker_proxy,
     ):
-        """Test WorkerProxy and factory receive the custom options.
+        """Test pool startup forwards custom options to WorkerProxy.
 
         Given:
-            A WorkerOptions instance
+            A WorkerPool with a custom WorkerOptions instance.
         When:
-            WorkerPool is entered as async context
+            The pool is entered as an async context.
         Then:
-            WorkerProxy and worker factory both receive the custom
-            options
+            It should forward the custom options to WorkerProxy.
         """
         # Arrange
         import wool.runtime.worker.pool as wp

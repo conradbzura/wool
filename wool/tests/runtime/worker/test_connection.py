@@ -1086,17 +1086,18 @@ class TestWorkerConnection:
         assert protocol.worker.WorkerStub.call_count == 1
 
     @pytest.mark.asyncio
-    async def test___init___with_default_options(
+    async def test_dispatch_with_default_options(
         self, mocker: MockerFixture, sample_task, async_stream, mock_grpc_call
     ):
-        """Test WorkerConnection uses default WorkerOptions sizes.
+        """Test dispatch creates gRPC channel with default WorkerOptions.
 
         Given:
-            No options parameter
+            A WorkerConnection with no options parameter.
         When:
-            WorkerConnection is instantiated and dispatches a task
+            A task is dispatched.
         Then:
-            gRPC channel is created with default WorkerOptions sizes
+            It should create a gRPC channel with default WorkerOptions
+            sizes.
         """
         # Arrange
         defaults = WorkerOptions()
@@ -1136,17 +1137,17 @@ class TestWorkerConnection:
         ) in call_options
 
     @pytest.mark.asyncio
-    async def test___init___with_custom_options(
+    async def test_dispatch_with_custom_options(
         self, mocker: MockerFixture, sample_task, async_stream, mock_grpc_call
     ):
-        """Test WorkerConnection uses custom WorkerOptions sizes.
+        """Test dispatch creates gRPC channel with custom WorkerOptions.
 
         Given:
-            A WorkerOptions with custom message sizes
+            A WorkerConnection with custom WorkerOptions message sizes.
         When:
-            WorkerConnection is instantiated and dispatches a task
+            A task is dispatched.
         Then:
-            gRPC channel is created with the custom sizes
+            It should create a gRPC channel with the custom sizes.
         """
         # Arrange
         custom_options = WorkerOptions(
