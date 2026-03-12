@@ -17,6 +17,7 @@ from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.worker.base import ChannelCredentialsType
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_channel_credentials
 
 _DispatchCall: TypeAlias = grpc.aio.StreamStreamCall[
@@ -49,9 +50,10 @@ def _channel_factory(key):
     """
     target, credentials, limit = key
     resolved = resolve_channel_credentials(credentials)
+    _defaults = WorkerOptions()
     options = [
-        ("grpc.max_receive_message_length", 100 * 1024 * 1024),
-        ("grpc.max_send_message_length", 100 * 1024 * 1024),
+        ("grpc.max_receive_message_length", _defaults.max_receive_message_length),
+        ("grpc.max_send_message_length", _defaults.max_send_message_length),
     ]
     if resolved is not None:
         channel = grpc.aio.secure_channel(target, resolved, options=options)

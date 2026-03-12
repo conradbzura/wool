@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
@@ -32,6 +33,24 @@ ChannelCredentialsType: TypeAlias = Union[
     Callable[[], grpc.ChannelCredentials],
     None,
 ]
+
+
+@dataclass(frozen=True)
+class WorkerOptions:
+    """Options for gRPC worker server and channel configuration.
+
+    Controls the maximum message sizes for gRPC communication.
+    Defaults match the client-side values used in
+    :func:`_channel_factory` to ensure symmetric limits.
+
+    :param max_receive_message_length:
+        Maximum inbound message size in bytes.
+    :param max_send_message_length:
+        Maximum outbound message size in bytes.
+    """
+
+    max_receive_message_length: int = 100 * 1024 * 1024
+    max_send_message_length: int = 100 * 1024 * 1024
 
 
 def resolve_server_credentials(
