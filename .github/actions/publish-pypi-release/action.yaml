@@ -26,5 +26,7 @@ runs:
 
     - name: Upload distribution to PyPI
       shell: bash
+      env:
+        PYPI_TOKEN: ${{ inputs.pypi-token }}
       run: |
-        .github/scripts/publish-distribution.sh --source ${{ inputs.source }}-dist-${{ inputs.version }} ${{ inputs.pypi-token }}
+        .github/scripts/publish-distribution.sh --source "${{ inputs.source }}-dist-${{ inputs.version }}"
