@@ -66,7 +66,9 @@ git checkout -b <branch-name> main
 
 If the branch already exists, the user MUST be asked whether to switch to it or recreate it.
 
-### 4. Draft the PR description
+### 4. Draft the PR
+
+The PR title should match its associated issue exactly with `— Closes #<number>` appended to the end.
 
 All PR description prose MUST be written in the imperative mood — "Add retry logic" not "Adds retry logic" or "Added retry logic". This applies to the title, summary, proposed changes, and implementation plan steps. The imperative mood MUST be maintained even when updating the description after work has been completed. Descriptions of the current state of the system are exempt and SHOULD use present tense — "The registry stores entries in memory" not "Store entries in memory".
 
@@ -74,7 +76,7 @@ Prose in PR descriptions MUST NOT be hard-wrapped at a fixed column width. Write
 
 The PR description MUST contain exactly four sections:
 
-**Summary** — A quick recap of the issue, the high-level approach, and any trade-offs worth noting. The summary MUST end with `— Closes #<number>` to link the issue.
+**Summary** — A quick recap of the issue, the high-level approach, and any trade-offs worth noting. The summary MUST end with `Closes #<number>` to link the issue.
 
 **Proposed changes** — Subsections for each logical change. Design rationale and before/after code snippets SHOULD be included where useful.
 

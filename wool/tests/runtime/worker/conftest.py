@@ -203,7 +203,7 @@ def mock_worker_factory(mocker: MockerFixture):
         Callable that creates MockWorker instances with specified tags
     """
 
-    def factory(*tags: str, credentials=None):
+    def factory(*tags: str, credentials=None, options=None):
         return MockWorker(*tags, credentials=credentials)
 
     return factory

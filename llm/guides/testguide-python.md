@@ -156,6 +156,19 @@ The combined forms are acceptable but the full 3-phase form is preferred. When i
 - Mock at system boundaries only: external services, I/O, network.
 - MUST NOT mock internal/private methods.
 - MUST NOT mock the unit under test.
+- SHOULD prefer `mocker.patch.object(module, "attr")` over `mocker.patch("dotted.string.path")`. Object-style patches let IDE AST indexing resolve mock targets, making references findable and rename-safe.
+
+```python
+# Preferred — IDE can resolve the target
+import grpc.aio
+from mypackage import some_module
+
+mocker.patch.object(some_module, "SomeClass", return_value=mock)
+mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock)
+
+# Discouraged — opaque string, invisible to AST tooling
+mocker.patch("mypackage.some_module.SomeClass", return_value=mock)
+```
 
 ## 9. Async Testing
 
@@ -168,7 +181,7 @@ async def test_fetch_data_with_valid_endpoint(self, mocker):
     """..."""
     # Arrange
     mock_response = mocker.AsyncMock(return_value={"key": "value"})
-    mocker.patch("module.http_client.get", mock_response)
+    mocker.patch.object(http_client, "get", mock_response)
 
     # Act
     result = await unit.fetch_data("/endpoint")
