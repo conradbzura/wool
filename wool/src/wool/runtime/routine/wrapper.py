@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import wraps
+from inspect import getsourcelines
 from inspect import isasyncgen
 from inspect import isasyncgenfunction
 from inspect import iscoroutinefunction
@@ -156,6 +157,11 @@ def routine(fn: C) -> C:
     else:
         wrapped_fn = fn
 
+    try:
+        _, lineno = getsourcelines(wrapped_fn)
+    except OSError:
+        lineno = 0
+
     if isasyncgenfunction(wrapped_fn):
 
         @wraps(wrapped_fn)
@@ -172,6 +178,7 @@ def routine(fn: C) -> C:
                     proxy,
                     async_generator_wrapper.__module__,
                     async_generator_wrapper.__qualname__,
+                    async_generator_wrapper._source_lineno,
                     function,
                     *args,
                     **kwargs,
@@ -201,6 +208,7 @@ def routine(fn: C) -> C:
             finally:
                 await stream.aclose()
 
+        async_generator_wrapper._source_lineno = lineno
         return cast(C, async_generator_wrapper)
 
     else:
@@ -219,6 +227,7 @@ def routine(fn: C) -> C:
                     proxy,
                     coroutine_wrapper.__module__,
                     coroutine_wrapper.__qualname__,
+                    coroutine_wrapper._source_lineno,
                     function,
                     *args,
                     **kwargs,
@@ -229,6 +238,7 @@ def routine(fn: C) -> C:
 
             return await coro
 
+        coroutine_wrapper._source_lineno = lineno
         return cast(C, coroutine_wrapper)
 
 
@@ -236,24 +246,19 @@ def _dispatch(
     proxy: WorkerProxy,
     module: str,
     qualname: str,
+    lineno: int,
     function: Callable[..., Coroutine | AsyncGenerator],
     *args,
     **kwargs,
 ):
     # Skip self argument if function is a method.
     args = args[1:] if hasattr(function, "__self__") else args
-    signature = ", ".join(
-        (
-            *(repr(v) for v in args),
-            *(f"{k}={repr(v)}" for k, v in kwargs.items()),
-        )
-    )
     task = Task(
         id=uuid4(),
         callable=function,
         args=args,
         kwargs=kwargs,
-        tag=f"{module}.{qualname}({signature})",
+        tag=f"{module}.{qualname}:{lineno}",
         proxy=proxy,
     )
     return proxy.dispatch(task, timeout=ctx.dispatch_timeout.get())
