@@ -178,7 +178,7 @@ def routine(fn: C) -> C:
                     proxy,
                     async_generator_wrapper.__module__,
                     async_generator_wrapper.__qualname__,
-                    async_generator_wrapper._source_lineno,
+                    lineno,
                     function,
                     *args,
                     **kwargs,
@@ -208,7 +208,6 @@ def routine(fn: C) -> C:
             finally:
                 await stream.aclose()
 
-        async_generator_wrapper._source_lineno = lineno
         return cast(C, async_generator_wrapper)
 
     else:
@@ -227,7 +226,7 @@ def routine(fn: C) -> C:
                     proxy,
                     coroutine_wrapper.__module__,
                     coroutine_wrapper.__qualname__,
-                    coroutine_wrapper._source_lineno,
+                    lineno,
                     function,
                     *args,
                     **kwargs,
@@ -238,7 +237,6 @@ def routine(fn: C) -> C:
 
             return await coro
 
-        coroutine_wrapper._source_lineno = lineno
         return cast(C, coroutine_wrapper)
 
 
