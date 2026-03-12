@@ -4,10 +4,9 @@ try:
     from wool.protocol.task_pb2 import Nack
     from wool.protocol.task_pb2 import Task
     from wool.protocol.task_pb2 import TaskEnvelope
-    from wool.protocol.task_pb2 import Worker as Worker
 except ImportError as e:
     from wool.protocol.exception import ProtobufImportError
 
     raise ProtobufImportError(e) from e
 
-__all__ = ["Ack", "Message", "Nack", "Task", "TaskEnvelope", "Worker"]
+__all__ = ["Ack", "Message", "Nack", "Task", "TaskEnvelope"]
