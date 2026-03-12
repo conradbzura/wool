@@ -29,11 +29,6 @@ message Message {
     bytes dump = 1;
 }
 
-message Worker {
-    string id = 1;
-    string address = 2;
-}
-
 message Ack {
     // Acknowledgment that the task was received and processing started
     string version = 1;
