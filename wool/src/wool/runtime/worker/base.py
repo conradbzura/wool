@@ -119,6 +119,7 @@ class WorkerFactory(Protocol):
         self,
         *tags: str,
         credentials: WorkerCredentials | None = None,
+        options: WorkerOptions | None = None,
     ) -> WorkerLike:
         """Create a new worker instance.
 
