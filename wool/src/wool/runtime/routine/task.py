@@ -182,8 +182,7 @@ class Task(Generic[W]):
             False to allow exceptions to propagate.
         """
         logging.debug(f"Exiting {self.__class__.__name__} with ID {self.id}")
-        this = asyncio.current_task()
-        assert this
+        assert asyncio.current_task()
         if exception_value:
             self.exception = TaskException(
                 exception_type.__qualname__,
@@ -291,7 +290,6 @@ class Task(Generic[W]):
                     yield result
             finally:
                 await gen.aclose()
-
 
 
 # public
