@@ -12,6 +12,7 @@ from wool.runtime.worker.auth import WorkerCredentials
 from wool.runtime.worker.base import ChannelCredentialsType
 from wool.runtime.worker.base import ServerCredentialsType
 from wool.runtime.worker.base import Worker
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_channel_credentials
 from wool.runtime.worker.process import WorkerProcess
 
@@ -61,6 +62,9 @@ class LocalWorker(Worker):
           credentials for mutual TLS. Enables secure worker-to-worker
           communication.
         - ``None``: Worker uses insecure connections.
+    :param options:
+        gRPC message size options. Defaults to
+        :class:`WorkerOptions` with 100 MB limits.
     :param extra:
         Additional metadata as key-value pairs.
     """
@@ -77,6 +81,7 @@ class LocalWorker(Worker):
         shutdown_grace_period: float = 60.0,
         proxy_pool_ttl: float = 60.0,
         credentials: WorkerCredentials | None = None,
+        options: WorkerOptions | None = None,
         **extra: Any,
     ):
         super().__init__(*tags, **extra)
@@ -95,6 +100,7 @@ class LocalWorker(Worker):
             shutdown_grace_period=shutdown_grace_period,
             proxy_pool_ttl=proxy_pool_ttl,
             server_credentials=self._server_credentials,
+            options=options,
         )
 
     @property

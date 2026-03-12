@@ -15,6 +15,7 @@ from pytest_mock import MockerFixture
 from wool import protocol
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import WorkerProxyLike
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.connection import RpcError
 from wool.runtime.worker.connection import TransientRpcError
 from wool.runtime.worker.connection import UnexpectedResponse
@@ -1083,3 +1084,107 @@ class TestWorkerConnection:
 
         # Assert — WorkerStub constructed only once (one _Channel)
         assert protocol.worker.WorkerStub.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_dispatch_with_default_options(
+        self, mocker: MockerFixture, sample_task, async_stream, mock_grpc_call
+    ):
+        """Test dispatch creates gRPC channel with default WorkerOptions.
+
+        Given:
+            A WorkerConnection with no options parameter.
+        When:
+            A task is dispatched.
+        Then:
+            It should create a gRPC channel with default WorkerOptions
+            sizes.
+        """
+        # Arrange
+        defaults = WorkerOptions()
+        mock_channel = mocker.AsyncMock()
+        mock_insecure = mocker.patch(
+            "grpc.aio.insecure_channel", return_value=mock_channel
+        )
+
+        responses = (
+            protocol.worker.Response(ack=protocol.task.Ack()),
+            protocol.worker.Response(
+                result=protocol.task.Message(dump=cloudpickle.dumps("ok"))
+            ),
+        )
+        mock_call = mock_grpc_call(async_stream(responses))
+
+        mock_stub = mocker.MagicMock()
+        mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
+        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+
+        connection = WorkerConnection("localhost:50051")
+
+        # Act
+        async for _ in await connection.dispatch(sample_task):
+            pass
+
+        # Assert
+        mock_insecure.assert_called_once()
+        call_options = mock_insecure.call_args[1]["options"]
+        assert (
+            "grpc.max_receive_message_length",
+            defaults.max_receive_message_length,
+        ) in call_options
+        assert (
+            "grpc.max_send_message_length",
+            defaults.max_send_message_length,
+        ) in call_options
+
+    @pytest.mark.asyncio
+    async def test_dispatch_with_custom_options(
+        self, mocker: MockerFixture, sample_task, async_stream, mock_grpc_call
+    ):
+        """Test dispatch creates gRPC channel with custom WorkerOptions.
+
+        Given:
+            A WorkerConnection with custom WorkerOptions message sizes.
+        When:
+            A task is dispatched.
+        Then:
+            It should create a gRPC channel with the custom sizes.
+        """
+        # Arrange
+        custom_options = WorkerOptions(
+            max_receive_message_length=200 * 1024 * 1024,
+            max_send_message_length=50 * 1024 * 1024,
+        )
+        mock_channel = mocker.AsyncMock()
+        mock_insecure = mocker.patch(
+            "grpc.aio.insecure_channel", return_value=mock_channel
+        )
+
+        responses = (
+            protocol.worker.Response(ack=protocol.task.Ack()),
+            protocol.worker.Response(
+                result=protocol.task.Message(dump=cloudpickle.dumps("ok"))
+            ),
+        )
+        mock_call = mock_grpc_call(async_stream(responses))
+
+        mock_stub = mocker.MagicMock()
+        mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
+        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+
+        connection = WorkerConnection("localhost:50051", options=custom_options)
+
+        # Act
+        async for _ in await connection.dispatch(sample_task):
+            pass
+
+        # Assert
+        mock_insecure.assert_called_once()
+        call_options = mock_insecure.call_args[1]["options"]
+        assert (
+            "grpc.max_receive_message_length",
+            200 * 1024 * 1024,
+        ) in call_options
+        assert (
+            "grpc.max_send_message_length",
+            50 * 1024 * 1024,
+        ) in call_options

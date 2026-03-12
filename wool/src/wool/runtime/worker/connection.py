@@ -17,6 +17,7 @@ from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
 from wool.runtime.worker.base import ChannelCredentialsType
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_channel_credentials
 
 _DispatchCall: TypeAlias = grpc.aio.StreamStreamCall[
@@ -43,15 +44,15 @@ def _channel_factory(key):
     """Create a new :class:`_Channel` for the given pool key.
 
     :param key:
-        Tuple of ``(target, credentials, limit)``.
+        Tuple of ``(target, credentials, limit, options)``.
     :returns:
         A new :class:`_Channel` instance.
     """
-    target, credentials, limit = key
+    target, credentials, limit, worker_options = key
     resolved = resolve_channel_credentials(credentials)
     options = [
-        ("grpc.max_receive_message_length", 100 * 1024 * 1024),
-        ("grpc.max_send_message_length", 100 * 1024 * 1024),
+        ("grpc.max_receive_message_length", worker_options.max_receive_message_length),
+        ("grpc.max_send_message_length", worker_options.max_send_message_length),
     ]
     if resolved is not None:
         channel = grpc.aio.secure_channel(target, resolved, options=options)
@@ -319,7 +320,7 @@ class WorkerConnection:
     """gRPC connection to a worker for task dispatch.
 
     Acquires pooled gRPC channels keyed by ``(target, credentials,
-    limit)``.  Each :meth:`dispatch` call obtains a reference-counted
+    limit, options)``.  Each :meth:`dispatch` call obtains a reference-counted
     channel from the module-level pool, primes an async generator that
     holds its own reference, then releases the dispatch-scope reference.
     The channel stays alive until the caller finishes consuming the
@@ -348,6 +349,9 @@ class WorkerConnection:
         Maximum concurrent task dispatches.
     :param credentials:
         Optional channel credentials for TLS/mTLS connections.
+    :param options:
+        Optional worker options controlling gRPC message
+        size limits. See :class:`WorkerOptions` for defaults.
     """
 
     TRANSIENT_ERRORS: Final = {
@@ -362,6 +366,7 @@ class WorkerConnection:
         *,
         limit: int = 100,
         credentials: ChannelCredentialsType = None,
+        options: WorkerOptions | None = None,
     ):
         if limit <= 0:
             raise ValueError("Limit must be positive")
@@ -369,7 +374,8 @@ class WorkerConnection:
         self._target = target
         self._credentials = credentials
         self._limit = limit
-        self._key = (target, credentials, limit)
+        self._options = options if options is not None else WorkerOptions()
+        self._key = (target, credentials, limit, self._options)
 
     async def dispatch(
         self,

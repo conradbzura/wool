@@ -28,6 +28,7 @@ from wool.runtime.loadbalancer.base import LoadBalancerLike
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
 from wool.runtime.typing import Factory
 from wool.runtime.worker.base import ChannelCredentialsType
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.connection import WorkerConnection
 
 if TYPE_CHECKING:
@@ -193,6 +194,7 @@ class WorkerProxy:
             LoadBalancerLike | Factory[LoadBalancerLike]
         ) = RoundRobinLoadBalancer,
         credentials: ChannelCredentialsType | None = None,
+        options: WorkerOptions | None = None,
     ): ...
 
     @overload
@@ -204,6 +206,7 @@ class WorkerProxy:
             LoadBalancerLike | Factory[LoadBalancerLike]
         ) = RoundRobinLoadBalancer,
         credentials: ChannelCredentialsType | None = None,
+        options: WorkerOptions | None = None,
     ): ...
 
     @overload
@@ -215,6 +218,7 @@ class WorkerProxy:
             LoadBalancerLike | Factory[LoadBalancerLike]
         ) = RoundRobinLoadBalancer,
         credentials: ChannelCredentialsType | None = None,
+        options: WorkerOptions | None = None,
     ): ...
 
     def __init__(
@@ -229,6 +233,7 @@ class WorkerProxy:
             LoadBalancerLike | Factory[LoadBalancerLike]
         ) = RoundRobinLoadBalancer,
         credentials: ChannelCredentialsType | None = None,
+        options: WorkerOptions | None = None,
     ):
         if not (pool_uri or discovery or workers):
             raise ValueError(
@@ -240,6 +245,7 @@ class WorkerProxy:
         self._started = False
         self._loadbalancer = loadbalancer
         self._credentials = credentials
+        self._options = options
 
         # Create security filter based on resolved credentials
         security_filter = self._create_security_filter(self._credentials)
@@ -492,6 +498,7 @@ class WorkerProxy:
                         WorkerConnection(
                             event.metadata.address,
                             credentials=self._credentials,
+                            options=self._options,
                         ),
                     )
                 case "worker-updated":
@@ -500,6 +507,7 @@ class WorkerProxy:
                         WorkerConnection(
                             event.metadata.address,
                             credentials=self._credentials,
+                            options=self._options,
                         ),
                     )
                 case "worker-dropped":

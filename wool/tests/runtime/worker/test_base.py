@@ -13,8 +13,69 @@ from wool.runtime.discovery.base import WorkerMetadata
 from wool.runtime.worker.base import Worker
 from wool.runtime.worker.base import WorkerFactory
 from wool.runtime.worker.base import WorkerLike
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_channel_credentials
 from wool.runtime.worker.base import resolve_server_credentials
+
+
+class TestWorkerOptions:
+    """Test suite for WorkerOptions dataclass."""
+
+    def test___init___with_default_values(self):
+        """Test WorkerOptions default constructor yields 100 MB limits.
+
+        Given:
+            No custom parameters
+        When:
+            WorkerOptions is instantiated
+        Then:
+            Both max_receive_message_length and max_send_message_length
+            should be 100 MB
+        """
+        # Act
+        opts = WorkerOptions()
+
+        # Assert
+        assert opts.max_receive_message_length == 100 * 1024 * 1024
+        assert opts.max_send_message_length == 100 * 1024 * 1024
+
+    def test___init___with_custom_values(self):
+        """Test WorkerOptions with custom values for both attributes.
+
+        Given:
+            Custom max_receive_message_length and max_send_message_length
+        When:
+            WorkerOptions is instantiated with those values
+        Then:
+            Both attributes should reflect the custom values
+        """
+        # Act
+        opts = WorkerOptions(
+            max_receive_message_length=50 * 1024 * 1024,
+            max_send_message_length=25 * 1024 * 1024,
+        )
+
+        # Assert
+        assert opts.max_receive_message_length == 50 * 1024 * 1024
+        assert opts.max_send_message_length == 25 * 1024 * 1024
+
+    def test___init___with_partial_override(self):
+        """Test WorkerOptions with only one attribute overridden.
+
+        Given:
+            Custom max_receive_message_length only
+        When:
+            WorkerOptions is instantiated with that value
+        Then:
+            max_receive_message_length should reflect the custom value
+            and max_send_message_length should keep the default
+        """
+        # Act
+        opts = WorkerOptions(max_receive_message_length=200 * 1024 * 1024)
+
+        # Assert
+        assert opts.max_receive_message_length == 200 * 1024 * 1024
+        assert opts.max_send_message_length == 100 * 1024 * 1024
 
 
 class ConcreteWorker(Worker):

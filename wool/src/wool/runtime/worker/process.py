@@ -17,6 +17,7 @@ import wool
 from wool import protocol
 from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.worker.base import ServerCredentialsType
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_server_credentials
 from wool.runtime.worker.interceptor import VersionInterceptor
 from wool.runtime.worker.service import WorkerService
@@ -46,6 +47,9 @@ class WorkerProcess(Process):
         Proxy pool TTL in seconds.
     :param server_credentials:
         Optional gRPC server credentials for TLS/mTLS.
+    :param options:
+        gRPC message size options. Defaults to
+        :class:`WorkerOptions` with 100 MB limits.
     :param args:
         Additional args for :class:`multiprocessing.Process`.
     :param kwargs:
@@ -58,6 +62,7 @@ class WorkerProcess(Process):
     _shutdown_grace_period: float
     _proxy_pool_ttl: float
     _credentials: ServerCredentialsType
+    _options: WorkerOptions
 
     def __init__(
         self,
@@ -67,6 +72,7 @@ class WorkerProcess(Process):
         shutdown_grace_period: float = 60.0,
         proxy_pool_ttl: float = 60.0,
         server_credentials: ServerCredentialsType = None,
+        options: WorkerOptions | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -83,6 +89,7 @@ class WorkerProcess(Process):
             raise ValueError("Proxy pool TTL must be positive")
         self._proxy_pool_ttl = proxy_pool_ttl
         self._credentials = server_credentials
+        self._options = options or WorkerOptions()
         self._get_port, self._set_port = Pipe(duplex=False)
 
     @property
@@ -173,7 +180,11 @@ class WorkerProcess(Process):
         requests. It creates a gRPC server, adds the worker service, and
         starts listening for incoming connections.
         """
-        server = grpc.aio.server(interceptors=[VersionInterceptor()])
+        grpc_options = [
+            ("grpc.max_receive_message_length", self._options.max_receive_message_length),
+            ("grpc.max_send_message_length", self._options.max_send_message_length),
+        ]
+        server = grpc.aio.server(interceptors=[VersionInterceptor()], options=grpc_options)
         credentials = resolve_server_credentials(self._credentials)
         address = self._address(self._host, self._port)
 

@@ -1,9 +1,13 @@
+import grpc.aio
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from wool import protocol
+from wool.runtime.worker import local as local_module
 from wool.runtime.worker.auth import WorkerCredentials
 from wool.runtime.worker.base import WorkerLike
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.local import LocalWorker
 from wool.runtime.worker.process import WorkerProcess
 
@@ -98,6 +102,50 @@ class TestLocalWorker:
         assert worker.metadata is None
         assert worker.address is None
 
+    def test___init___with_default_options(self, mocker):
+        """Test default options are forwarded to WorkerProcess.
+
+        Given:
+            No options parameter.
+        When:
+            LocalWorker is instantiated.
+        Then:
+            WorkerProcess is called with options=None.
+        """
+        # Arrange
+        MockWorkerProcess = mocker.patch.object(local_module, "WorkerProcess")
+
+        # Act
+        LocalWorker()
+
+        # Assert
+        MockWorkerProcess.assert_called_once()
+        assert MockWorkerProcess.call_args.kwargs["options"] is None
+
+    def test___init___with_custom_options(self, mocker):
+        """Test custom WorkerOptions are forwarded to WorkerProcess.
+
+        Given:
+            A WorkerOptions instance with custom message sizes.
+        When:
+            LocalWorker is instantiated with that options parameter.
+        Then:
+            WorkerProcess is called with the same options instance.
+        """
+        # Arrange
+        MockWorkerProcess = mocker.patch.object(local_module, "WorkerProcess")
+        opts = WorkerOptions(
+            max_receive_message_length=50 * 1024 * 1024,
+            max_send_message_length=25 * 1024 * 1024,
+        )
+
+        # Act
+        LocalWorker(options=opts)
+
+        # Assert
+        MockWorkerProcess.assert_called_once()
+        assert MockWorkerProcess.call_args.kwargs["options"] is opts
+
     def test_implements_workerlike_protocol(self):
         """Test LocalWorker implements WorkerLike protocol.
 
@@ -147,8 +195,8 @@ class TestLocalWorker:
         mock_process.pid = 12345
         mock_process.start.return_value = None
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -176,8 +224,8 @@ class TestLocalWorker:
         mock_process.pid = 12345
         mock_process.start.return_value = None
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -205,8 +253,8 @@ class TestLocalWorker:
         mock_process.pid = 12345
         mock_process.start.return_value = None
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker("gpu", "ml", region="us-west")
@@ -240,8 +288,8 @@ class TestLocalWorker:
         mock_process.pid = 12345
         mock_process.start.return_value = None
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -267,8 +315,8 @@ class TestLocalWorker:
         mock_process.pid = None
         mock_process.start.return_value = None
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -294,8 +342,8 @@ class TestLocalWorker:
         mock_process.pid = 99999
         mock_process.start.return_value = None
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -324,8 +372,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = True
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -335,10 +383,9 @@ class TestLocalWorker:
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock()
 
-        mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock_channel)
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -365,14 +412,14 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = False
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
         await worker.start()
 
-        mock_channel_fn = mocker.patch("grpc.aio.insecure_channel")
+        mock_channel_fn = mocker.patch.object(grpc.aio, "insecure_channel")
 
         # Act
         await worker.stop()
@@ -398,8 +445,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = True
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -409,10 +456,9 @@ class TestLocalWorker:
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock(side_effect=Exception("gRPC error"))
 
-        mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock_channel)
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act & assert
@@ -471,8 +517,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = False
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker(credentials=worker_credentials)
@@ -501,8 +547,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = False
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -533,8 +579,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = True
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker(credentials=worker_credentials)
@@ -544,12 +590,11 @@ class TestLocalWorker:
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock()
 
-        mock_secure_channel = mocker.patch(
-            "grpc.aio.secure_channel", return_value=mock_channel
+        mock_secure_channel = mocker.patch.object(
+            grpc.aio, "secure_channel", return_value=mock_channel
         )
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -578,8 +623,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = True
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker()
@@ -589,12 +634,11 @@ class TestLocalWorker:
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock()
 
-        mock_insecure_channel = mocker.patch(
-            "grpc.aio.insecure_channel", return_value=mock_channel
+        mock_insecure_channel = mocker.patch.object(
+            grpc.aio, "insecure_channel", return_value=mock_channel
         )
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -621,8 +665,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = True
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker(credentials=worker_credentials_one_way)
@@ -634,12 +678,11 @@ class TestLocalWorker:
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock()
 
-        mock_secure_channel = mocker.patch(
-            "grpc.aio.secure_channel", return_value=mock_channel
+        mock_secure_channel = mocker.patch.object(
+            grpc.aio, "secure_channel", return_value=mock_channel
         )
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -669,8 +712,8 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.return_value = True
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         worker = LocalWorker(credentials=worker_credentials_callable)
@@ -680,12 +723,11 @@ class TestLocalWorker:
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock()
 
-        mock_secure_channel = mocker.patch(
-            "grpc.aio.secure_channel", return_value=mock_channel
+        mock_secure_channel = mocker.patch.object(
+            grpc.aio, "secure_channel", return_value=mock_channel
         )
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -720,18 +762,17 @@ class TestLocalWorker:
         mock_process.start.return_value = None
         mock_process.is_alive.side_effect = [True, False]
 
-        mocker.patch(
-            "wool.runtime.worker.local.WorkerProcess", return_value=mock_process
+        mocker.patch.object(
+            local_module, "WorkerProcess", return_value=mock_process
         )
 
         mock_channel = mocker.MagicMock()
         mock_stub = mocker.MagicMock()
         mock_stub.stop = mocker.AsyncMock()
-        mocker.patch("grpc.aio.secure_channel", return_value=mock_channel)
-        mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
-        mocker.patch(
-            "wool.runtime.worker.local.protocol.worker.WorkerStub",
-            return_value=mock_stub,
+        mocker.patch.object(grpc.aio, "secure_channel", return_value=mock_channel)
+        mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock_channel)
+        mocker.patch.object(
+            protocol.worker, "WorkerStub", return_value=mock_stub
         )
 
         # Act

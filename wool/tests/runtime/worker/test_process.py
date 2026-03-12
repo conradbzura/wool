@@ -7,6 +7,7 @@ from hypothesis import given
 from hypothesis import settings
 from hypothesis import strategies as st
 
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.process import WorkerProcess
 from wool.runtime.worker.process import _proxy_factory
 from wool.runtime.worker.process import _proxy_finalizer
@@ -1328,3 +1329,137 @@ class TestWorkerProcess:
         else:
             assert insecure_calls == 1, "Insecure worker must use insecure port"
             assert secure_calls == 0, "Insecure worker must not have secure port"
+
+    def test___init___with_no_options(self):
+        """Test WorkerProcess construction without options parameter.
+
+        Given:
+            No options parameter
+        When:
+            WorkerProcess is instantiated
+        Then:
+            It should construct successfully with default host
+        """
+        # Act
+        process = WorkerProcess()
+
+        # Assert
+        assert process.host == "127.0.0.1"
+
+    def test___init___with_custom_options(self):
+        """Test WorkerProcess construction with custom WorkerOptions.
+
+        Given:
+            A WorkerOptions instance with custom message sizes
+        When:
+            WorkerProcess is instantiated with that options parameter
+        Then:
+            It should construct successfully with default host
+        """
+        # Arrange
+        opts = WorkerOptions(
+            max_receive_message_length=50 * 1024 * 1024,
+            max_send_message_length=25 * 1024 * 1024,
+        )
+
+        # Act
+        process = WorkerProcess(options=opts)
+
+        # Assert
+        assert process.host == "127.0.0.1"
+
+    def test_run_with_default_options_passes_grpc_options(self, mocker):
+        """Test run passes default WorkerOptions to gRPC server.
+
+        Given:
+            A WorkerProcess with no explicit options
+        When:
+            run() is called
+        Then:
+            grpc.aio.server should receive 100 MB message size options
+        """
+        # Arrange
+        process = WorkerProcess()
+
+        mocker.patch("wool.runtime.worker.process.wool.__proxy_pool__")
+        mocker.patch("wool.runtime.worker.process.ResourcePool")
+
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
+        mock_grpc_server = mocker.patch(
+            "grpc.aio.server", return_value=mock_server
+        )
+
+        mock_service = mocker.MagicMock()
+        mock_service.stopped.wait = mocker.AsyncMock()
+        mocker.patch(
+            "wool.runtime.worker.process.WorkerService",
+            return_value=mock_service,
+        )
+        mocker.patch("wool.runtime.worker.process._signal_handlers")
+        mocker.patch.object(process._set_port, "send")
+        mocker.patch.object(process._set_port, "close")
+
+        # Act
+        process.run()
+
+        # Assert
+        mock_grpc_server.assert_called_once()
+        call_kwargs = mock_grpc_server.call_args.kwargs
+        expected = [
+            ("grpc.max_receive_message_length", 100 * 1024 * 1024),
+            ("grpc.max_send_message_length", 100 * 1024 * 1024),
+        ]
+        assert call_kwargs["options"] == expected
+
+    def test_run_with_custom_options_passes_grpc_options(self, mocker):
+        """Test run passes custom WorkerOptions to gRPC server.
+
+        Given:
+            A WorkerProcess with custom WorkerOptions
+        When:
+            run() is called
+        Then:
+            grpc.aio.server should receive the custom message sizes
+        """
+        # Arrange
+        opts = WorkerOptions(
+            max_receive_message_length=50 * 1024 * 1024,
+            max_send_message_length=25 * 1024 * 1024,
+        )
+        process = WorkerProcess(options=opts)
+
+        mocker.patch("wool.runtime.worker.process.wool.__proxy_pool__")
+        mocker.patch("wool.runtime.worker.process.ResourcePool")
+
+        mock_server = mocker.MagicMock()
+        mock_server.add_insecure_port = mocker.MagicMock(return_value=50051)
+        mock_server.start = mocker.AsyncMock()
+        mock_server.stop = mocker.AsyncMock()
+        mock_grpc_server = mocker.patch(
+            "grpc.aio.server", return_value=mock_server
+        )
+
+        mock_service = mocker.MagicMock()
+        mock_service.stopped.wait = mocker.AsyncMock()
+        mocker.patch(
+            "wool.runtime.worker.process.WorkerService",
+            return_value=mock_service,
+        )
+        mocker.patch("wool.runtime.worker.process._signal_handlers")
+        mocker.patch.object(process._set_port, "send")
+        mocker.patch.object(process._set_port, "close")
+
+        # Act
+        process.run()
+
+        # Assert
+        mock_grpc_server.assert_called_once()
+        call_kwargs = mock_grpc_server.call_args.kwargs
+        expected = [
+            ("grpc.max_receive_message_length", 50 * 1024 * 1024),
+            ("grpc.max_send_message_length", 25 * 1024 * 1024),
+        ]
+        assert call_kwargs["options"] == expected
