@@ -906,328 +906,351 @@ async def test_routine_with_async_for_iteration():
 # ── Source metadata tag tests (SM-xxx) ────────────────────────
 
 
-class TestRoutineSourceMetadata:
-    """Tests for source-metadata-based task tags."""
+@pytest.mark.asyncio
+async def test_routine_with_coroutine_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test coroutine dispatch tag uses source metadata format.
 
-    @pytest.mark.asyncio
-    async def test_coroutine_tag_format(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test coroutine dispatch tag uses source metadata format.
+    Given:
+        A @routine-decorated coroutine function.
+    When:
+        The function is called and dispatched.
+    Then:
+        The task tag should match
+        ``"{module}.{qualname}:{lineno}"``.
+    """
+    # Arrange
+    _, expected_lineno = getsourcelines(foo.__wrapped__)
 
-        Given:
-            A @routine-decorated coroutine function.
-        When:
-            The function is called and dispatched.
-        Then:
-            The task tag should match
-            ``"{module}.{qualname}:{lineno}"``.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 42
+    async def mock_stream():
+        yield 42
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-        # Act
-        await foo(1, 2)
+    # Act
+    await foo(1, 2)
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        expected = f"{foo.__module__}.{foo.__qualname__}:{foo._source_lineno}"
-        assert task.tag == expected
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    expected = f"{foo.__module__}.{foo.__qualname__}:{expected_lineno}"
+    assert task.tag == expected
 
-    @pytest.mark.asyncio
-    async def test_async_generator_tag_format(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test async generator dispatch tag uses source metadata format.
 
-        Given:
-            A @routine-decorated async generator function.
-        When:
-            The function is called and dispatched.
-        Then:
-            The task tag should match
-            ``"{module}.{qualname}:{lineno}"``.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 0
-            yield 1
+@pytest.mark.asyncio
+async def test_routine_with_async_generator_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test async generator dispatch tag uses source metadata format.
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    Given:
+        A @routine-decorated async generator function.
+    When:
+        The function is called and dispatched.
+    Then:
+        The task tag should match
+        ``"{module}.{qualname}:{lineno}"``.
+    """
+    # Arrange
+    _, expected_lineno = getsourcelines(foo_gen.__wrapped__)
 
-        # Act
-        result = []
-        async for value in foo_gen(2):
-            result.append(value)
+    async def mock_stream():
+        yield 0
+        yield 1
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        expected = (
-            f"{foo_gen.__module__}.{foo_gen.__qualname__}"
-            f":{foo_gen._source_lineno}"
-        )
-        assert task.tag == expected
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-    @pytest.mark.asyncio
-    async def test_large_arguments_do_not_inflate_tag(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test tag stays small regardless of argument size.
+    # Act
+    result = []
+    async for value in foo_gen(2):
+        result.append(value)
 
-        Given:
-            A @routine-decorated coroutine called with a large
-            argument.
-        When:
-            The function is dispatched.
-        Then:
-            The task tag length should remain under 200 characters.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 0
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    expected = (
+        f"{foo_gen.__module__}.{foo_gen.__qualname__}"
+        f":{expected_lineno}"
+    )
+    assert task.tag == expected
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
 
-        # Act
-        await foo(b"\x00" * 1_000_000, 0)
+@pytest.mark.asyncio
+async def test_routine_with_large_arguments(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test tag stays small regardless of argument size.
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        assert len(task.tag) < 200
+    Given:
+        A @routine-decorated coroutine called with a large
+        argument.
+    When:
+        The function is dispatched.
+    Then:
+        The task tag length should remain under 200 characters.
+    """
+    # Arrange
+    async def mock_stream():
+        yield 0
 
-    def test_source_lineno_attribute(self):
-        """Test decorated function exposes _source_lineno.
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-        Given:
-            A @routine-decorated function.
-        When:
-            The _source_lineno attribute is inspected.
-        Then:
-            It should be a positive integer matching the definition
-            line from ``inspect.getsourcelines``.
-        """
-        # Arrange
-        _, expected_lineno = getsourcelines(foo.__wrapped__)
+    # Act
+    await foo(b"\x00" * 1_000_000, 0)
 
-        # Act & assert
-        assert hasattr(foo, "_source_lineno")
-        assert isinstance(foo._source_lineno, int)
-        assert foo._source_lineno == expected_lineno
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert len(task.tag) < 200
 
-    @pytest.mark.asyncio
-    async def test_instance_method_tag_includes_class_qualname(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test instance method tag includes class in qualname.
 
-        Given:
-            A @routine-decorated instance method.
-        When:
-            The method is called and dispatched.
-        Then:
-            The task tag should include the class-qualified name.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 10
+@pytest.mark.asyncio
+async def test_routine_with_source_line_in_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test tag contains the correct source line number.
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    Given:
+        A @routine-decorated function.
+    When:
+        The function is dispatched.
+    Then:
+        The task tag should end with the source line number
+        from ``inspect.getsourcelines``.
+    """
+    # Arrange
+    _, expected_lineno = getsourcelines(foo.__wrapped__)
 
-        # Act
-        await Foo().foo(5)
+    async def mock_stream():
+        yield 42
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        assert "Foo.foo:" in task.tag
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-    @pytest.mark.asyncio
-    async def test_classmethod_tag_includes_class_qualname(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test classmethod tag includes class in qualname.
+    # Act
+    await foo(1, 2)
 
-        Given:
-            A @routine-decorated classmethod.
-        When:
-            The method is called and dispatched.
-        Then:
-            The task tag should include the class-qualified name.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 15
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert task.tag.endswith(f":{expected_lineno}")
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
 
-        # Act
-        await Foo.bar(5)
+@pytest.mark.asyncio
+async def test_routine_with_instance_method_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test instance method tag includes class in qualname.
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        assert "Foo.bar:" in task.tag
+    Given:
+        A @routine-decorated instance method.
+    When:
+        The method is called and dispatched.
+    Then:
+        The task tag should include the class-qualified name.
+    """
+    # Arrange
+    async def mock_stream():
+        yield 10
 
-    @pytest.mark.asyncio
-    async def test_staticmethod_tag_includes_class_qualname(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test staticmethod tag includes class in qualname.
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-        Given:
-            A @routine-decorated staticmethod.
-        When:
-            The method is called and dispatched.
-        Then:
-            The task tag should include the class-qualified name.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 20
+    # Act
+    await Foo().foo(5)
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert "Foo.foo:" in task.tag
 
-        # Act
-        await Foo.baz(5)
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        assert "Foo.baz:" in task.tag
+@pytest.mark.asyncio
+async def test_routine_with_classmethod_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test classmethod tag includes class in qualname.
 
-    @pytest.mark.asyncio
-    async def test_async_generator_method_tag_includes_class_qualname(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test async generator method tag includes class in qualname.
+    Given:
+        A @routine-decorated classmethod.
+    When:
+        The method is called and dispatched.
+    Then:
+        The task tag should include the class-qualified name.
+    """
+    # Arrange
+    async def mock_stream():
+        yield 15
 
-        Given:
-            A @routine-decorated async generator instance method.
-        When:
-            The method is called and dispatched.
-        Then:
-            The task tag should include the class-qualified name.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 0
-            yield 2
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    # Act
+    await Foo.bar(5)
 
-        # Act
-        async for _ in Foo().foo_gen(2):
-            pass
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert "Foo.bar:" in task.tag
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        assert "Foo.foo_gen:" in task.tag
 
-    def test_distinct_line_numbers(self):
-        """Test different functions have distinct source line numbers.
+@pytest.mark.asyncio
+async def test_routine_with_staticmethod_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test staticmethod tag includes class in qualname.
 
-        Given:
-            Multiple @routine-decorated functions defined on
-            different lines.
-        When:
-            Their _source_lineno attributes are compared.
-        Then:
-            Each should have a distinct value.
-        """
-        # Act & assert
-        assert foo._source_lineno != bar._source_lineno
-        assert bar._source_lineno != foo_gen._source_lineno
-        assert foo._source_lineno != foo_gen._source_lineno
+    Given:
+        A @routine-decorated staticmethod.
+    When:
+        The method is called and dispatched.
+    Then:
+        The task tag should include the class-qualified name.
+    """
+    # Arrange
+    async def mock_stream():
+        yield 20
 
-    @pytest.mark.asyncio
-    async def test_kwargs_do_not_appear_in_tag(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test keyword arguments are not included in the tag.
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-        Given:
-            A @routine-decorated coroutine called with keyword
-            arguments.
-        When:
-            The function is dispatched.
-        Then:
-            The task tag should not contain ``=``.
-        """
-        # Arrange
-        async def mock_stream():
-            yield 42
+    # Act
+    await Foo.baz(5)
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert "Foo.baz:" in task.tag
 
-        # Act
-        await foo(x=1, y=2)
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        assert "=" not in task.tag
+@pytest.mark.asyncio
+async def test_routine_with_async_generator_method_tag(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test async generator method tag includes class in qualname.
 
-    @pytest.mark.asyncio
-    async def test_no_arg_tag_format(
-        self,
-        mocker: MockerFixture,
-        mock_proxy_context,
-    ):
-        """Test no-argument call produces identical tag format.
+    Given:
+        A @routine-decorated async generator instance method.
+    When:
+        The method is called and dispatched.
+    Then:
+        The task tag should include the class-qualified name.
+    """
+    # Arrange
+    async def mock_stream():
+        yield 0
+        yield 2
 
-        Given:
-            A @routine-decorated coroutine with no parameters.
-        When:
-            The function is called with no arguments.
-        Then:
-            The task tag should match
-            ``"{module}.{qualname}:{lineno}"``.
-        """
-        # Arrange
-        async def mock_stream():
-            yield "async_result"
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
 
-        mock_proxy_context.dispatch = mocker.AsyncMock(
-            return_value=mock_stream()
-        )
+    # Act
+    async for _ in Foo().foo_gen(2):
+        pass
 
-        # Act
-        await bar()
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert "Foo.foo_gen:" in task.tag
 
-        # Assert
-        task = mock_proxy_context.dispatch.call_args[0][0]
-        expected = (
-            f"{bar.__module__}.{bar.__qualname__}:{bar._source_lineno}"
-        )
-        assert task.tag == expected
+
+def test_routine_with_distinct_definitions():
+    """Test different functions produce distinct tag line numbers.
+
+    Given:
+        Multiple @routine-decorated functions defined on
+        different lines.
+    When:
+        Their source line numbers are inspected via
+        ``inspect.getsourcelines``.
+    Then:
+        Each should have a distinct value.
+    """
+    # Arrange
+    _, foo_lineno = getsourcelines(foo.__wrapped__)
+    _, bar_lineno = getsourcelines(bar.__wrapped__)
+    _, gen_lineno = getsourcelines(foo_gen.__wrapped__)
+
+    # Act & assert
+    assert foo_lineno != bar_lineno
+    assert bar_lineno != gen_lineno
+    assert foo_lineno != gen_lineno
+
+
+@pytest.mark.asyncio
+async def test_routine_with_keyword_arguments(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test keyword arguments are not included in the tag.
+
+    Given:
+        A @routine-decorated coroutine called with keyword
+        arguments.
+    When:
+        The function is dispatched.
+    Then:
+        The task tag should not contain ``=``.
+    """
+    # Arrange
+    async def mock_stream():
+        yield 42
+
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
+
+    # Act
+    await foo(x=1, y=2)
+
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    assert "=" not in task.tag
+
+
+@pytest.mark.asyncio
+async def test_routine_with_no_arguments(
+    mocker: MockerFixture,
+    mock_proxy_context,
+):
+    """Test no-argument call produces identical tag format.
+
+    Given:
+        A @routine-decorated coroutine with no parameters.
+    When:
+        The function is called with no arguments.
+    Then:
+        The task tag should match
+        ``"{module}.{qualname}:{lineno}"``.
+    """
+    # Arrange
+    _, expected_lineno = getsourcelines(bar.__wrapped__)
+
+    async def mock_stream():
+        yield "async_result"
+
+    mock_proxy_context.dispatch = mocker.AsyncMock(
+        return_value=mock_stream()
+    )
+
+    # Act
+    await bar()
+
+    # Assert
+    task = mock_proxy_context.dispatch.call_args[0][0]
+    expected = (
+        f"{bar.__module__}.{bar.__qualname__}:{expected_lineno}"
+    )
+    assert task.tag == expected
