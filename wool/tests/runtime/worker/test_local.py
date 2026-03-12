@@ -4,6 +4,7 @@ from hypothesis import strategies as st
 
 from wool.runtime.worker.auth import WorkerCredentials
 from wool.runtime.worker.base import WorkerLike
+from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.local import LocalWorker
 from wool.runtime.worker.process import WorkerProcess
 
@@ -97,6 +98,50 @@ class TestLocalWorker:
         # Timeouts are internal config - just verify construction succeeds
         assert worker.metadata is None
         assert worker.address is None
+
+    def test___init___with_default_options(self, mocker):
+        """Test default options are forwarded to WorkerProcess.
+
+        Given:
+            No options parameter.
+        When:
+            LocalWorker is instantiated.
+        Then:
+            WorkerProcess is called with options=None.
+        """
+        # Arrange
+        mock_wp = mocker.patch("wool.runtime.worker.local.WorkerProcess")
+
+        # Act
+        LocalWorker()
+
+        # Assert
+        mock_wp.assert_called_once()
+        assert mock_wp.call_args.kwargs["options"] is None
+
+    def test___init___with_custom_options(self, mocker):
+        """Test custom WorkerOptions are forwarded to WorkerProcess.
+
+        Given:
+            A WorkerOptions instance with custom message sizes.
+        When:
+            LocalWorker is instantiated with that options parameter.
+        Then:
+            WorkerProcess is called with the same options instance.
+        """
+        # Arrange
+        mock_wp = mocker.patch("wool.runtime.worker.local.WorkerProcess")
+        opts = WorkerOptions(
+            max_receive_message_length=50 * 1024 * 1024,
+            max_send_message_length=25 * 1024 * 1024,
+        )
+
+        # Act
+        LocalWorker(options=opts)
+
+        # Assert
+        mock_wp.assert_called_once()
+        assert mock_wp.call_args.kwargs["options"] is opts
 
     def test_implements_workerlike_protocol(self):
         """Test LocalWorker implements WorkerLike protocol.
