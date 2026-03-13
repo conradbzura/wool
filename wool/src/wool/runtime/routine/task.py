@@ -5,20 +5,16 @@ import logging
 import traceback
 from collections.abc import Callable
 from contextlib import contextmanager
-from contextvars import Context
 from contextvars import ContextVar
 from dataclasses import dataclass
-from functools import wraps
 from inspect import isasyncgenfunction
 from inspect import iscoroutinefunction
 from types import TracebackType
-from typing import Any
 from typing import AsyncGenerator
 from typing import ContextManager
 from typing import Coroutine
 from typing import Dict
 from typing import Generic
-from typing import Literal
 from typing import Protocol
 from typing import SupportsInt
 from typing import Tuple
@@ -33,12 +29,10 @@ import cloudpickle
 
 import wool
 from wool import protocol
-from wool.runtime.event import Event
 
 Args = Tuple
 Kwargs = Dict
 Timeout = SupportsInt
-Timestamp = SupportsInt
 Routine: TypeAlias = Coroutine | AsyncGenerator
 W = TypeVar("W", bound=Routine)
 
@@ -139,10 +133,7 @@ class Task(Generic[W]):
 
     def __post_init__(self, **kwargs):
         """
-        Initialize the task and emit a "task-created" event.
-
-        Sets up the task context including caller tracking and event emission
-        for monitoring and debugging purposes.
+        Initialize the task and set up caller tracking.
 
         :param kwargs:
             Additional keyword arguments (unused).
@@ -153,7 +144,6 @@ class Task(Generic[W]):
             )
         if caller := _current_task.get():
             self.caller = caller.id
-        TaskEvent("task-created", task=self).emit()
 
     def __enter__(self) -> Callable[[], Coroutine | AsyncGenerator]:
         """
@@ -192,8 +182,6 @@ class Task(Generic[W]):
             False to allow exceptions to propagate.
         """
         logging.debug(f"Exiting {self.__class__.__name__} with ID {self.id}")
-        this = asyncio.current_task()
-        assert this
         if exception_value:
             self.exception = TaskException(
                 exception_type.__qualname__,
@@ -205,7 +193,6 @@ class Task(Generic[W]):
                     for y in x.split("\n")
                 ],
             )
-        this.add_done_callback(self._finish, context=Context())
         _current_task.reset(self._task_token)
         # Return False to allow exceptions to propagate
         return False
@@ -303,9 +290,6 @@ class Task(Generic[W]):
             finally:
                 await gen.aclose()
 
-    def _finish(self, _):
-        TaskEvent("task-completed", task=self).emit()
-
 
 # public
 @dataclass
@@ -327,151 +311,6 @@ class TaskException:
     traceback: list[str]
 
 
-# public
-class TaskEvent(Event):
-    """
-    Represents a lifecycle event for a distributed task.
-
-    Events are emitted at key points during task execution and can be used
-    for monitoring, debugging, and performance analysis. Event handlers can
-    be registered to respond to specific event types.
-
-    :param type:
-        The type of task event (e.g., "task-created", "task-scheduled").
-    :param task:
-        The :class:`Task` instance associated with this event.
-    """
-
-    task: Task
-
-    def __init__(self, type: TaskEventType, /, task: Task) -> None:
-        super().__init__(type)
-        self.task = task
-
-    def emit(self, context=None):
-        """
-        Emit the task event, invoking all registered handlers for the
-        event type.
-
-        Handlers are called with the event instance, timestamp, and
-        optional context metadata.
-
-        :param context:
-            Optional metadata passed to handlers (e.g., emitter
-            identification).
-        """
-        logging.debug(
-            f"Emitting {self.type} event for "
-            f"task {self.task.id} "
-            f"({self.task.callable.__qualname__})"
-        )
-        # Delegate to base class Event.emit()
-        super().emit(context)
-
-
-# public
-IterationEventKind = Literal["next", "send", "throw"]
-"""
-Identifies the operation that drove an iteration of a streaming
-dispatch.
-
-- ``"next"``: The client called ``__anext__()`` or the server
-  received a ``next`` frame.
-- ``"send"``: The client called ``asend(value)`` or the server
-  received a ``send`` frame.
-- ``"throw"``: The client called ``athrow(exc)`` or the server
-  received a ``throw`` frame.
-"""
-
-
-# public
-class IterationEvent(TaskEvent):
-    """Lifecycle event for a single iteration of a streaming dispatch.
-
-    Emitted at three points during each iteration round-trip:
-
-    * ``"task-iteration-initiated"`` — on the client, before writing
-      the request to the gRPC stream.
-    * ``"task-iteration-started"`` — on the server, after forwarding
-      the command to the worker loop.
-    * ``"task-iteration-completed"`` — on the server, after receiving
-      the result from the worker loop.
-
-    :param type:
-        One of the ``task-iteration-*`` event types.
-    :param task:
-        The :class:`Task` associated with this iteration.
-    :param kind:
-        The operation kind (``"next"``, ``"send"``, or
-        ``"throw"``).
-    :param step:
-        Zero-based step index of this iteration within the
-        stream.
-    """
-
-    kind: IterationEventKind
-    step: int
-
-    def __init__(
-        self,
-        type: TaskEventType,
-        /,
-        task: Task,
-        kind: IterationEventKind,
-        step: int,
-    ) -> None:
-        super().__init__(type, task=task)
-        self.kind = kind
-        self.step = step
-
-
-# public
-TaskEventType = Literal[
-    "task-created",
-    "task-scheduled",
-    "task-started",
-    "task-stopped",
-    "task-completed",
-    "task-iteration-initiated",
-    "task-iteration-started",
-    "task-iteration-completed",
-]
-"""
-Defines the types of events that can occur during the lifecycle of a Wool
-task.
-
-- "task-created":
-    Emitted when a task is created.
-- "task-scheduled":
-    Emitted when a task is scheduled for execution in a worker's event
-    loop.
-- "task-started":
-    Emitted when a task starts execution.
-- "task-stopped":
-    Emitted when a task stops execution.
-- "task-completed":
-    Emitted when a task completes execution.
-- "task-iteration-initiated":
-    Emitted on the client before writing an iteration request to the
-    gRPC stream.
-- "task-iteration-started":
-    Emitted on the server after forwarding the iteration command to
-    the worker loop.
-- "task-iteration-completed":
-    Emitted on the server after receiving the iteration result from
-    the worker loop.
-"""
-
-
-# public
-class TaskEventHandler(Protocol):
-    """
-    Protocol for :py:class:`TaskEvent` callback functions.
-    """
-
-    def __call__(self, event: TaskEvent, timestamp: Timestamp, context=None) -> None: ...
-
-
 _current_task: ContextVar[Task | None] = ContextVar("_current_task", default=None)
 
 
@@ -485,22 +324,3 @@ def current_task() -> Task | None:
         The current task or None if no task is active.
     """
     return _current_task.get()
-
-
-def _run(fn):
-    @wraps(fn)
-    def wrapper(self, *args, **kwargs):
-        if current_task := self._context.get(_current_task):
-            TaskEvent("task-started", task=current_task).emit()
-            try:
-                result = fn(self, *args, **kwargs)
-            finally:
-                TaskEvent("task-stopped", task=current_task).emit()
-            return result
-        else:
-            return fn(self, *args, **kwargs)
-
-    return wrapper
-
-
-asyncio.Handle._run = _run(asyncio.Handle._run)

@@ -16,18 +16,12 @@ from wool.runtime.discovery.base import PredicateFunction
 from wool.runtime.discovery.base import WorkerMetadata
 from wool.runtime.discovery.lan import LanDiscovery
 from wool.runtime.discovery.local import LocalDiscovery
-from wool.runtime.event import AsyncEventHandler
 from wool.runtime.loadbalancer.base import LoadBalancerContextLike
 from wool.runtime.loadbalancer.base import LoadBalancerLike
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
 from wool.runtime.resourcepool import ResourcePool
-from wool.runtime.routine.task import IterationEvent
-from wool.runtime.routine.task import IterationEventKind
 from wool.runtime.routine.task import Task
-from wool.runtime.routine.task import TaskEvent
-from wool.runtime.routine.task import TaskEventHandler
-from wool.runtime.routine.task import TaskEventType
 from wool.runtime.routine.task import TaskException
 from wool.runtime.routine.task import current_task
 from wool.runtime.routine.wrapper import routine
@@ -72,12 +66,7 @@ __all__ = [
     "NoWorkersAvailable",
     "RoundRobinLoadBalancer",
     # Routines
-    "IterationEvent",
-    "IterationEventKind",
     "Task",
-    "TaskEvent",
-    "TaskEventHandler",
-    "TaskEventType",
     "TaskException",
     "current_task",
     "routine",
@@ -90,8 +79,6 @@ __all__ = [
     "WorkerPool",
     "WorkerProxy",
     "WorkerService",
-    # Events
-    "AsyncEventHandler",
     # Discovery
     "Discovery",
     "DiscoveryEvent",

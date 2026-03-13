@@ -16,8 +16,6 @@ from typing import TypeVar
 from typing import runtime_checkable
 
 from wool.protocol.worker import WorkerMetadata as WorkerMetadataProtobuf
-from wool.runtime.event import Event
-
 T: Final = TypeVar("T")
 
 # public
@@ -107,10 +105,10 @@ DiscoveryEventType: TypeAlias = Literal[
 
 
 # public
-class DiscoveryEvent(Event):
+class DiscoveryEvent:
     """Event representing a change in worker availability.
 
-    Emitted by discovery services when workers are added, updated, or
+    Used by discovery services when workers are added, updated, or
     dropped from the pool. Contains both the event type and the
     affected worker's metadata.
 
@@ -120,10 +118,11 @@ class DiscoveryEvent(Event):
         Information about the worker that triggered the event.
     """
 
+    type: DiscoveryEventType
     metadata: WorkerMetadata
 
     def __init__(self, type: DiscoveryEventType, /, metadata: WorkerMetadata) -> None:
-        super().__init__(type)
+        self.type = type
         self.metadata = metadata
 
 
