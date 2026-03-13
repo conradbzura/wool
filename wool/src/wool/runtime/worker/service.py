@@ -18,9 +18,7 @@ from grpc.aio import ServicerContext
 import wool
 from wool import protocol
 from wool.runtime.resourcepool import ResourcePool
-from wool.runtime.routine.task import IterationEvent
 from wool.runtime.routine.task import Task
-from wool.runtime.routine.task import TaskEvent
 from wool.runtime.routine.task import do_dispatch
 
 # Sentinel to mark end of async generator stream
@@ -138,8 +136,6 @@ class WorkerService(protocol.worker.WorkerServicer):
             First yields an Ack Response when task processing begins,
             then yields Response(s) containing the task result(s).
 
-        .. note::
-            Emits a :class:`TaskEvent` when the task is scheduled for execution.
         """
         if self._stopping.is_set():
             await context.abort(
@@ -353,9 +349,8 @@ class WorkerService(protocol.worker.WorkerServicer):
             )
 
             try:
-                step = 0
                 async for request in request_iterator:
-                    match action := request.WhichOneof("payload"):
+                    match request.WhichOneof("payload"):
                         case "next":
                             worker_loop.call_soon_threadsafe(
                                 request_queue.put_nowait,
@@ -376,23 +371,7 @@ class WorkerService(protocol.worker.WorkerServicer):
                         case _:
                             continue
 
-                    IterationEvent(
-                        "task-iteration-started",
-                        task=work_task,
-                        kind=action,
-                        step=step,
-                    ).emit()
-
                     result = await result_queue.get()
-
-                    IterationEvent(
-                        "task-iteration-completed",
-                        task=work_task,
-                        kind=action,
-                        step=step,
-                    ).emit()
-
-                    step += 1
 
                     if result is _SENTINEL:
                         break
@@ -412,8 +391,8 @@ class WorkerService(protocol.worker.WorkerServicer):
         """Context manager for tracking running tasks.
 
         Manages the lifecycle of a task execution, adding it to the
-        active tasks set and emitting appropriate events. Ensures
-        proper cleanup when the task completes or fails.
+        active tasks set. Ensures proper cleanup when the task
+        completes or fails.
 
         Tasks are executed in a thread pool to prevent blocking the
         main gRPC event loop, allowing the worker to remain responsive
@@ -427,12 +406,7 @@ class WorkerService(protocol.worker.WorkerServicer):
             The :class:`asyncio.Task` or async generator for the
             wool task.
 
-        .. note::
-            Emits a :class:`TaskEvent` with type "task-scheduled"
-            when the task begins execution.
         """
-        TaskEvent("task-scheduled", task=work_task).emit()
-
         if iscoroutinefunction(work_task.callable):
             # Regular async function -> run on worker loop
             task = asyncio.create_task(self._run_on_worker(work_task))

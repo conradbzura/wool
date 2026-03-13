@@ -512,4 +512,3 @@ class WorkerProxy:
                     )
                 case "worker-dropped":
                     self._loadbalancer_context.remove_worker(event.metadata)
-            event.emit(context={"proxy_id": str(self.id)})
