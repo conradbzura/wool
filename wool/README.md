@@ -1,12 +1,10 @@
 ![](https://raw.githubusercontent.com/wool-labs/wool/refs/heads/main/assets/woolly-transparent-bg-2048.png)
 
-**Wool** is a native Python package for transparently executing tasks in a horizontally scalable, distributed network of agnostic worker processes. Any picklable async function or method can be converted into a task with a simple decorator and a client connection.
+**Wool** is a native Python package for transparently executing tasks in a horizontally scalable, distributed network of agnostic worker processes. Any picklable async function or async generator can be converted into a distributable routine with a single decorator.
 
 ## Installation
 
 ### Using pip
-
-To install the package using pip, run the following command:
 
 ```sh
 pip install --pre wool
@@ -14,218 +12,162 @@ pip install --pre wool
 
 ### Cloning from GitHub
 
-To install the package by cloning from GitHub, run the following commands:
-
 ```sh
 git clone https://github.com/wool-labs/wool.git
 cd wool
 pip install ./wool
 ```
 
-## Features
-
-### Declaring tasks
-
-Wool tasks are coroutine functions that are executed in a remote `asyncio` event loop within a worker process. To declare a task, use the `@wool.task` decorator:
+## Quick start
 
 ```python
+import asyncio
 import wool
 
-@wool.task
-async def sample_task(x, y):
-    return x + y
-```
 
-Tasks must be picklable, stateless, and idempotent. Avoid passing unpicklable objects as arguments or return values.
-
-### Worker pools
-
-Worker pools are responsible for executing tasks. Wool provides two types of pools:
-
-#### Ephemeral pools
-
-Ephemeral pools are created and destroyed within the scope of a context manager. Use `wool.pool` to declare an ephemeral pool:
-
-```python
-import asyncio, wool
-
-@wool.task
-async def sample_task(x, y):
+@wool.routine
+async def add(x: int, y: int) -> int:
     return x + y
 
+
 async def main():
-    with wool.pool():
-        result = await sample_task(1, 2)
-        print(f"Result: {result}")
+    async with wool.WorkerPool(size=4):
+        result = await add(1, 2)
+        print(result)  # 3
+
 
 asyncio.run(main())
 ```
 
-#### Durable pools
+## Routines
 
-Durable pools are started independently and persist beyond the scope of a single application. Use the `wool` CLI to manage durable pools:
-
-```bash
-wool pool up --port 5050 --authkey deadbeef --module tasks
-```
-
-Connect to a durable pool using `wool.session`:
+A Wool routine is an async function decorated with `@wool.routine`. When called, the function is serialized and dispatched to a worker in the pool, with the result streamed back to the caller.
 
 ```python
-import asyncio, wool
-
-@wool.task
-async def sample_task(x, y):
-    return x + y
-
-async def main():
-    with wool.session(port=5050, authkey=b"deadbeef"):
-        result = await sample_task(1, 2)
-        print(f"Result: {result}")
-
-asyncio.run(main())
+@wool.routine
+async def fib(n: int) -> int:
+    if n <= 1:
+        return n
+    async with asyncio.TaskGroup() as tg:
+        a = tg.create_task(fib(n - 1))
+        b = tg.create_task(fib(n - 2))
+    return a.result() + b.result()
 ```
 
-### CLI commands
-
-Wool provides a command-line interface (CLI) for managing worker pools.
-
-#### Start the worker pool
-
-```sh
-wool pool up --host <host> --port <port> --authkey <authkey> --breadth <breadth> --module <module>
-```
-
-- `--host`: The host address (default: `localhost`).
-- `--port`: The port number (default: `0`).
-- `--authkey`: The authentication key (default: `b""`).
-- `--breadth`: The number of worker processes (default: number of CPU cores).
-- `--module`: Python module containing Wool task definitions (optional, can be specified multiple times).
-
-#### Stop the worker pool
-
-```sh
-wool pool down --host <host> --port <port> --authkey <authkey> --wait
-```
-
-- `--host`: The host address (default: `localhost`).
-- `--port`: The port number (required).
-- `--authkey`: The authentication key (default: `b""`).
-- `--wait`: Wait for in-flight tasks to complete before shutting down.
-
-#### Ping the worker pool
-
-```sh
-wool ping --host <host> --port <port> --authkey <authkey>
-```
-
-- `--host`: The host address (default: `localhost`).
-- `--port`: The port number (required).
-- `--authkey`: The authentication key (default: `b""`).
-
-### Advanced usage
-
-#### Nested pools and sessions
-
-Wool supports nesting pools and sessions to achieve complex workflows. Tasks can be dispatched to specific pools by nesting contexts:
+Async generators are also supported for streaming results:
 
 ```python
-import wool
-
-@wool.task
-async def task_a():
-    await asyncio.sleep(1)
-
-@wool.task
-async def task_b():
-    with wool.pool(port=5051):
-        await task_a()
-
-async def main():
-    with wool.pool(port=5050):
-        await task_a()
-        await task_b()
-
-asyncio.run(main())
+@wool.routine
+async def fib(n: int):
+    a, b = 0, 1
+    for _ in range(n):
+        yield a
+        a, b = b, a + b
 ```
 
-In this example, `task_a` is executed by two different pools, while `task_b` is executed by the pool on port 5050.
+The decorated function, its arguments, returned or yielded values, and exceptions must all be serializable via `cloudpickle`. Instance, class, and static methods are all supported.
 
-### Best practices
+## Worker pools
 
-#### Sizing worker pools
+`WorkerPool` is the main entry point for running routines. It orchestrates worker subprocess lifecycles, discovery, and load-balanced dispatch. The pool supports four configurations depending on which arguments are provided:
 
-When configuring worker pools, it is important to balance the number of processes with the available system resources:
+| Mode | `size` | `discovery` | Behavior |
+| ---- | ------ | ----------- | -------- |
+| Default | omitted | omitted | Spawns `cpu_count` local workers with internal `LocalDiscovery`. |
+| Ephemeral | set | omitted | Spawns N local workers with internal `LocalDiscovery`. |
+| Durable | omitted | set | No workers spawned; connects to existing workers via discovery. |
+| Hybrid | set | set | Spawns local workers and discovers remote workers through the same protocol. |
 
-- **CPU-bound tasks**: Size the worker pool to match the number of CPU cores. This is the default behavior when spawning a pool.
-- **I/O-bound tasks**: For workloads involving significant I/O, consider oversizing the pool slightly to maximize the system's I/O capacity utilization.
-- **Mixed workloads**: Monitor memory usage and system load to avoid oversubscription, especially for memory-intensive tasks. Use profiling tools to determine the optimal pool size.
+**Default** — no arguments needed:
 
-#### Defining tasks
-
-Wool tasks are coroutine functions that execute asynchronously in a remote `asyncio` event loop. To ensure smooth execution and scalability, prioritize:
-
-- **Picklability**: Ensure all task arguments and return values are picklable. Avoid passing unpicklable objects such as open file handles, database connections, or lambda functions.
-- **Statelessness and idempotency**: Design tasks to be stateless and idempotent. Avoid relying on global variables or shared mutable state. This ensures predictable behavior and safe retries.
-- **Non-blocking operations**: To achieve higher concurrency, avoid blocking calls within tasks. Use `asyncio`-compatible libraries for I/O operations.
-- **Inter-process synchronization**: Use Wool's synchronization primitives (e.g., `wool.locking`) for inter-worker and inter-pool coordination. Standard `asyncio` primitives will not behave as expected in a multi-process environment.
-
-#### Debugging and logging
-
-- Enable detailed logging during development to trace task execution and worker pool behavior:
-  ```python
-  import logging
-  logging.basicConfig(level=logging.DEBUG)
-  ```
-- Use Wool's built-in logging configuration to capture worker-specific logs.
-
-#### Nested pools and sessions
-
-Wool supports nesting pools and sessions to achieve complex workflows. Tasks can be dispatched to specific pools by nesting contexts. This is useful for workflows requiring task segregation or resource isolation.
-
-Example:
 ```python
-import asyncio, wool
-
-@wool.task
-async def task_a():
-    await asyncio.sleep(1)
-
-@wool.task
-async def task_b():
-    with wool.pool(port=5051):
-        await task_a()
-
-async def main():
-    with wool.pool(port=5050):
-        await task_a()
-        await task_b()
-
-asyncio.run(main())
+async with wool.WorkerPool():
+    result = await my_routine()
 ```
 
-#### Performance optimization
+**Ephemeral** — spawn a fixed number of local workers, optionally with tags:
 
-- Minimize the size of arguments and return values to reduce serialization overhead.
-- For large datasets, consider using shared memory or passing references (e.g., file paths) instead of transferring the entire data.
-- Profile tasks to identify and optimize performance bottlenecks.
+```python
+async with wool.WorkerPool("gpu-capable", size=4):
+    result = await gpu_task()
+```
 
-#### Task cancellation
+**Durable** — connect to workers already running on the network:
 
-- Handle task cancellations gracefully by cleaning up resources and rolling back partial changes.
-- Use `asyncio.CancelledError` to detect and respond to cancellations.
+```python
+async with wool.WorkerPool(discovery=wool.LanDiscovery()):
+    result = await my_routine()
+```
 
-#### Error propagation
+**Hybrid** — spawn local workers and discover remote ones:
 
-- Wool propagates exceptions raised within tasks to the caller. Use this feature to handle errors centrally in your application.
+```python
+async with wool.WorkerPool(size=4, discovery=wool.LanDiscovery()):
+    result = await my_routine()
+```
 
-Example:
+`size` controls how many workers are spawned by the pool — it does not cap the total number of workers available. In Hybrid mode, additional workers may join via discovery beyond the initial `size`.
+
+## Discovery
+
+Discovery separates publishing (announcing worker lifecycle events) from subscribing (reacting to them). Wool ships with two protocols:
+
+- **`LocalDiscovery`** — shared-memory IPC for single-machine pools. This is the default when no discovery is specified.
+- **`LanDiscovery`** — Zeroconf DNS-SD (`_wool._tcp.local.`) for network-wide discovery. No central coordinator required.
+
+Custom discovery protocols are supported via structural subtyping — implement the `DiscoveryLike` protocol and pass it to `WorkerPool`.
+
+## Load balancing
+
+The load balancer decides which worker handles each dispatched task. Wool ships with `RoundRobinLoadBalancer` (the default), which cycles through workers and handles transient errors by retrying on the next worker.
+
+Custom load balancers are supported via structural subtyping — implement the `LoadBalancerLike` protocol and pass it to `WorkerPool`:
+
+```python
+async with wool.WorkerPool(size=4, loadbalancer=my_balancer):
+    result = await my_routine()
+```
+
+## Security
+
+`WorkerCredentials` provides mTLS or one-way TLS for gRPC connections between proxies and workers:
+
+```python
+creds = wool.WorkerCredentials.from_files(
+    ca_path="certs/ca-cert.pem",
+    key_path="certs/worker-key.pem",
+    cert_path="certs/worker-cert.pem",
+    mutual=True,
+)
+
+async with wool.WorkerPool(size=4, credentials=creds):
+    result = await my_routine()
+```
+
+## Task lifecycle events
+
+Wool emits events at each stage of a task's lifecycle. Register handlers to observe execution without modifying task code:
+
+```python
+@wool.TaskEvent.handler("task-created", "task-completed")
+def on_task(event: wool.TaskEvent, timestamp: int, context=None) -> None:
+    ...
+```
+
+Available event types: `task-created`, `task-scheduled`, `task-started`, `task-stopped`, `task-completed`, `task-iteration-initiated`, `task-iteration-started`, `task-iteration-completed`.
+
+## Error handling
+
+Exceptions raised within a routine are captured as a `TaskException` and re-raised on the caller side, preserving the original exception type and traceback:
+
 ```python
 try:
-    result = await some_task()
-except Exception as e:
-    print(f"Task failed with error: {e}")
+    result = await my_routine()
+except ValueError as e:
+    print(f"Task failed: {e}")
 ```
+
+If every worker in the pool fails or is unavailable, `NoWorkersAvailable` is raised.
 
 ## Architecture
 
