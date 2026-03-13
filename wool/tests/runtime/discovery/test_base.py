@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from wool.protocol.worker import WorkerMetadata as WorkerMetadataProtobuf
+from wool.protocol.wire import WorkerMetadata as WorkerMetadataProtobuf
 from wool.runtime.discovery.base import Discovery
 from wool.runtime.discovery.base import DiscoveryEvent
 from wool.runtime.discovery.base import DiscoveryEventType

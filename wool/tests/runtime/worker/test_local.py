@@ -385,7 +385,7 @@ class TestLocalWorker:
 
         mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock_channel)
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -458,7 +458,7 @@ class TestLocalWorker:
 
         mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock_channel)
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act & assert
@@ -594,7 +594,7 @@ class TestLocalWorker:
             grpc.aio, "secure_channel", return_value=mock_channel
         )
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -638,7 +638,7 @@ class TestLocalWorker:
             grpc.aio, "insecure_channel", return_value=mock_channel
         )
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -682,7 +682,7 @@ class TestLocalWorker:
             grpc.aio, "secure_channel", return_value=mock_channel
         )
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -727,7 +727,7 @@ class TestLocalWorker:
             grpc.aio, "secure_channel", return_value=mock_channel
         )
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act
@@ -772,7 +772,7 @@ class TestLocalWorker:
         mocker.patch.object(grpc.aio, "secure_channel", return_value=mock_channel)
         mocker.patch.object(grpc.aio, "insecure_channel", return_value=mock_channel)
         mocker.patch.object(
-            protocol.worker, "WorkerStub", return_value=mock_stub
+            protocol.wire, "WorkerStub", return_value=mock_stub
         )
 
         # Act
