@@ -61,7 +61,7 @@ def mock_worker_stub(mocker: MockerFixture):
     Provides a mock :class:`WorkerStub` with async dispatch functionality
     for testing worker communication scenarios.
     """
-    mock_worker_stub = mocker.MagicMock(spec=protocol.worker.WorkerStub)
+    mock_worker_stub = mocker.MagicMock(spec=protocol.wire.WorkerStub)
     mock_worker_stub.dispatch = mocker.AsyncMock()
     return mock_worker_stub
 

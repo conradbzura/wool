@@ -138,16 +138,16 @@ class TestWorkerConnection:
         to_protobuf_spy = mocker.spy(Task, "to_protobuf")
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("test_result"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("test_result"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -180,9 +180,9 @@ class TestWorkerConnection:
         to_protobuf_spy = mocker.spy(Task, "to_protobuf")
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                exception=protocol.task.Message(
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                exception=protocol.wire.Message(
                     dump=cloudpickle.dumps(ValueError("task_error"))
                 )
             ),
@@ -191,7 +191,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -218,15 +218,15 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("unexpected"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("unexpected"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -264,13 +264,13 @@ class TestWorkerConnection:
             regardless of whether call.cancel() raises an exception
         """
         # Arrange
-        ack_resp = protocol.worker.Response(ack=protocol.task.Ack())
-        responses = (ack_resp, protocol.worker.Response())
+        ack_resp = protocol.wire.Response(ack=protocol.wire.Ack())
+        responses = (ack_resp, protocol.wire.Response())
         mock_call = mock_grpc_call(async_stream(responses), cancel_raises=cancel_raises)
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -318,7 +318,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(side_effect=mock_rpc_error)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -364,7 +364,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(side_effect=mock_rpc_error)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -421,14 +421,14 @@ class TestWorkerConnection:
             It should raise TimeoutError and cancel the call
         """
         # Arrange
-        ack = protocol.worker.Response(ack=protocol.task.Ack())
+        ack = protocol.wire.Response(ack=protocol.wire.Ack())
         responses = (asyncio.sleep(1000), ack)
 
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -455,10 +455,10 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
+            protocol.wire.Response(ack=protocol.wire.Ack()),
             asyncio.sleep(10),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("done"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("done"))
             ),
         )
 
@@ -466,7 +466,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=long_running_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=1)
 
@@ -524,14 +524,14 @@ class TestWorkerConnection:
         responses = (
             stream_started.set,
             asyncio.sleep(10),
-            protocol.worker.Response(ack=protocol.task.Ack()),
+            protocol.wire.Response(ack=protocol.wire.Ack()),
         )
 
         mock_call = mock_grpc_call(async_stream(responses), cancel_raises=cancel_raises)
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -579,11 +579,11 @@ class TestWorkerConnection:
         execution_started = asyncio.Event()
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
+            protocol.wire.Response(ack=protocol.wire.Ack()),
             execution_started.set,
             asyncio.sleep(10),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("done"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("done"))
             ),
         )
 
@@ -591,7 +591,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -645,22 +645,22 @@ class TestWorkerConnection:
         to_protobuf_spy = mocker.spy(Task, "to_protobuf")
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("result_1"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("result_1"))
             ),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("result_2"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("result_2"))
             ),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("result_3"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("result_3"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -690,22 +690,22 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("result_1"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("result_1"))
             ),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("result_2"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("result_2"))
             ),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("result_3"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("result_3"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -734,16 +734,16 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack(version="1.0.0")),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("test_result"))
+            protocol.wire.Response(ack=protocol.wire.Ack(version="1.0.0")),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("test_result"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -770,8 +770,8 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(
-                nack=protocol.task.Nack(
+            protocol.wire.Response(
+                nack=protocol.wire.Nack(
                     reason="Incompatible version: client=2.0.0, worker=1.0.0"
                 )
             ),
@@ -780,7 +780,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -808,16 +808,16 @@ class TestWorkerConnection:
         mock_secure = mocker.patch("grpc.aio.secure_channel", return_value=mock_channel)
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("secure_result"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("secure_result"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         credentials = grpc.ssl_channel_credentials()
         connection = WorkerConnection("localhost:50051", credentials=credentials)
@@ -849,19 +849,19 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("first"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("first"))
             ),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("recovered"))
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("recovered"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -892,16 +892,16 @@ class TestWorkerConnection:
         """
         # Arrange
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("value"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("value"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -934,16 +934,16 @@ class TestWorkerConnection:
         mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("done"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("done"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -977,9 +977,9 @@ class TestWorkerConnection:
         mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                exception=protocol.task.Message(
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                exception=protocol.wire.Message(
                     dump=cloudpickle.dumps(RuntimeError("boom"))
                 )
             ),
@@ -988,7 +988,7 @@ class TestWorkerConnection:
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -1021,16 +1021,16 @@ class TestWorkerConnection:
         mocker.patch("grpc.aio.insecure_channel", return_value=mock_channel)
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("done"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("done"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", limit=10)
 
@@ -1062,16 +1062,16 @@ class TestWorkerConnection:
         # Arrange
         def make_call():
             responses = (
-                protocol.worker.Response(ack=protocol.task.Ack()),
-                protocol.worker.Response(
-                    result=protocol.task.Message(dump=cloudpickle.dumps("ok"))
+                protocol.wire.Response(ack=protocol.wire.Ack()),
+                protocol.wire.Response(
+                    result=protocol.wire.Message(dump=cloudpickle.dumps("ok"))
                 ),
             )
             return mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(side_effect=lambda: make_call())
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         conn_a = WorkerConnection("localhost:50051", limit=10)
         conn_b = WorkerConnection("localhost:50051", limit=10)
@@ -1083,7 +1083,7 @@ class TestWorkerConnection:
             pass
 
         # Assert — WorkerStub constructed only once (one _Channel)
-        assert protocol.worker.WorkerStub.call_count == 1
+        assert protocol.wire.WorkerStub.call_count == 1
 
     @pytest.mark.asyncio
     async def test_dispatch_with_default_options(
@@ -1107,16 +1107,16 @@ class TestWorkerConnection:
         )
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("ok"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("ok"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051")
 
@@ -1160,16 +1160,16 @@ class TestWorkerConnection:
         )
 
         responses = (
-            protocol.worker.Response(ack=protocol.task.Ack()),
-            protocol.worker.Response(
-                result=protocol.task.Message(dump=cloudpickle.dumps("ok"))
+            protocol.wire.Response(ack=protocol.wire.Ack()),
+            protocol.wire.Response(
+                result=protocol.wire.Message(dump=cloudpickle.dumps("ok"))
             ),
         )
         mock_call = mock_grpc_call(async_stream(responses))
 
         mock_stub = mocker.MagicMock()
         mock_stub.dispatch = mocker.MagicMock(return_value=mock_call)
-        mocker.patch.object(protocol.worker, "WorkerStub", return_value=mock_stub)
+        mocker.patch.object(protocol.wire, "WorkerStub", return_value=mock_stub)
 
         connection = WorkerConnection("localhost:50051", options=custom_options)
 
