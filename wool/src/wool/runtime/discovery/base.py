@@ -15,7 +15,7 @@ from typing import TypeAlias
 from typing import TypeVar
 from typing import runtime_checkable
 
-from wool.protocol.worker import WorkerMetadata as WorkerMetadataProtobuf
+from wool.protocol.wire import WorkerMetadata as WorkerMetadataProtobuf
 from wool.runtime.event import Event
 
 T: Final = TypeVar("T")

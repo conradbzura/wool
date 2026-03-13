@@ -13,7 +13,7 @@ class VersionInterceptor(grpc.aio.ServerInterceptor):
 
     Intercepts the ``dispatch`` RPC to extract the client version from
     field 1 of the raw request bytes using
-    :class:`~wool.protocol.task.TaskEnvelope`.  A client is accepted
+    :class:`~wool.protocol.wire.TaskEnvelope`.  A client is accepted
     when its protocol version is less than or equal to the local
     worker version within the same major version.  Requests with
     empty, missing, or unparseable version fields are rejected.
@@ -35,16 +35,16 @@ class VersionInterceptor(grpc.aio.ServerInterceptor):
 
             # The first Request message wraps a Task; parse the Task
             # envelope from the nested task bytes.
-            request_msg = protocol.worker.Request()
+            request_msg = protocol.wire.Request()
             request_msg.ParseFromString(first_bytes)
             task_bytes = request_msg.task.SerializeToString()
 
-            envelope = protocol.task.TaskEnvelope()
+            envelope = protocol.wire.TaskEnvelope()
             try:
                 envelope.ParseFromString(task_bytes)
             except Exception:
-                yield protocol.worker.Response(
-                    nack=protocol.task.Nack(reason="Failed to parse version envelope")
+                yield protocol.wire.Response(
+                    nack=protocol.wire.Nack(reason="Failed to parse version envelope")
                 )
                 return
 
@@ -52,8 +52,8 @@ class VersionInterceptor(grpc.aio.ServerInterceptor):
             local_version = parse_version(protocol.__version__)
 
             if client_version is None or local_version is None:
-                yield protocol.worker.Response(
-                    nack=protocol.task.Nack(
+                yield protocol.wire.Response(
+                    nack=protocol.wire.Nack(
                         reason=(
                             f"Unparseable version: "
                             f"client={envelope.version!r}, "
@@ -64,8 +64,8 @@ class VersionInterceptor(grpc.aio.ServerInterceptor):
                 return
 
             if not is_version_compatible(client_version, local_version):
-                yield protocol.worker.Response(
-                    nack=protocol.task.Nack(
+                yield protocol.wire.Response(
+                    nack=protocol.wire.Nack(
                         reason=(
                             f"Incompatible version: "
                             f"client={envelope.version}, "
