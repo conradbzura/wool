@@ -1,5 +1,5 @@
 import git
-from _version import PythonicVersion, parser
+from _version import SemanticVersion, parser
 
 
 @parser("git")
@@ -19,7 +19,7 @@ def parse() -> str:
         raise RuntimeError(f"The repo at '{repo.working_dir}' cannot be empty!")
     head_commit = repo.head.commit
     try:
-        tag = max(repo.tags, key=lambda t: PythonicVersion.parse(str(t)))
+        tag = max(repo.tags, key=lambda t: SemanticVersion.parse(str(t)))
     except ValueError:
         tag_name = "0"
         tag_commit = None
