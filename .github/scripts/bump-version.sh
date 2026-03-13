@@ -1,24 +1,10 @@
 #!/bin/bash
 
-USAGE="Usage: $0 major|minor|patch VERSION [short|full=short]"
+USAGE="Usage: $0 major|minor|patch VERSION"
 
 # Evaluate arguments
 case $# in
-    3)
-        case $3 in
-            short)
-                FULL=false
-                ;;
-            full)
-                FULL=true
-                ;;
-            *)
-                FULL=false
-                ;;
-        esac
-        ;;
     2)
-        FULL=false
         ;;
     *)
         echo $USAGE
@@ -41,20 +27,20 @@ esac
 # Determine release cycle
 VERSION=$2
 case $VERSION in
-    *a*)
-        CYCLE="a"
+    *-a*)
+        CYCLE="-a"
         PRE_RELEASE=true
         ;;
-    *b*)
-        CYCLE="b"
+    *-b*)
+        CYCLE="-b"
         PRE_RELEASE=true
         ;;
-    *rc*)
-        CYCLE="rc"
+    *-rc*)
+        CYCLE="-rc"
         PRE_RELEASE=true
         ;;
     *)
-        CYCLE="."
+        CYCLE=""
         PRE_RELEASE=false
         ;;
 esac
@@ -75,20 +61,20 @@ case $SEGMENT in
         ;;
     minor)
         case $CYCLE in
-            ".")
+            "")
                 MINOR=$((MINOR + 1))
                 ;;
-            "a")
+            "-a")
                 MINOR=$((MINOR))
-                CYCLE="b"
+                CYCLE="-b"
             ;;
-            "b")
+            "-b")
                 MINOR=$((MINOR))
-                CYCLE="rc"
+                CYCLE="-rc"
             ;;
-            "rc")
+            "-rc")
                 MINOR=$((MINOR))
-                CYCLE="."
+                CYCLE=""
             ;;
         esac
         PATCH=0
@@ -101,8 +87,8 @@ case $SEGMENT in
         ;;
 esac
 
-if [ "$CYCLE" == "." ] && [ "$PATCH" -eq 0 ] && [ "$FULL" == false ]; then
-    echo "v$MAJOR.$MINOR"
+if [[ -n "$CYCLE" ]]; then
+    echo "v$MAJOR.$MINOR.0$CYCLE$PATCH"
 else
-    echo "v$MAJOR.$MINOR$CYCLE$PATCH"
+    echo "v$MAJOR.$MINOR.$PATCH"
 fi
