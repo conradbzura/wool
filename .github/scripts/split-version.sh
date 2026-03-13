@@ -17,16 +17,26 @@ if [[ $VERSION == v* ]]; then
     VERSION=${VERSION#v}
 fi
 
-# Replace pre-release identifiers with a dot
-if [[ $VERSION == *a* ]]; then
-    VERSION=${VERSION//a/.}
-elif [[ $VERSION == *b* ]]; then
-    VERSION=${VERSION//b/.}
-elif [[ $VERSION == *rc* ]]; then
-    VERSION=${VERSION//rc/.}
+# Extract pre-release number if present (-rc, -b, -a)
+if [[ $VERSION == *-rc* ]]; then
+    PRE=${VERSION##*-rc}
+    BASE=${VERSION%-rc*}
+elif [[ $VERSION == *-b* ]]; then
+    PRE=${VERSION##*-b}
+    BASE=${VERSION%-b*}
+elif [[ $VERSION == *-a* ]]; then
+    PRE=${VERSION##*-a}
+    BASE=${VERSION%-a*}
+else
+    PRE=""
+    BASE=$VERSION
 fi
 
-# Split the tag into its components
-IFS='.' read -r -a VERSION_PARTS <<< "$VERSION"
+# Split the base version into its components
+IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
 
-echo "${VERSION_PARTS[0]} ${VERSION_PARTS[1]} ${VERSION_PARTS[2]}"
+if [[ -n "$PRE" ]]; then
+    echo "$MAJOR $MINOR $PRE"
+else
+    echo "$MAJOR $MINOR ${PATCH:-0}"
+fi
