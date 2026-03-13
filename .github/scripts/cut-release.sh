@@ -40,7 +40,7 @@ fi
 VERSION=$(git describe --tags --abbrev=0)
 
 # Verify no active release candidates exist
-if [[ $VERSION == *rc* ]]; then
+if [[ $VERSION == *-rc* ]]; then
     echo "ERROR: An active release candidate already exists: $VERSION" >&2
     exit 1
 fi
@@ -50,10 +50,10 @@ read MAJOR MINOR PATCH <<< $(.github/scripts/split-version.sh $VERSION)
 # Bump the version
 case $RELEASE_TYPE in
     major)
-        RELEASE_VERSION="$((MAJOR + 1)).0rc0"
+        RELEASE_VERSION="$((MAJOR + 1)).0.0-rc0"
         ;;
     minor)
-        RELEASE_VERSION="${MAJOR}.$((MINOR + 1))rc0"
+        RELEASE_VERSION="${MAJOR}.$((MINOR + 1)).0-rc0"
         ;;
 esac
 

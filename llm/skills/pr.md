@@ -28,13 +28,14 @@ An issue number MUST be provided as the sole argument (e.g., `/pr 96`).
 ### TL;DR
 
 1. Fetch the issue
-2. Generate a branch name
-3. Create and checkout the branch
-4. Draft the PR description
-5. Show draft for approval
-6. Push and create the draft PR
-7. Return the PR URL
-8. Prompt the user to move onto the implementation step
+2. Detect fork status
+3. Generate a branch name
+4. Create and checkout the branch
+5. Draft the PR description
+6. Show draft for approval
+7. Push and create the draft PR
+8. Return the PR URL
+9. Prompt the user to move onto the implementation step
 
 ### 1. Fetch the issue
 
@@ -44,7 +45,15 @@ gh issue view <number>
 
 Read the issue title, body, and labels. If the issue does not exist or is closed, inform the user and stop.
 
-### 2. Generate a branch name
+### 2. Detect fork status
+
+```bash
+gh repo view --json isFork,parent
+```
+
+If `isFork` is `true`, extract `parent.owner.login` and `parent.name` to form the upstream repo identifier (`<owner>/<name>`). The default PR base becomes the upstream repo's default branch and the PR will be opened against the upstream repo. If the repo is not a fork, behavior is unchanged. If the user specifies a different target repo or base branch, that always takes precedence over the fork default.
+
+### 3. Generate a branch name
 
 Derive a short, descriptive branch name from the issue number and title:
 
@@ -58,7 +67,7 @@ Examples:
 
 The branch name MUST be under 50 characters. Filler words SHOULD be stripped.
 
-### 3. Create and checkout the branch
+### 4. Create and checkout the branch
 
 ```bash
 git checkout -b <branch-name> main
@@ -66,7 +75,7 @@ git checkout -b <branch-name> main
 
 If the branch already exists, the user MUST be asked whether to switch to it or recreate it.
 
-### 4. Draft the PR
+### 5. Draft the PR
 
 The PR title should match its associated issue exactly with `— Closes #<number>` appended to the end.
 
@@ -104,11 +113,11 @@ When code is committed and the PR description is updated to reflect the implemen
 3. - [ ] Implement major-version filter in `proxy.py`
 ```
 
-### 5. Show draft for approval
+### 6. Show draft for approval
 
 The full PR (title, body, branch name) MUST be presented to the user. The PR MUST NOT be created until the user explicitly approves.
 
-### 6. Push and create the draft PR
+### 7. Push and create the draft PR
 
 GitHub requires at least one commit of difference between the base and head branches to create a PR. Since the branch has no code yet, an empty commit MUST be created as a placeholder (it can be rebased away when real work starts):
 
@@ -121,9 +130,18 @@ EOF
 )"
 ```
 
+When the repo is a fork (detected in step 2), add `--repo <upstream-owner>/<upstream-name>` so the PR is opened against the upstream repo:
+
+```bash
+gh pr create --draft --repo <upstream-owner>/<upstream-name> --title "<title>" --body "$(cat <<'EOF'
+<body>
+EOF
+)"
+```
+
 The PR MUST be created as a **draft** since no code has been written yet.
 
-### 7. Return the PR URL
+### 8. Return the PR URL
 
 The PR URL returned by `gh pr create` MUST be printed so the user can access it directly.
 
@@ -145,6 +163,6 @@ The PR description is a living document. It MUST be re-evaluated and updated whe
 
 The PR description MUST always accurately reflect the current state — planned or implemented — and MUST NOT drift from reality.
 
-### 8. Prompt the user to move onto the implementation step
+### 9. Prompt the user to move onto the implementation step
 
 The user MUST be prompted with the next pipeline step: "Ready to implement? Run `/implement <number>` to start coding against this plan." DO NOT proceed on your own.
