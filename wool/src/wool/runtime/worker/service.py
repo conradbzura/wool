@@ -68,7 +68,7 @@ class _ReadOnlyEvent:
         await self._event.wait()
 
 
-class WorkerService(protocol.worker.WorkerServicer):
+class WorkerService(protocol.wire.WorkerServicer):
     """gRPC service for task execution.
 
     Implements the worker gRPC interface for receiving and executing
@@ -117,12 +117,12 @@ class WorkerService(protocol.worker.WorkerServicer):
 
     async def dispatch(
         self,
-        request_iterator: AsyncIterator[protocol.worker.Request],
+        request_iterator: AsyncIterator[protocol.wire.Request],
         context: ServicerContext,
-    ) -> AsyncIterator[protocol.worker.Response]:
+    ) -> AsyncIterator[protocol.wire.Response]:
         """Execute a task in the current event loop.
 
-        Reads the first :class:`~wool.protocol.worker.Request` from
+        Reads the first :class:`~wool.protocol.wire.Request` from
         the bidirectional stream to obtain the :class:`Task`, then
         schedules it for execution. For async generators, subsequent
         ``Message`` frames are forwarded into the generator via
@@ -144,23 +144,23 @@ class WorkerService(protocol.worker.WorkerServicer):
 
         response = await anext(aiter(request_iterator))
         with self._tracker(Task.from_protobuf(response.task), request_iterator) as task:
-            ack = protocol.task.Ack(version=protocol.__version__)
-            yield protocol.worker.Response(ack=ack)
+            ack = protocol.wire.Ack(version=protocol.__version__)
+            yield protocol.wire.Response(ack=ack)
             try:
                 if isasyncgen(task):
                     async for result in task:
-                        result = protocol.task.Message(dump=cloudpickle.dumps(result))
-                        yield protocol.worker.Response(result=result)
+                        result = protocol.wire.Message(dump=cloudpickle.dumps(result))
+                        yield protocol.wire.Response(result=result)
                 elif isinstance(task, asyncio.Task):
-                    result = protocol.task.Message(dump=cloudpickle.dumps(await task))
-                    yield protocol.worker.Response(result=result)
+                    result = protocol.wire.Message(dump=cloudpickle.dumps(await task))
+                    yield protocol.wire.Response(result=result)
             except (Exception, asyncio.CancelledError) as e:
-                exception = protocol.task.Message(dump=cloudpickle.dumps(e))
-                yield protocol.worker.Response(exception=exception)
+                exception = protocol.wire.Message(dump=cloudpickle.dumps(e))
+                yield protocol.wire.Response(exception=exception)
 
     async def stop(
-        self, request: protocol.worker.StopRequest, context: ServicerContext | None
-    ) -> protocol.worker.Void:
+        self, request: protocol.wire.StopRequest, context: ServicerContext | None
+    ) -> protocol.wire.Void:
         """Stop the worker service and its thread.
 
         Gracefully shuts down the worker thread and signals the server
@@ -175,9 +175,9 @@ class WorkerService(protocol.worker.WorkerServicer):
             An empty protobuf response indicating completion.
         """
         if self._stopping.is_set():
-            return protocol.worker.Void()
+            return protocol.wire.Void()
         await self._stop(timeout=request.timeout)
-        return protocol.worker.Void()
+        return protocol.wire.Void()
 
     @staticmethod
     def _create_worker_loop(
@@ -268,7 +268,7 @@ class WorkerService(protocol.worker.WorkerServicer):
     async def _stream_from_worker(
         self,
         work_task: Task,
-        request_iterator: AsyncIterator[protocol.worker.Request],
+        request_iterator: AsyncIterator[protocol.wire.Request],
     ):
         """Run a streaming task on the shared worker event loop.
 
@@ -386,7 +386,7 @@ class WorkerService(protocol.worker.WorkerServicer):
     def _tracker(
         self,
         work_task: Task,
-        request_iterator: AsyncIterator[protocol.worker.Request],
+        request_iterator: AsyncIterator[protocol.wire.Request],
     ):
         """Context manager for tracking running tasks.
 

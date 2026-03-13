@@ -198,7 +198,7 @@ class Task(Generic[W]):
         return False
 
     @classmethod
-    def from_protobuf(cls, task: protocol.task.Task) -> Task:
+    def from_protobuf(cls, task: protocol.wire.Task) -> Task:
         return cls(
             id=UUID(task.id),
             callable=cloudpickle.loads(task.callable),
@@ -210,8 +210,8 @@ class Task(Generic[W]):
             tag=task.tag if task.tag else None,
         )
 
-    def to_protobuf(self) -> protocol.task.Task:
-        return protocol.task.Task(
+    def to_protobuf(self) -> protocol.wire.Task:
+        return protocol.wire.Task(
             version=protocol.__version__,
             id=str(self.id),
             callable=cloudpickle.dumps(self.callable),

@@ -20,7 +20,7 @@ from wool.runtime.worker.base import WorkerOptions
 from wool.runtime.worker.base import resolve_channel_credentials
 
 _DispatchCall: TypeAlias = grpc.aio.StreamStreamCall[
-    protocol.worker.Request, protocol.worker.Response
+    protocol.wire.Request, protocol.wire.Response
 ]
 
 _T = TypeVar("_T")
@@ -31,7 +31,7 @@ class _Channel:
     """Internal holder for a pooled gRPC channel and its resources."""
 
     channel: grpc.aio.Channel
-    stub: protocol.worker.WorkerStub
+    stub: protocol.wire.WorkerStub
     semaphore: asyncio.Semaphore
 
     async def close(self):
@@ -57,7 +57,7 @@ def _channel_factory(key):
         channel = grpc.aio.secure_channel(target, resolved, options=options)
     else:
         channel = grpc.aio.insecure_channel(target, options=options)
-    stub = protocol.worker.WorkerStub(channel)
+    stub = protocol.wire.WorkerStub(channel)
     return _Channel(channel, stub, asyncio.Semaphore(limit))
 
 
@@ -116,7 +116,7 @@ class _DispatchStream(Generic[_T]):
             raise RuntimeError("anext(): asynchronous generator is already running")
         self._running = True
         try:
-            request = protocol.worker.Request(next=protocol.worker.Void())
+            request = protocol.wire.Request(next=protocol.wire.Void())
             await self._call.write(request)
             result = await self._read_next()
             self._step += 1
@@ -194,7 +194,7 @@ class _DispatchStream(Generic[_T]):
         self._running = True
         try:
             dump = cloudpickle.dumps(value)
-            request = protocol.worker.Request(send=protocol.task.Message(dump=dump))
+            request = protocol.wire.Request(send=protocol.wire.Message(dump=dump))
             await self._call.write(request)
             result = await self._read_next()
             self._step += 1
@@ -237,7 +237,7 @@ class _DispatchStream(Generic[_T]):
                 exc = typ()
 
             dump = cloudpickle.dumps(exc)
-            request = protocol.worker.Request(throw=protocol.task.Message(dump=dump))
+            request = protocol.wire.Request(throw=protocol.wire.Message(dump=dump))
             await self._call.write(request)
             result = await self._read_next()
             self._step += 1
@@ -362,7 +362,7 @@ class WorkerConnection:
         task: Task,
         *,
         timeout: float | None = None,
-    ) -> AsyncGenerator[protocol.task.Message, None]:
+    ) -> AsyncGenerator[protocol.wire.Message, None]:
         """Dispatch a task to the remote worker for execution.
 
         Sends the task to the worker via gRPC, waits for acknowledgment,
@@ -412,7 +412,7 @@ class WorkerConnection:
             raise
 
         await _channel_pool.release(self._key)
-        return cast(AsyncGenerator[protocol.task.Message, None], gen)
+        return cast(AsyncGenerator[protocol.wire.Message, None], gen)
 
     async def close(self):
         """Close the connection and release all pooled resources.
@@ -432,7 +432,7 @@ class WorkerConnection:
             try:
                 call: _DispatchCall = ch.stub.dispatch()
                 try:
-                    request = protocol.worker.Request(task=task.to_protobuf())
+                    request = protocol.wire.Request(task=task.to_protobuf())
                     await call.write(request)
                     response = await anext(aiter(call))
                     if response.HasField("nack"):
@@ -457,7 +457,7 @@ class WorkerConnection:
 
     async def _execute(
         self, call: _DispatchCall, task: Task
-    ) -> AsyncGenerator[protocol.task.Message | None, None]:
+    ) -> AsyncGenerator[protocol.wire.Message | None, None]:
         ch = await _channel_pool.acquire(self._key)
         try:
             yield  # Priming yield — signals dispatch() that ref is held

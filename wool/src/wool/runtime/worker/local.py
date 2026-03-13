@@ -165,5 +165,5 @@ class LocalWorker(Worker):
                 # Insecure worker: use insecure channel
                 channel = grpc.aio.insecure_channel(self.address)
 
-            stub = protocol.worker.WorkerStub(channel)
-            await stub.stop(protocol.worker.StopRequest(timeout=timeout))
+            stub = protocol.wire.WorkerStub(channel)
+            await stub.stop(protocol.wire.StopRequest(timeout=timeout))

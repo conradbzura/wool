@@ -194,7 +194,7 @@ class WorkerProcess(Process):
             port = server.add_insecure_port(address)
 
         service = WorkerService()
-        protocol.add_to_server[protocol.worker.WorkerServicer](service, server)
+        protocol.add_to_server[protocol.wire.WorkerServicer](service, server)
 
         with _signal_handlers(service):
             try:
@@ -251,7 +251,7 @@ def _sigterm_handler(loop, service, signum, frame):
     if loop.is_running():
         loop.call_soon_threadsafe(
             lambda: asyncio.create_task(
-                service.stop(protocol.worker.StopRequest(timeout=0), None)
+                service.stop(protocol.wire.StopRequest(timeout=0), None)
             )
         )
 
@@ -260,7 +260,7 @@ def _sigint_handler(loop, service, signum, frame):
     if loop.is_running():
         loop.call_soon_threadsafe(
             lambda: asyncio.create_task(
-                service.stop(protocol.worker.StopRequest(timeout=-1), None)
+                service.stop(protocol.wire.StopRequest(timeout=-1), None)
             )
         )
 

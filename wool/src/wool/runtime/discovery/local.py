@@ -21,7 +21,7 @@ from watchdog.events import FileSystemEvent
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from wool.protocol.worker import WorkerMetadata as WorkerMetadataProtobuf
+from wool.protocol.wire import WorkerMetadata as WorkerMetadataProtobuf
 from wool.runtime.discovery.base import Discovery
 from wool.runtime.discovery.base import DiscoveryEvent
 from wool.runtime.discovery.base import DiscoveryEventType
