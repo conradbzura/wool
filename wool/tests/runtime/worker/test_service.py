@@ -18,8 +18,8 @@ from pytest_mock import MockerFixture
 
 import wool
 from wool import protocol
-from wool.protocol.worker import WorkerStub
-from wool.protocol.worker import add_WorkerServicer_to_server
+from wool.protocol.wire import WorkerStub
+from wool.protocol.wire import add_WorkerServicer_to_server
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.worker.interceptor import VersionInterceptor
@@ -100,7 +100,7 @@ async def service_fixture(mocker: MockerFixture, grpc_aio_stub):
         proxy=mock_proxy,
     )
 
-    request = protocol.worker.Request(task=wool_task.to_protobuf())
+    request = protocol.wire.Request(task=wool_task.to_protobuf())
 
     # Start the service and dispatch the task
     async with grpc_aio_stub(servicer=service) as stub:
@@ -120,7 +120,7 @@ async def service_fixture(mocker: MockerFixture, grpc_aio_stub):
             if _control_event and not _control_event.is_set():
                 _control_event.set()
             if not service.stopped.is_set():
-                stop_request = protocol.worker.StopRequest(timeout=1)
+                stop_request = protocol.wire.StopRequest(timeout=1)
                 await stub.stop(stop_request)
             _control_event = None
 
@@ -251,7 +251,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -295,7 +295,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -330,7 +330,7 @@ class TestWorkerService:
             # Initiate stop (service enters stopping state)
             # Use wait=0 to immediately cancel tasks, but we'll check before tasks finish
             stop_task = asyncio.ensure_future(
-                stub.stop(protocol.worker.StopRequest(timeout=5))
+                stub.stop(protocol.wire.StopRequest(timeout=5))
             )
 
             await asyncio.wait_for(service.stopping.wait(), 1)
@@ -350,7 +350,7 @@ class TestWorkerService:
                 proxy=mock_proxy,
             )
 
-            request = protocol.worker.Request(task=wool_task.to_protobuf())
+            request = protocol.wire.Request(task=wool_task.to_protobuf())
 
             # Act & assert
             with pytest.raises(grpc.RpcError) as exc_info:
@@ -381,7 +381,7 @@ class TestWorkerService:
         async with service_fixture as (service, event, stub):
             # Complete the task and stop the service
             event.set()
-            await stub.stop(protocol.worker.StopRequest(timeout=5))
+            await stub.stop(protocol.wire.StopRequest(timeout=5))
 
             # Assert service is stopped
             assert service.stopping.is_set()
@@ -401,7 +401,7 @@ class TestWorkerService:
                 proxy=mock_proxy,
             )
 
-            request = protocol.worker.Request(task=wool_task.to_protobuf())
+            request = protocol.wire.Request(task=wool_task.to_protobuf())
 
             # Act & assert
             with pytest.raises(grpc.RpcError) as exc_info:
@@ -441,7 +441,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act & assert
         async with grpc_aio_stub() as stub:
@@ -488,7 +488,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -501,7 +501,7 @@ class TestWorkerService:
                 break
 
             # Stop with 0 second timeout in order to cancel tasks immediately
-            stop_request = protocol.worker.StopRequest(timeout=0)
+            stop_request = protocol.wire.StopRequest(timeout=0)
             stop_result = await stub.stop(stop_request)
 
             # Assert
@@ -511,7 +511,7 @@ class TestWorkerService:
                 assert isinstance(exception, asyncio.CancelledError)
                 break
 
-            assert isinstance(stop_result, protocol.worker.Void)
+            assert isinstance(stop_result, protocol.wire.Void)
             assert grpc_servicer.stopping.is_set()
             assert grpc_servicer.stopped.is_set()
             mock_worker_proxy_cache.clear.assert_called_once()
@@ -549,7 +549,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -562,7 +562,7 @@ class TestWorkerService:
                 break
 
             # Stop with 5 second timeout to allow tasks to complete
-            stop_request = protocol.worker.StopRequest(timeout=5)
+            stop_request = protocol.wire.StopRequest(timeout=5)
             stop_result = await stub.stop(stop_request)
 
             # Assert
@@ -572,7 +572,7 @@ class TestWorkerService:
                 assert result == "completed"
                 break
 
-            assert isinstance(stop_result, protocol.worker.Void)
+            assert isinstance(stop_result, protocol.wire.Void)
             assert grpc_servicer.stopping.is_set()
             assert grpc_servicer.stopped.is_set()
             mock_worker_proxy_cache.clear.assert_called_once()
@@ -610,7 +610,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -644,11 +644,11 @@ class TestWorkerService:
         async with service_fixture as (service, event, stub):
             # Act - stop with a very short timeout; the controllable task
             # won't complete because the event is never set in time
-            stop_request = protocol.worker.StopRequest(timeout=0.05)
+            stop_request = protocol.wire.StopRequest(timeout=0.05)
             stop_result = await stub.stop(stop_request)
 
             # Assert
-            assert isinstance(stop_result, protocol.worker.Void)
+            assert isinstance(stop_result, protocol.wire.Void)
             assert service.stopping.is_set()
             assert service.stopped.is_set()
 
@@ -666,14 +666,14 @@ class TestWorkerService:
             It should signal stopped state and call proxy_pool.clear()
         """
         # Arrange
-        stop_request = protocol.worker.StopRequest(timeout=10)
+        stop_request = protocol.wire.StopRequest(timeout=10)
 
         # Act
         async with grpc_aio_stub() as stub:
             stop_result = await asyncio.wait_for(stub.stop(stop_request), 1)
 
         # Assert - Verify behavior through public API
-        assert isinstance(stop_result, protocol.worker.Void)
+        assert isinstance(stop_result, protocol.wire.Void)
         assert grpc_servicer.stopping.is_set()
         assert grpc_servicer.stopped.is_set()
         # Assert proxy_pool.clear() was called
@@ -694,7 +694,7 @@ class TestWorkerService:
         async with service_fixture as (service, event, stub):
             # Initiate stop (service enters stopping state)
             stop_task = asyncio.ensure_future(
-                stub.stop(protocol.worker.StopRequest(timeout=5))
+                stub.stop(protocol.wire.StopRequest(timeout=5))
             )
 
             # Wait for service to enter stopping state
@@ -702,10 +702,10 @@ class TestWorkerService:
             assert not service.stopped.is_set()
 
             # Act - Call stop again while already stopping
-            result = await stub.stop(protocol.worker.StopRequest(timeout=1))
+            result = await stub.stop(protocol.wire.StopRequest(timeout=1))
 
             # Assert - Verify behavior
-            assert isinstance(result, protocol.worker.Void)
+            assert isinstance(result, protocol.wire.Void)
             assert service.stopping.is_set()
 
             # Cleanup - let the original task complete so first stop can finish
@@ -730,17 +730,17 @@ class TestWorkerService:
         async with service_fixture as (service, event, stub):
             # Complete the task and stop the service
             event.set()
-            await stub.stop(protocol.worker.StopRequest(timeout=5))
+            await stub.stop(protocol.wire.StopRequest(timeout=5))
 
             # Assert service is fully stopped
             assert service.stopping.is_set()
             assert service.stopped.is_set()
 
             # Act - Call stop again while already stopped
-            result = await stub.stop(protocol.worker.StopRequest(timeout=1))
+            result = await stub.stop(protocol.wire.StopRequest(timeout=1))
 
             # Assert - Verify behavior
-            assert isinstance(result, protocol.worker.Void)
+            assert isinstance(result, protocol.wire.Void)
             assert service.stopping.is_set()
             assert service.stopped.is_set()
 
@@ -762,7 +762,7 @@ class TestWorkerService:
         async with service_fixture as (service, event, stub):
             # Initiate stop with negative timeout (treated as indefinite wait)
             stop_task = asyncio.ensure_future(
-                stub.stop(protocol.worker.StopRequest(timeout=-1))
+                stub.stop(protocol.wire.StopRequest(timeout=-1))
             )
 
             # Wait for service to enter stopping state
@@ -774,7 +774,7 @@ class TestWorkerService:
 
             # Act & assert
             stop_result = await asyncio.wait_for(stop_task, 5)
-            assert isinstance(stop_result, protocol.worker.Void)
+            assert isinstance(stop_result, protocol.wire.Void)
             assert service.stopped.is_set()
 
     @pytest.mark.asyncio
@@ -806,8 +806,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -864,8 +864,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -919,8 +919,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -978,8 +978,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1026,7 +1026,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1076,9 +1076,9 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1098,11 +1098,11 @@ class TestWorkerService:
                 break
 
             # Stop immediately to cancel the generator
-            stop_request = protocol.worker.StopRequest(timeout=0)
+            stop_request = protocol.wire.StopRequest(timeout=0)
             stop_result = await stub.stop(stop_request)
 
             # Assert
-            assert isinstance(stop_result, protocol.worker.Void)
+            assert isinstance(stop_result, protocol.wire.Void)
             assert grpc_servicer.stopping.is_set()
             assert grpc_servicer.stopped.is_set()
 
@@ -1223,7 +1223,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1266,7 +1266,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
         request.task.ClearField("version")
 
         # Act
@@ -1329,7 +1329,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
         # Override version field to simulate incompatible client
         request.task.version = f"{client_major}.0.0"
 
@@ -1394,7 +1394,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
         request.task.version = f"{major}.{client_minor}.0"
 
         # Act
@@ -1438,7 +1438,7 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
         request.task.version = "not-a-version"
 
         # Act
@@ -1485,8 +1485,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1504,8 +1504,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == "ready"
 
             # Send "hello" and read response
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps("hello"))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps("hello"))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -1513,8 +1513,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == "echo:hello"
 
             # Send "world" and read response
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps("world"))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps("world"))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -1522,8 +1522,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == "echo:world"
 
             # Send None to terminate the generator
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps(None))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps(None))
             )
             await stream.write(msg)
             await stream.done_writing()
@@ -1567,8 +1567,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1586,8 +1586,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == 0
 
             # Send 2 to jump the counter
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps(2))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps(2))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -1631,8 +1631,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1690,8 +1690,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1753,8 +1753,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1771,8 +1771,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == 0
 
             # send 10 -> yields 10
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps(10))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps(10))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -1784,8 +1784,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == 11
 
             # send 5 -> yields 16
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps(5))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps(5))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -1823,8 +1823,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1842,8 +1842,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == "first"
 
             # Throw ValueError into the generator
-            throw_request = protocol.worker.Request(
-                throw=protocol.task.Message(
+            throw_request = protocol.wire.Request(
+                throw=protocol.wire.Message(
                     dump=cloudpickle.dumps(ValueError("injected"))
                 )
             )
@@ -1891,8 +1891,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -1946,8 +1946,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -2000,8 +2000,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -2068,8 +2068,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -2086,8 +2086,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == "ready"
 
             # Send "hello"
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps("hello"))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps("hello"))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -2095,8 +2095,8 @@ class TestWorkerService:
             result1 = cloudpickle.loads(response.result.dump)
 
             # Send "world"
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps("world"))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps("world"))
             )
             await stream.write(msg)
             response = await anext(aiter(stream))
@@ -2104,8 +2104,8 @@ class TestWorkerService:
             result2 = cloudpickle.loads(response.result.dump)
 
             # Send None to terminate
-            msg = protocol.worker.Request(
-                send=protocol.task.Message(dump=cloudpickle.dumps(None))
+            msg = protocol.wire.Request(
+                send=protocol.wire.Message(dump=cloudpickle.dumps(None))
             )
             await stream.write(msg)
             await stream.done_writing()
@@ -2154,8 +2154,8 @@ class TestWorkerService:
             proxy=mock_proxy,
         )
 
-        request = protocol.worker.Request(task=wool_task.to_protobuf())
-        next_request = protocol.worker.Request(next=protocol.worker.Void())
+        request = protocol.wire.Request(task=wool_task.to_protobuf())
+        next_request = protocol.wire.Request(next=protocol.wire.Void())
 
         # Act
         async with grpc_aio_stub() as stub:
@@ -2172,8 +2172,8 @@ class TestWorkerService:
             assert cloudpickle.loads(response.result.dump) == "waiting"
 
             # Throw ValueError
-            throw_request = protocol.worker.Request(
-                throw=protocol.task.Message(dump=cloudpickle.dumps(ValueError("test")))
+            throw_request = protocol.wire.Request(
+                throw=protocol.wire.Message(dump=cloudpickle.dumps(ValueError("test")))
             )
             await stream.write(throw_request)
             response = await anext(aiter(stream))

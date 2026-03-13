@@ -599,7 +599,7 @@ class TestTask:
         args = (1, 2, 3)
         kwargs = {"key": "value"}
 
-        pb_task = protocol.task.Task(
+        pb_task = protocol.wire.Task(
             version="0.1.0",
             id=str(task_id),
             callable=cloudpickle.dumps(sample_async_callable),
@@ -645,7 +645,7 @@ class TestTask:
         args = ()
         kwargs = {}
 
-        pb_task = protocol.task.Task(
+        pb_task = protocol.wire.Task(
             id=str(task_id),
             callable=cloudpickle.dumps(sample_async_callable),
             args=cloudpickle.dumps(args),
@@ -797,7 +797,7 @@ class TestTask:
         async def test_callable():
             return "result"
 
-        pb_task = protocol.task.Task(
+        pb_task = protocol.wire.Task(
             version=version,
             id=str(uuid4()),
             callable=cloudpickle.dumps(test_callable),
@@ -812,7 +812,7 @@ class TestTask:
 
         # Act
         wire_bytes = pb_task.SerializeToString()
-        parsed = protocol.task.Task()
+        parsed = protocol.wire.Task()
         parsed.ParseFromString(wire_bytes)
 
         # Assert

@@ -33,7 +33,7 @@ def test__sigterm_handler_calls_service_stop_when_loop_is_running(mocker):
 
     mock_stop_request = mocker.MagicMock()
     mocker.patch(
-        "wool.runtime.worker.process.protocol.worker.StopRequest",
+        "wool.runtime.worker.process.protocol.wire.StopRequest",
         return_value=mock_stop_request,
     )
 
@@ -85,7 +85,7 @@ def test__sigint_handler_calls_service_stop_when_loop_is_running(mocker):
 
     mock_stop_request = mocker.MagicMock()
     mocker.patch(
-        "wool.runtime.worker.process.protocol.worker.StopRequest",
+        "wool.runtime.worker.process.protocol.wire.StopRequest",
         return_value=mock_stop_request,
     )
 
