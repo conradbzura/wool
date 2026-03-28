@@ -13,6 +13,8 @@ from typing import Coroutine
 from typing import Final
 from typing import overload
 
+from typing_extensions import deprecated
+
 from wool.runtime.discovery.base import DiscoveryLike
 from wool.runtime.discovery.base import DiscoveryPublisherLike
 from wool.runtime.discovery.local import LocalDiscovery
@@ -218,6 +220,46 @@ class WorkerPool:
         """
         Create a hybrid pool that spawns local workers and discovers
         remote workers through the specified discovery protocol.
+        """
+        ...
+
+    @overload
+    @deprecated("Use 'spawn' instead of 'size'.")
+    def __init__(
+        self,
+        *tags: str,
+        size: int = 0,
+        lease: int | None = None,
+        worker: WorkerFactory = LocalWorker,
+        discovery: None = None,
+        loadbalancer: (
+            LoadBalancerLike | Factory[LoadBalancerLike]
+        ) = RoundRobinLoadBalancer,
+        credentials: WorkerCredentials | None = None,
+    ):
+        """
+        .. deprecated::
+            Use ``spawn`` instead of ``size``.
+        """
+        ...
+
+    @overload
+    @deprecated("Use 'spawn' instead of 'size'.")
+    def __init__(
+        self,
+        *tags: str,
+        size: int = 0,
+        lease: int | None = None,
+        worker: WorkerFactory = LocalWorker,
+        discovery: DiscoveryLike | Factory[DiscoveryLike],
+        loadbalancer: (
+            LoadBalancerLike | Factory[LoadBalancerLike]
+        ) = RoundRobinLoadBalancer,
+        credentials: WorkerCredentials | None = None,
+    ):
+        """
+        .. deprecated::
+            Use ``spawn`` instead of ``size``.
         """
         ...
 
