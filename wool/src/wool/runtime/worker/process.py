@@ -23,6 +23,7 @@ import grpc.aio
 
 import wool
 from wool import protocol
+from wool.runtime.context import install_task_factory
 from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.worker.auth import CredentialContext
 from wool.runtime.worker.auth import WorkerCredentials
@@ -236,11 +237,12 @@ class WorkerProcess(Process):
             raise
 
     async def _serve(self):
-        """Start the gRPC server in this worker process.
+        """Run the worker's gRPC server for the lifetime of the process.
 
-        This method is called by the event loop to start serving
-        requests. It creates a gRPC server, adds the worker service, and
-        starts listening for incoming connections.
+        Creates the gRPC server with the configured channel options,
+        registers the worker service, installs credential and signal-
+        handler context managers, and blocks until a shutdown signal
+        fires.
         """
         creds_ctx = (
             CredentialContext(self._credentials)
@@ -319,6 +321,8 @@ class WorkerProcess(Process):
             )
             service = WorkerService(backpressure=backpressure)
             protocol.add_to_server[protocol.WorkerServicer](service, server)
+
+            install_task_factory()
 
             with _signal_handlers(service):
                 try:

@@ -34,6 +34,7 @@ import cloudpickle
 import wool
 from wool import protocol
 from wool.runtime.context import RuntimeContext
+from wool.runtime.resourcepool import ResourcePool
 
 Args = Tuple
 Kwargs = Dict
@@ -87,7 +88,7 @@ class PassthroughSerializer:
     """
 
     def __init__(self):
-        self._keys: list[_PassthroughKey] = []
+        self._keys: dict[UUID, _PassthroughKey] = {}
 
     def __hash__(self):
         return hash(PassthroughSerializer)
@@ -104,18 +105,35 @@ class PassthroughSerializer:
 
     def dumps(self, obj: Any) -> bytes:
         key = _PassthroughKey()
-        self._keys.append(key)
+        self._keys[key.token] = key
         _passthrough_store[key] = obj
         return key.token.bytes
 
-    @staticmethod
-    def loads(data: bytes) -> Any:
-        key = _PassthroughKey(UUID(bytes=data))
-        return _passthrough_store.pop(key)
+    def loads(self, data: bytes) -> Any:
+        token = UUID(bytes=data)
+        value = _passthrough_store.pop(_PassthroughKey(token))
+        # Prune the keep-alive entry — without this, ``_keys`` would
+        # accumulate one entry per ``dumps`` over the serializer's
+        # lifetime, which becomes load-bearing on long streaming
+        # dispatches that share one serializer instance.
+        self._keys.pop(token, None)
+        return value
 
 
 _passthrough_store: weakref.WeakKeyDictionary[_PassthroughKey, Any] = (
     weakref.WeakKeyDictionary()
+)
+
+
+# Per-dispatch :class:`PassthroughSerializer` cache, keyed by
+# :attr:`Task.id`. Caller-side and worker-side acquisitions for the
+# same task id share one instance, so prune-at-loads on either side
+# bounds the shared keep-alive set. Reference-counted cleanup means
+# that once both sides release (including on error paths), the entry
+# is evicted and any unconsumed keep-alive entries are reclaimed
+# along with it.
+_passthrough_pool: ResourcePool[PassthroughSerializer] = ResourcePool(
+    factory=lambda _: PassthroughSerializer()
 )
 
 

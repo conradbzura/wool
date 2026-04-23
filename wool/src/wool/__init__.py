@@ -1,11 +1,17 @@
-from contextvars import ContextVar
+import contextvars
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version
 from typing import Final
 
 from tblib import pickling_support
 
+from wool.runtime.context import Context
+from wool.runtime.context import ContextVar
+from wool.runtime.context import ContextVarCollision
 from wool.runtime.context import RuntimeContext
+from wool.runtime.context import Token
+from wool.runtime.context import copy_context
+from wool.runtime.context import current_context
 from wool.runtime.discovery.base import Discovery
 from wool.runtime.discovery.base import DiscoveryEvent
 from wool.runtime.discovery.base import DiscoveryEventType
@@ -49,18 +55,20 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-__proxy__: Final[ContextVar[WorkerProxy | None]] = ContextVar("__proxy__", default=None)
+__proxy__: Final[contextvars.ContextVar[WorkerProxy | None]] = contextvars.ContextVar(
+    "__proxy__", default=None
+)
 
-__proxy_pool__: Final[ContextVar[ResourcePool[WorkerProxy] | None]] = ContextVar(
-    "__proxy_pool__", default=None
+__proxy_pool__: Final[contextvars.ContextVar[ResourcePool[WorkerProxy] | None]] = (
+    contextvars.ContextVar("__proxy_pool__", default=None)
 )
 
 __worker_metadata__: WorkerMetadata | None = None
 
 __worker_uds_address__: str | None = None
 
-__worker_service__: Final[ContextVar[WorkerService | None]] = ContextVar(
-    "__worker_service__", default=None
+__worker_service__: Final[contextvars.ContextVar[WorkerService | None]] = (
+    contextvars.ContextVar("__worker_service__", default=None)
 )
 
 __all__ = [
@@ -70,7 +78,13 @@ __all__ = [
     "UnexpectedResponse",
     "WorkerConnection",
     # Context
+    "Context",
+    "ContextVar",
+    "ContextVarCollision",
     "RuntimeContext",
+    "Token",
+    "copy_context",
+    "current_context",
     # Load balancing
     "LoadBalancerContextLike",
     "LoadBalancerLike",
