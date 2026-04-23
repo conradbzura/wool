@@ -5,7 +5,13 @@ import functools
 import inspect
 import sys
 import weakref
+from typing import Callable
 from typing import Never
+from typing import ParamSpec
+from typing import TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class _Token:
@@ -86,7 +92,7 @@ class NoReentryBoundMethod:
         self._invocations.add(token)
 
 
-def noreentry(fn):
+def noreentry(fn: Callable[P, R]) -> Callable[P, R]:
     """Mark a method as single-use.
 
     On the first call the decorated method executes normally. Any
