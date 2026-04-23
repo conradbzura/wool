@@ -143,7 +143,7 @@ def _pickle_serializer(s: Serializer) -> bytes:
 
 
 @functools.lru_cache(maxsize=8)
-def _unpickle_serializer(data: bytes) -> Serializer:
+def unpickle_serializer(data: bytes) -> Serializer:
     return cloudpickle.loads(data)
 
 
@@ -211,7 +211,8 @@ class Task(Generic[W]):
     :param kwargs:
         Keyword arguments for the function.
     :param proxy:
-        Proxy object for task dispatch and routing (satisfies WorkerProxyLike).
+        Proxy object for task dispatch and routing (satisfies
+        :class:`WorkerProxyLike`).
     :param timeout:
         Task timeout in seconds (0 means no timeout).
     :param caller:
@@ -219,17 +220,19 @@ class Task(Generic[W]):
     :param exception:
         Exception information if task execution failed.
     :param filename:
-        Source filename where the task was defined.
+        Source filename where the task was defined. Retained for
+        backwards compatibility; new callers SHOULD populate *tag*
+        instead.
     :param function:
-        Name of the function being executed.
+        Name of the function being executed. Retained for backwards
+        compatibility; new callers SHOULD populate *tag* instead.
     :param line_no:
-        Line number where the task was defined.
+        Line number where the task was defined. Retained for
+        backwards compatibility; new callers SHOULD populate *tag*
+        instead.
     :param tag:
-        Optional descriptive tag for the task.
-    :param context:
-        RuntimeContext snapshot captured at task creation time.
-        Propagated over the wire so workers can restore the caller's
-        runtime settings (e.g. dispatch_timeout) before execution.
+        Descriptive label identifying the call site, formatted as
+        ``module.qualname:lineno`` by the ``@routine`` wrapper.
     """
 
     id: UUID
@@ -246,13 +249,8 @@ class Task(Generic[W]):
     tag: str | None = None
     context: RuntimeContext | None = None
 
-    def __post_init__(self, **kwargs):
-        """
-        Initialize the task and set up caller tracking.
-
-        :param kwargs:
-            Additional keyword arguments (unused).
-        """
+    def __post_init__(self):
+        """Initialize the task and set up caller tracking."""
         if not isinstance(self.proxy, WorkerProxyLike):
             raise TypeError(
                 f"proxy must conform to WorkerProxyLike, got {type(self.proxy).__name__}"
@@ -322,32 +320,27 @@ class Task(Generic[W]):
             The payload's serializer is unpickled and cached for subsequent calls.
 
         :param task:
-            A protobuf ``Task`` message.
+            A :class:`protocol.Task` message.
         :returns:
             A :class:`Task` instance with all fields restored.
         """
+        if task.HasField("serializer"):
+            s = unpickle_serializer(task.serializer)
+            loads = s.loads
+        else:
+            loads = cloudpickle.loads
         context = (
             RuntimeContext.from_protobuf(task.context)
             if task.HasField("context")
             else None
         )
-        if task.HasField("serializer"):
-            s = _unpickle_serializer(task.serializer)
-            loads = s.loads
-            if isinstance(s, PassthroughSerializer):
-                proxy_loads = s.loads
-            else:
-                proxy_loads = cloudpickle.loads
-        else:
-            loads = cloudpickle.loads
-            proxy_loads = cloudpickle.loads
         return cls(
             id=UUID(task.id),
             callable=loads(task.callable),
             args=loads(task.args),
             kwargs=loads(task.kwargs),
             caller=UUID(task.caller) if task.caller else None,
-            proxy=proxy_loads(task.proxy),
+            proxy=loads(task.proxy),
             timeout=task.timeout if task.timeout else 0,
             tag=task.tag if task.tag else None,
             context=context,
@@ -371,12 +364,9 @@ class Task(Generic[W]):
             .. note::
                 If specified, the serializer is pickled and cached for subsequent calls.
         :returns:
-            A protobuf ``Task`` message.
+            A :class:`protocol.Task` message.
         """
         dumps = serializer.dumps if serializer is not None else cloudpickle.dumps
-        proxy_dumps = (
-            dumps if isinstance(serializer, PassthroughSerializer) else cloudpickle.dumps
-        )
         task_msg = protocol.Task(
             version=protocol.__version__,
             id=str(self.id),
@@ -384,7 +374,7 @@ class Task(Generic[W]):
             args=dumps(self.args),
             kwargs=dumps(self.kwargs),
             caller=str(self.caller) if self.caller else "",
-            proxy=proxy_dumps(self.proxy),
+            proxy=dumps(self.proxy),
             proxy_id=str(self.proxy.id),
             timeout=int(self.timeout) if self.timeout else 0,
             tag=self.tag if self.tag else "",
@@ -430,7 +420,7 @@ class Task(Generic[W]):
 
     async def _stream(self):
         """
-        Execute the task's callable with its arguments in proxy context.
+        Stream the task's async generator callable in proxy context.
 
         :returns:
             An async generator that yields values from the callable.

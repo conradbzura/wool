@@ -309,9 +309,10 @@ class WorkerService(protocol.WorkerServicer):
                 )
 
             if self._backpressure is not None:
+                backpressure = self._backpressure
 
                 def _evaluate_backpressure():
-                    return self._backpressure(
+                    return backpressure(
                         BackpressureContext(
                             active_task_count=len(self._docket),
                             task=work_task,
@@ -461,14 +462,57 @@ class WorkerService(protocol.WorkerServicer):
                     if t.cancelled():
                         future.cancel()
                         return
-                    ctx_pb = work_ctx.to_protobuf(serializer=serializer)
-                    exc = t.exception()
-                    if exc is not None:
-                        future.set_result(_WorkerOutcome(exception=exc, context=ctx_pb))
-                    else:
-                        future.set_result(
-                            _WorkerOutcome(result=t.result(), context=ctx_pb)
-                        )
+                    try:
+                        routine_exc = t.exception()
+                        try:
+                            wire_ctx = work_ctx.to_protobuf(serializer=serializer)
+                            snapshot_exc: TypeError | None = None
+                        except TypeError as e:
+                            # Back-prop precise: snapshot serialization
+                            # failed (e.g. the routine set() an
+                            # unpicklable value). Symmetric with the
+                            # streaming path's back-prop precise
+                            # handler.
+                            _log.warning(
+                                "Aborting dispatch: worker-side context "
+                                "snapshot failed: %s",
+                                e,
+                            )
+                            wire_ctx = protocol.Context()
+                            snapshot_exc = e
+                        if routine_exc is not None and snapshot_exc is not None:
+                            # Both failed: chain via BaseExceptionGroup
+                            # so neither signal is lost. Symmetric with
+                            # the receive-side chaining at
+                            # ``connection.py``'s ``_read_next``. The
+                            # runtime promotes to ``ExceptionGroup`` if
+                            # all members are ``Exception`` subclasses.
+                            outcome = _WorkerOutcome(
+                                exception=BaseExceptionGroup(
+                                    "Worker raised an exception and "
+                                    "response context encode failed",
+                                    [routine_exc, snapshot_exc],
+                                ),
+                                context=wire_ctx,
+                            )
+                        elif routine_exc is not None:
+                            outcome = _WorkerOutcome(
+                                exception=routine_exc, context=wire_ctx
+                            )
+                        elif snapshot_exc is not None:
+                            outcome = _WorkerOutcome(
+                                exception=snapshot_exc, context=wire_ctx
+                            )
+                        else:
+                            outcome = _WorkerOutcome(result=t.result(), context=wire_ctx)
+                        future.set_result(outcome)
+                    except BaseException as e:
+                        # Outer guard: any unanticipated escape from
+                        # the body above still resolves ``future`` so
+                        # the dispatch handler does not hang on
+                        # ``wrap_future``.
+                        if not future.done():
+                            future.set_exception(e)
 
                 task.add_done_callback(_done)
 
@@ -556,7 +600,7 @@ class WorkerService(protocol.WorkerServicer):
                         # wire; Task.__enter__ sets _current_task for
                         # nested dispatch. Both __enter__ calls run once
                         # here but the generator below is driven across
-                        # many ``cmd`` loop iterations — dispatch_timeout
+                        # many ``command`` loop iterations — dispatch_timeout
                         # and _current_task therefore remain set for the
                         # full generator lifespan, matching the coroutine
                         # path's single-enter contract via ``Task._run``.
@@ -578,10 +622,10 @@ class WorkerService(protocol.WorkerServicer):
 
                         try:
                             while True:
-                                cmd = await request_queue.get()
-                                if cmd is _STREAM_END:
+                                command = await request_queue.get()
+                                if command is _STREAM_END:
                                     break
-                                action, payload, caller_ctx = cmd
+                                action, payload, caller_ctx = command
                                 # Outer guard: every exit from this
                                 # iteration body must push to result_queue
                                 # so the main loop's await never hangs on
@@ -636,7 +680,7 @@ class WorkerService(protocol.WorkerServicer):
                                     # because _start_worker registered the task
                                     # in the context registry.
                                     try:
-                                        ctx_pb = current_context().to_protobuf(
+                                        wire_ctx = current_context().to_protobuf(
                                             serializer=serializer
                                         )
                                     except TypeError as e:
@@ -651,14 +695,40 @@ class WorkerService(protocol.WorkerServicer):
                                             "failed: %s",
                                             e,
                                         )
-                                        main_loop.call_soon_threadsafe(
-                                            result_queue.put_nowait,
-                                            ("error", e, protocol.Context()),
-                                        )
+                                        if tag == "error":
+                                            # Routine already raised: chain
+                                            # via BaseExceptionGroup so
+                                            # neither signal is lost.
+                                            # Symmetric with the receive-
+                                            # side chaining at
+                                            # ``connection.py``'s
+                                            # ``_read_next``. Runtime
+                                            # promotes to ``ExceptionGroup``
+                                            # if all members are
+                                            # ``Exception`` subclasses.
+                                            chained = BaseExceptionGroup(
+                                                "Worker raised an exception "
+                                                "and response context encode "
+                                                "failed",
+                                                [cast(BaseException, outcome_value), e],
+                                            )
+                                            main_loop.call_soon_threadsafe(
+                                                result_queue.put_nowait,
+                                                (
+                                                    "error",
+                                                    chained,
+                                                    protocol.Context(),
+                                                ),
+                                            )
+                                        else:
+                                            main_loop.call_soon_threadsafe(
+                                                result_queue.put_nowait,
+                                                ("error", e, protocol.Context()),
+                                            )
                                         return
                                     main_loop.call_soon_threadsafe(
                                         result_queue.put_nowait,
-                                        (tag, outcome_value, ctx_pb),
+                                        (tag, outcome_value, wire_ctx),
                                     )
                                     if terminate:
                                         return
@@ -729,7 +799,7 @@ class WorkerService(protocol.WorkerServicer):
 
                     if result is _STREAM_END:
                         break
-                    tag, payload, ctx_pb = result
+                    tag, payload, wire_ctx = result
                     if tag == "error":
                         # Terminal error frame: surface the exception
                         # alongside the worker-side snapshot so the
@@ -738,9 +808,9 @@ class WorkerService(protocol.WorkerServicer):
                         # let the snapshot fall on the floor and the
                         # dispatch handler's fallback snapshot never
                         # saw the worker's mutations.
-                        yield _WorkerOutcome(exception=payload, context=ctx_pb)
+                        yield _WorkerOutcome(exception=payload, context=wire_ctx)
                         return
-                    yield _WorkerOutcome(result=payload, context=ctx_pb)
+                    yield _WorkerOutcome(result=payload, context=wire_ctx)
             finally:
                 worker_loop.call_soon_threadsafe(request_queue.put_nowait, _STREAM_END)
 
