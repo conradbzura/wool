@@ -95,9 +95,6 @@ def sample_task(
             "timeout": 0,
             "caller": None,
             "exception": None,
-            "filename": None,
-            "function": None,
-            "line_no": None,
             "tag": None,
         }
         defaults.update(overrides)
