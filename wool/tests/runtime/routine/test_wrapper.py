@@ -162,6 +162,40 @@ class Foo:
     assert baz_gen.__module__ == "runtime.routine.test_wrapper"
 
 
+def test_routine_with_unavailable_source(
+    mocker: MockerFixture,
+):
+    """Test @routine when ``inspect.getsourcelines`` raises ``OSError``.
+
+    Given:
+        A coroutine function whose source is unavailable to
+        :func:`inspect.getsourcelines` — modeled by patching the
+        wrapper module's reference to raise ``OSError``.
+    When:
+        The :func:`routine` decorator wraps the function.
+    Then:
+        It should return a callable wrapper without re-raising the
+        ``OSError``.
+    """
+    # Arrange
+    from wool.runtime.routine import wrapper as wrapper_module
+
+    mocker.patch.object(
+        wrapper_module,
+        "getsourcelines",
+        side_effect=OSError("source not available"),
+    )
+
+    async def no_source():
+        return "ok"
+
+    # Act
+    wrapped = routine(no_source)
+
+    # Assert
+    assert callable(wrapped)
+
+
 @settings(
     max_examples=20,
     deadline=None,

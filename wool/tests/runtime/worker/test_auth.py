@@ -1,7 +1,7 @@
 import datetime
-import pickle
 from dataclasses import FrozenInstanceError
 
+import cloudpickle
 import grpc
 import pytest
 from cryptography import x509
@@ -564,7 +564,7 @@ class TestWorkerCredentials:
         )
 
         # Act
-        restored = pickle.loads(pickle.dumps(creds))
+        restored = cloudpickle.loads(cloudpickle.dumps(creds))
 
         # Assert
         assert restored == creds
