@@ -4,10 +4,12 @@ from wool import protocol
 
 EXPECTED_MESSAGE_EXPORTS = [
     "Ack",
+    "Context",
     "Message",
     "Nack",
     "Request",
     "Response",
+    "RuntimeContext",
     "StopRequest",
     "Task",
     "TaskEnvelope",
@@ -88,6 +90,51 @@ class TestMessageConstruction:
         assert task.args == b"args-bytes"
         assert task.kwargs == b"kwargs-bytes"
         assert task.timeout == 30
+
+    def test_context_fields(self):
+        """Test Context message field round-trip.
+
+        Given:
+            An id hex string and a vars map.
+        When:
+            A Context message is constructed.
+        Then:
+            Both fields round-trip correctly.
+        """
+        # Arrange, act, & assert
+        ctx = protocol.Context(id="abc", vars={"ns:key": b"value"})
+        assert ctx.id == "abc"
+        assert dict(ctx.vars) == {"ns:key": b"value"}
+
+    def test_runtime_context_fields_with_dispatch_timeout(self):
+        """Test RuntimeContext exposes dispatch_timeout when supplied.
+
+        Given:
+            A float value for ``dispatch_timeout``.
+        When:
+            A RuntimeContext is constructed with that value.
+        Then:
+            The field round-trips and ``HasField`` reports it as
+            present.
+        """
+        # Arrange, act, & assert
+        msg = protocol.RuntimeContext(dispatch_timeout=5.5)
+        assert msg.dispatch_timeout == 5.5
+        assert msg.HasField("dispatch_timeout") is True
+
+    def test_runtime_context_fields_without_dispatch_timeout(self):
+        """Test RuntimeContext reports dispatch_timeout absent by default.
+
+        Given:
+            No arguments passed to the RuntimeContext constructor.
+        When:
+            A RuntimeContext is constructed.
+        Then:
+            ``HasField`` reports the optional field as absent.
+        """
+        # Arrange, act, & assert
+        msg = protocol.RuntimeContext()
+        assert msg.HasField("dispatch_timeout") is False
 
     def test_task_envelope_fields(self):
         """Test TaskEnvelope message is a strict subset of Task.

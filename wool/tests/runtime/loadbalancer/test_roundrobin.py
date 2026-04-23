@@ -85,15 +85,16 @@ class TestRoundRobinLoadBalancer:
             It should restore with an empty _index and a fresh _lock
         """
         # Arrange
-        import pickle
         from asyncio import Lock
+
+        import cloudpickle
 
         lb = RoundRobinLoadBalancer()
         context = LoadBalancerContext()
         lb._index[context] = 3
 
         # Act
-        restored = pickle.loads(pickle.dumps(lb))
+        restored = cloudpickle.loads(cloudpickle.dumps(lb))
 
         # Assert
         assert isinstance(restored, RoundRobinLoadBalancer)
