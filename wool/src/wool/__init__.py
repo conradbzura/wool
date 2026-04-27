@@ -26,12 +26,12 @@ from wool.runtime.loadbalancer.base import LoadBalancerLike
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
 from wool.runtime.resourcepool import ResourcePool
-from wool.runtime.routine.task import Serializer
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskException
 from wool.runtime.routine.task import current_task
 from wool.runtime.routine.wrapper import routine
 from wool.runtime.typing import Factory
+from wool.runtime.typing import Serializer
 from wool.runtime.worker.auth import WorkerCredentials
 from wool.runtime.worker.base import Worker
 from wool.runtime.worker.base import WorkerFactory

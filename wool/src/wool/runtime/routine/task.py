@@ -33,24 +33,15 @@ import cloudpickle
 
 import wool
 from wool import protocol
-from wool.runtime.context import RuntimeContext
+from wool.runtime.context.base import RuntimeContext
 from wool.runtime.resourcepool import ResourcePool
+from wool.runtime.typing import Serializer
 
 Args = Tuple
 Kwargs = Dict
 Timeout = SupportsInt
 Routine: TypeAlias = Coroutine | AsyncGenerator
 W = TypeVar("W", bound=Routine)
-
-
-# public
-@runtime_checkable
-class Serializer(Protocol):
-    """Protocol for pluggable serialization of Task payload fields."""
-
-    def dumps(self, obj: Any) -> bytes: ...
-
-    def loads(self, data: bytes) -> Any: ...
 
 
 class _PassthroughKey:
