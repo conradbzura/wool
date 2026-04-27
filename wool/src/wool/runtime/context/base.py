@@ -32,7 +32,7 @@ from wool.runtime.context.registry import scope_key
 from wool.runtime.context.registry import var_registry
 from wool.runtime.context.stub import resolve_stub
 from wool.runtime.context.token import token_registry
-from wool.runtime.typing import Serializer
+from wool.runtime.serializer import Serializer
 from wool.runtime.typing import Undefined
 from wool.runtime.typing import UndefinedType
 
