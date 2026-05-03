@@ -4,6 +4,7 @@ import asyncio
 import uuid
 import warnings
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import AsyncContextManager
 from typing import AsyncGenerator
 from typing import AsyncIterator
@@ -11,7 +12,9 @@ from typing import Awaitable
 from typing import Callable
 from typing import ContextManager
 from typing import Generic
+from typing import NoReturn
 from typing import Sequence
+from typing import SupportsIndex
 from typing import TypeAlias
 from typing import TypeVar
 from typing import overload
@@ -105,6 +108,42 @@ class ReducibleAsyncIterator(Generic[T]):
 
 
 WorkerUri: TypeAlias = str
+
+
+def _restore_proxy(
+    discovery: DiscoverySubscriberLike,
+    loadbalancer: Factory[LoadBalancerLike] | LoadBalancerLike,
+    proxy_id: uuid.UUID,
+    lease: int | None,
+    lazy: bool,
+) -> WorkerProxy:
+    """Reconstruct a :class:`WorkerProxy` from its reduce tuple.
+
+    Module-level so the reduce tuple references a stable callable rather
+    than a freshly created closure on every reduction.
+
+    :param discovery:
+        Discovery subscriber or factory carried through the reduce tuple.
+    :param loadbalancer:
+        Load balancer instance or factory carried through the reduce tuple.
+    :param proxy_id:
+        Original proxy id, restored after construction so the receiving
+        side observes the same identity.
+    :param lease:
+        Lease size, ``None`` for no cap.
+    :param lazy:
+        Whether to defer worker resolution until first dispatch.
+    :returns:
+        A reconstructed :class:`WorkerProxy` with the original id.
+    """
+    proxy = WorkerProxy(
+        discovery=discovery,
+        loadbalancer=loadbalancer,
+        lease=lease,
+        lazy=lazy,
+    )
+    proxy._id = proxy_id
+    return proxy
 
 
 class WorkerProxy:
@@ -346,13 +385,17 @@ class WorkerProxy:
     def __eq__(self, value: object) -> bool:
         return isinstance(value, WorkerProxy) and hash(self) == hash(value)
 
-    def __reduce__(self) -> tuple:
-        """Return constructor args for unpickling with proxy ID preserved.
+    def __wool_reduce__(self) -> tuple[Callable[..., WorkerProxy], tuple[Any, ...]]:
+        """Return constructor args for unpickling via Wool's pickler.
 
         Creates a new WorkerProxy instance with the same discovery stream
         and load balancer type, then sets the preserved proxy ID on the
         new object.  Credentials are NOT serialized — the restored proxy
         resolves them from the active credential context.
+
+        WorkerProxy is guarded against vanilla pickling (see
+        :meth:`__reduce_ex__`); this method is invoked only by Wool's own
+        pickler.
 
         :returns:
             Tuple of (callable, args) for unpickling.
@@ -373,16 +416,6 @@ class WorkerProxy:
                     f"{name}=my_cm())."
                 )
 
-        def _restore_proxy(discovery, loadbalancer, proxy_id, lease, lazy):
-            proxy = WorkerProxy(
-                discovery=discovery,
-                loadbalancer=loadbalancer,
-                lease=lease,
-                lazy=lazy,
-            )
-            proxy._id = proxy_id
-            return proxy
-
         return (
             _restore_proxy,
             (
@@ -392,6 +425,31 @@ class WorkerProxy:
                 self._lease,
                 self._lazy,
             ),
+        )
+
+    def __reduce_ex__(self, _protocol: SupportsIndex) -> NoReturn:
+        """Reject vanilla pickling.
+
+        WorkerProxy carries credentials that are resolved from the active
+        credential context at construction and intentionally not
+        transported across process boundaries.  Allowing vanilla
+        :func:`pickle.dumps` or :func:`cloudpickle.dumps` would silently
+        produce payloads that deserialize into nonsense outside the
+        dispatch path.  Wool's own pickler consults ``reducer_override``
+        (and therefore ``__wool_reduce__``) before ``__reduce_ex__``, so
+        this guard is invisible to Wool's own serialization.
+
+        :func:`copy.copy` and :func:`copy.deepcopy` also route through
+        ``__reduce_ex__`` and are rejected for the same reason — a
+        runtime-bound proxy has no meaningful copy semantics.
+
+        :raises TypeError:
+            Always.
+        """
+        raise TypeError(
+            "WorkerProxy cannot be pickled via vanilla pickle/cloudpickle; "
+            "it is serialized automatically when dispatched through Wool's "
+            "runtime."
         )
 
     @property

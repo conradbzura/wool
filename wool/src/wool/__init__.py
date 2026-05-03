@@ -20,11 +20,12 @@ from wool.runtime.loadbalancer.base import LoadBalancerLike
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
 from wool.runtime.resourcepool import ResourcePool
-from wool.runtime.routine.task import Serializer
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskException
 from wool.runtime.routine.task import current_task
 from wool.runtime.routine.wrapper import routine
+from wool.runtime.serializer import CloudpickleSerializer
+from wool.runtime.serializer import Serializer
 from wool.runtime.typing import Factory
 from wool.runtime.worker.auth import WorkerCredentials
 from wool.runtime.worker.base import Worker
@@ -48,6 +49,8 @@ try:
     __version__ = version("wool")
 except PackageNotFoundError:
     __version__ = "unknown"
+
+__serializer__: Final[Serializer] = CloudpickleSerializer()
 
 __proxy__: Final[ContextVar[WorkerProxy | None]] = ContextVar("__proxy__", default=None)
 
@@ -77,11 +80,12 @@ __all__ = [
     "NoWorkersAvailable",
     "RoundRobinLoadBalancer",
     # Routines
-    "Serializer",
     "Task",
     "TaskException",
     "current_task",
     "routine",
+    # Serialization
+    "Serializer",
     # Backpressure
     "BackpressureContext",
     "BackpressureLike",

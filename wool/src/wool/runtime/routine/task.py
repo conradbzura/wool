@@ -4,7 +4,6 @@ import asyncio
 import functools
 import logging
 import traceback
-import weakref
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,7 +11,6 @@ from dataclasses import dataclass
 from inspect import isasyncgenfunction
 from inspect import iscoroutinefunction
 from types import TracebackType
-from typing import Any
 from typing import AsyncGenerator
 from typing import ContextManager
 from typing import Coroutine
@@ -27,13 +25,14 @@ from typing import cast
 from typing import overload
 from typing import runtime_checkable
 from uuid import UUID
-from uuid import uuid4
 
 import cloudpickle
 
 import wool
 from wool import protocol
 from wool.runtime.context import RuntimeContext
+from wool.runtime.serializer import PassthroughSerializer
+from wool.runtime.serializer import Serializer
 
 Args = Tuple
 Kwargs = Dict
@@ -42,86 +41,18 @@ Routine: TypeAlias = Coroutine | AsyncGenerator
 W = TypeVar("W", bound=Routine)
 
 
-# public
-@runtime_checkable
-class Serializer(Protocol):
-    """Protocol for pluggable serialization of Task payload fields."""
-
-    def dumps(self, obj: Any) -> bytes: ...
-
-    def loads(self, data: bytes) -> Any: ...
-
-
-class _PassthroughKey:
-    """Weak-referenceable key for the passthrough store."""
-
-    __slots__ = ("__weakref__", "token")
-
-    def __init__(self, token: UUID | None = None):
-        self.token = token if token is not None else uuid4()
-
-    def __hash__(self):
-        return hash(self.token)
-
-    def __eq__(self, other):
-        if not isinstance(other, _PassthroughKey):
-            return super().__eq__(other)
-        return self.token == other.token
-
-
-class PassthroughSerializer:
-    """In-process serializer that avoids pickling entirely.
-
-    Each instance acts as a scope guard for one dispatch.
-    ``dumps`` creates a weakly-referenceable key, stores the object
-    in a module-level :class:`~weakref.WeakKeyDictionary`, and
-    retains a strong reference to the key on ``self``.  When the
-    serializer goes out of scope the keys are garbage-collected and
-    the weak-dict entries are removed automatically.
-
-    ``loads`` is static — it reconstructs the key from the bytes
-    token in the protobuf message and pops the entry from the store.
-
-    All instances hash and compare equal so that
-    ``_pickle_serializer``'s LRU cache hits on every call.
-    """
-
-    def __init__(self):
-        self._keys: list[_PassthroughKey] = []
-
-    def __hash__(self):
-        return hash(PassthroughSerializer)
-
-    def __eq__(self, other):
-        # Required by _pickle_serializer's lru_cache: all instances
-        # share the same hash, so __eq__ must confirm the match for
-        # the cache to hit instead of treating each instance as a
-        # separate key.
-        return isinstance(other, PassthroughSerializer)
-
-    def __reduce__(self):
-        return (PassthroughSerializer, ())
-
-    def dumps(self, obj: Any) -> bytes:
-        key = _PassthroughKey()
-        self._keys.append(key)
-        _passthrough_store[key] = obj
-        return key.token.bytes
-
-    @staticmethod
-    def loads(data: bytes) -> Any:
-        key = _PassthroughKey(UUID(bytes=data))
-        return _passthrough_store.pop(key)
-
-
-_passthrough_store: weakref.WeakKeyDictionary[_PassthroughKey, Any] = (
-    weakref.WeakKeyDictionary()
-)
-
-
 @functools.lru_cache(maxsize=8)
-def _pickle_serializer(s: Serializer) -> bytes:
-    return cloudpickle.dumps(s)
+def _pickle_serializer(serializer: Serializer) -> bytes:
+    """Pickle a :class:`Serializer` instance for transport on the wire.
+
+    Cached via :func:`functools.lru_cache` keyed on the serializer
+    instance.  :class:`PassthroughSerializer` and
+    :class:`CloudpickleSerializer` deliberately collapse all instances to
+    one cache slot via ``__hash__`` and ``__eq__``; user implementations
+    that hash uniquely will fill the cache one entry per instance and
+    evict in LRU order.
+    """
+    return wool.__serializer__.dumps(serializer)
 
 
 @functools.lru_cache(maxsize=8)
@@ -300,8 +231,13 @@ class Task(Generic[W]):
     def from_protobuf(cls, task: protocol.Task) -> Task:
         """Deserialize a Task from a protobuf message.
 
-        .. note::
-            The payload's serializer is unpickled and cached for subsequent calls.
+        When the protobuf carries a ``serializer`` field, it is unpickled
+        and cached for subsequent calls; the resulting :class:`Serializer`
+        deserializes the payload fields.  When the field is unset (the
+        default emitted by :meth:`to_protobuf` for the no-serializer case),
+        :func:`cloudpickle.loads` is used directly — payloads produced by
+        :class:`~wool.runtime.serializer.CloudpickleSerializer` are
+        standard reduce tuples that stock unpickling executes natively.
 
         :param task:
             A protobuf ``Task`` message.
@@ -338,26 +274,24 @@ class Task(Generic[W]):
     def to_protobuf(self, serializer: Serializer | None = None) -> protocol.Task:
         """Serialize this Task to a protobuf message.
 
-        The serializer itself is pickled via :func:`_pickle_serializer`
-        which uses an LRU cache keyed on the serializer instance.
-        :class:`PassthroughSerializer` instances all hash and compare
-        equal, so repeated calls hit the cache and avoid redundant
-        pickling.
-
         :param serializer:
-            Optional serializer for the callable and its arguments. When ``None`` (the
-            default), ``cloudpickle`` is used and the protobuf ``serializer`` field is
-            left unset. When provided, the serializer is pickled into the ``serializer``
-            field so that :meth:`from_protobuf` can use it on the receiving side.
-
-            .. note::
-                If specified, the serializer is pickled and cached for subsequent calls.
+            Optional serializer for the callable and its arguments.  When
+            ``None`` (the default), :data:`wool.__serializer__` is used
+            and the protobuf ``serializer`` field is left unset.  When
+            provided, the serializer is pickled into the ``serializer``
+            field so that :meth:`from_protobuf` can use it on the
+            receiving side.  The proxy is always pickled with
+            :data:`wool.__serializer__` unless ``serializer`` is a
+            :class:`PassthroughSerializer`, in which case the proxy uses
+            the same serializer as the rest of the payload.
         :returns:
             A protobuf ``Task`` message.
         """
-        dumps = serializer.dumps if serializer is not None else cloudpickle.dumps
+        dumps = serializer.dumps if serializer is not None else wool.__serializer__.dumps
         proxy_dumps = (
-            dumps if isinstance(serializer, PassthroughSerializer) else cloudpickle.dumps
+            dumps
+            if isinstance(serializer, PassthroughSerializer)
+            else wool.__serializer__.dumps
         )
         task_msg = protocol.Task(
             version=protocol.__version__,
