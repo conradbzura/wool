@@ -1744,25 +1744,25 @@ class TestRuntimeContext:
 
 
 def test_unpickle_serializer_roundtrips_passthrough():
-    """Test unpickle_serializer restores a PassthroughSerializer.
+    """Test _unpickle_serializer restores a PassthroughSerializer.
 
     Given:
         A cloudpickle-dumped PassthroughSerializer byte string.
     When:
-        unpickle_serializer is called with those bytes.
+        _unpickle_serializer is called with those bytes.
     Then:
         It returns a PassthroughSerializer instance usable for
         dumps / loads on the receiving side.
     """
     import cloudpickle
 
-    from wool.runtime.routine.task import unpickle_serializer
+    from wool.runtime.routine.task import _unpickle_serializer
 
     # Arrange
     pickled = cloudpickle.dumps(PassthroughSerializer())
 
     # Act
-    restored = unpickle_serializer(pickled)
+    restored = _unpickle_serializer(pickled)
 
     # Assert
     assert isinstance(restored, PassthroughSerializer)
@@ -1784,7 +1784,7 @@ def test_passthrough_key_eq_with_foreign_object():
         default object comparison.
     """
     # Arrange
-    from wool.runtime.routine.task import _PassthroughKey
+    from wool.runtime.serializer import _PassthroughKey
 
     key = _PassthroughKey()
 
@@ -2042,7 +2042,7 @@ class TestPassthroughSerializer:
             shared _keys
         """
         # Arrange
-        from wool.runtime.routine.task import _passthrough_pool
+        from wool.runtime.serializer import _passthrough_pool
 
         task_id = uuid4()
 
@@ -2068,7 +2068,7 @@ class TestPassthroughSerializer:
             entries are not retained beyond dispatch lifetime
         """
         # Arrange
-        from wool.runtime.routine.task import _passthrough_pool
+        from wool.runtime.serializer import _passthrough_pool
 
         task_id = uuid4()
         baseline = _passthrough_pool.stats.total_entries

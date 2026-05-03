@@ -3663,7 +3663,7 @@ class TestWorkerService:
             rather than cloudpickle.loads for passthrough self-dispatch
             frames.
         """
-        from wool.runtime.routine.task import PassthroughSerializer
+        from wool.runtime.serializer import PassthroughSerializer
 
         # Arrange
         var = wool.ContextVar(
