@@ -17,9 +17,9 @@ import wool
 from wool import protocol
 from wool.runtime.context import ContextDecodeWarning
 from wool.runtime.context import ContextVar
-from wool.runtime.routine.task import PassthroughSerializer
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import WorkerProxyLike
+from wool.runtime.serializer import PassthroughSerializer
 from wool.runtime.worker.base import ChannelOptions
 from wool.runtime.worker.connection import RpcError
 from wool.runtime.worker.connection import TransientRpcError
