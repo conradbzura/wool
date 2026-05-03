@@ -6,6 +6,8 @@ to avoid network overhead and ensure deterministic behavior.
 """
 
 import asyncio
+import copy
+import pickle
 import uuid
 import warnings
 from types import MappingProxyType
@@ -19,6 +21,7 @@ from hypothesis import strategies as st
 from packaging.version import Version
 from pytest_mock import MockerFixture
 
+import wool
 import wool.runtime.worker.proxy as wp
 from wool import protocol
 from wool.runtime.discovery.base import DiscoveryEvent
@@ -1714,7 +1717,7 @@ class TestWorkerProxy:
         )
 
         # Act — pickle round-trip, then start the restored proxy
-        pickled_data = cloudpickle.dumps(proxy)
+        pickled_data = wool.__serializer__.dumps(proxy)
         restored = cloudpickle.loads(pickled_data)
         await restored.start()
         await _drain_discovery(restored, expect=2)
@@ -1741,7 +1744,7 @@ class TestWorkerProxy:
         )
 
         # Act
-        restored = cloudpickle.loads(cloudpickle.dumps(proxy))
+        restored = cloudpickle.loads(wool.__serializer__.dumps(proxy))
 
         # Assert
         assert restored.lazy is False
@@ -1763,7 +1766,7 @@ class TestWorkerProxy:
         )
 
         # Act
-        restored = cloudpickle.loads(cloudpickle.dumps(proxy))
+        restored = cloudpickle.loads(wool.__serializer__.dumps(proxy))
 
         # Assert
         assert restored.lazy is True
@@ -2325,7 +2328,7 @@ class TestWorkerProxy:
             assert proxy.started is True
 
             # Pickle from within the started proxy context
-            pickled_data = cloudpickle.dumps(proxy)
+            pickled_data = wool.__serializer__.dumps(proxy)
             unpickled_proxy = cloudpickle.loads(pickled_data)
 
             # Unpickled proxy should be unstarted regardless of source state
@@ -2356,7 +2359,7 @@ class TestWorkerProxy:
             assert proxy.started is True
 
             # Pickle from within the started proxy context
-            pickled_data = cloudpickle.dumps(proxy)
+            pickled_data = wool.__serializer__.dumps(proxy)
             unpickled_proxy = cloudpickle.loads(pickled_data)
 
             # Unpickled proxy should be unstarted regardless of source state
@@ -2386,7 +2389,7 @@ class TestWorkerProxy:
             assert proxy.started is True
 
             # Pickle from within the started proxy context
-            pickled_data = cloudpickle.dumps(proxy)
+            pickled_data = wool.__serializer__.dumps(proxy)
             unpickled_proxy = cloudpickle.loads(pickled_data)
 
             # Unpickled proxy should be unstarted regardless of source state
@@ -2417,7 +2420,7 @@ class TestWorkerProxy:
 
         # Act
         async with proxy:
-            pickled_data = cloudpickle.dumps(proxy)
+            pickled_data = wool.__serializer__.dumps(proxy)
             unpickled_proxy = cloudpickle.loads(pickled_data)
 
         # Assert
@@ -2425,7 +2428,7 @@ class TestWorkerProxy:
         assert unpickled_proxy.id == proxy.id
         assert unpickled_proxy.started is False
         # Verify a second roundtrip still produces a valid proxy
-        repickled = cloudpickle.loads(cloudpickle.dumps(unpickled_proxy))
+        repickled = cloudpickle.loads(wool.__serializer__.dumps(unpickled_proxy))
         assert repickled.id == proxy.id
 
     @pytest.mark.asyncio
@@ -2452,7 +2455,7 @@ class TestWorkerProxy:
         )
 
         async with proxy:
-            pickled_data = cloudpickle.dumps(proxy)
+            pickled_data = wool.__serializer__.dumps(proxy)
 
         # Act — unpickle outside any WorkerCredentials context
         unpickled_proxy = cloudpickle.loads(pickled_data)
@@ -2485,7 +2488,7 @@ class TestWorkerProxy:
         )
 
         async with proxy:
-            pickled_data = cloudpickle.dumps(proxy)
+            pickled_data = wool.__serializer__.dumps(proxy)
 
         # Act — unpickle inside a WorkerCredentials context with
         # static workers so we can observe the security filter
@@ -2549,7 +2552,7 @@ class TestWorkerProxy:
 
         # Act & assert
         with pytest.raises(TypeError, match="loadbalancer"):
-            cloudpickle.dumps(proxy)
+            wool.__serializer__.dumps(proxy)
 
     def test_cloudpickle_serialization_with_async_cm_loadbalancer_raises(
         self, mock_discovery_service
@@ -2581,7 +2584,7 @@ class TestWorkerProxy:
 
         # Act & assert
         with pytest.raises(TypeError, match="loadbalancer"):
-            cloudpickle.dumps(proxy)
+            wool.__serializer__.dumps(proxy)
 
     def test_cloudpickle_serialization_with_sync_cm_discovery_raises(self):
         """Test TypeError when pickling proxy with sync CM discovery.
@@ -2608,7 +2611,7 @@ class TestWorkerProxy:
 
         # Act & assert
         with pytest.raises(TypeError, match="discovery"):
-            cloudpickle.dumps(proxy)
+            wool.__serializer__.dumps(proxy)
 
     def test_cloudpickle_serialization_with_async_cm_discovery_raises(self):
         """Test TypeError when pickling proxy with async CM discovery.
@@ -2635,7 +2638,36 @@ class TestWorkerProxy:
 
         # Act & assert
         with pytest.raises(TypeError, match="discovery"):
+            wool.__serializer__.dumps(proxy)
+
+    def test___reduce_ex___with_vanilla_pickle_and_copy(self, mock_discovery_service):
+        """Test the guard fires for vanilla pickle, cloudpickle, and copy paths.
+
+        Given:
+            A WorkerProxy instance.
+        When:
+            pickle.dumps, cloudpickle.dumps, copy.copy, and copy.deepcopy
+            are called on it directly.
+        Then:
+            Each should raise TypeError pointing at Wool's runtime as the
+            supported serialization path.
+        """
+        # Arrange
+        proxy = WorkerProxy(
+            discovery=mock_discovery_service,
+            loadbalancer=wp.RoundRobinLoadBalancer,
+        )
+        match = "WorkerProxy cannot be pickled"
+
+        # Act & assert
+        with pytest.raises(TypeError, match=match):
+            pickle.dumps(proxy)
+        with pytest.raises(TypeError, match=match):
             cloudpickle.dumps(proxy)
+        with pytest.raises(TypeError, match=match):
+            copy.copy(proxy)
+        with pytest.raises(TypeError, match=match):
+            copy.deepcopy(proxy)
 
     @pytest.mark.asyncio
     async def test_explicit_credentials_parameter_overrides_contextvar(
