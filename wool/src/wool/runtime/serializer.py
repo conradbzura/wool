@@ -89,7 +89,7 @@ class CloudpickleSerializer:
         return hash(CloudpickleSerializer)
 
     def __eq__(self, other: object) -> bool:
-        """Return True for any other CloudpickleSerializer; instances are interchangeable."""
+        """Return True for any other CloudpickleSerializer instance (interchangeable)."""
         return isinstance(other, CloudpickleSerializer)
 
     def dumps(self, obj: Any) -> bytes:
@@ -160,11 +160,11 @@ class PassthroughSerializer:
         return hash(PassthroughSerializer)
 
     def __eq__(self, other: object) -> bool:
-        """Return True for any other PassthroughSerializer; instances are interchangeable."""
+        """Return True for any other PassthroughSerializer instance (interchangeable)."""
         return isinstance(other, PassthroughSerializer)
 
     def __reduce__(self) -> tuple[type[PassthroughSerializer], tuple[()]]:
-        """Reduce to a fresh instance; the per-scope key list does not survive transport."""
+        """Reduce to a fresh instance; the per-scope key list does not ride transport."""
         return (PassthroughSerializer, ())
 
     def dumps(self, obj: Any) -> bytes:
