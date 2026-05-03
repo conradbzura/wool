@@ -15,8 +15,8 @@ import grpc.aio
 import wool
 from wool import protocol
 from wool.runtime.resourcepool import ResourcePool
-from wool.runtime.routine.task import PassthroughSerializer
 from wool.runtime.routine.task import Task
+from wool.runtime.serializer import PassthroughSerializer
 from wool.runtime.worker.base import ChannelOptions
 
 _DispatchCall: TypeAlias = grpc.aio.StreamStreamCall[protocol.Request, protocol.Response]
@@ -203,8 +203,9 @@ class _DispatchStream(Generic[_T]):
             raise RuntimeError("anext(): asynchronous generator is already running")
         self._running = True
         try:
-            dump = cloudpickle.dumps(value)
-            request = protocol.Request(send=protocol.Message(dump=dump))
+            request = protocol.Request(
+                send=protocol.Message(dump=wool.__serializer__.dumps(value))
+            )
             await self._call.write(request)
             result = await self._read_next()
             self._step += 1
@@ -246,8 +247,9 @@ class _DispatchStream(Generic[_T]):
             else:  # pragma: no cover
                 exc = typ()
 
-            dump = cloudpickle.dumps(exc)
-            request = protocol.Request(throw=protocol.Message(dump=dump))
+            request = protocol.Request(
+                throw=protocol.Message(dump=wool.__serializer__.dumps(exc))
+            )
             await self._call.write(request)
             result = await self._read_next()
             self._step += 1
@@ -382,7 +384,7 @@ class WorkerConnection:
            When dispatching to the current worker process (self-dispatch),
            a :class:`PassthroughSerializer` is used so the four payload
            fields (callable, args, kwargs, proxy) are stored in-process
-           instead of being cloudpickled.  The request still travels
+           instead of being serialized.  The request still travels
            through gRPC so the full streaming protocol is preserved.
 
         :param task:

@@ -703,7 +703,7 @@ def _pairwise_filter(row):
     - D3 must be a LOCAL_* variant when D2 is DURABLE_JOINED
       (LanDiscovery does not support namespacing)
     - D4 must not be ASYNC_CM (pre-called async CM instances are not
-      picklable inside WorkerProxy.__reduce__; documented limitation,
+      picklable inside WorkerProxy.__wool_reduce__; documented limitation,
       see #61)
     - D8 must be MODULE_FUNCTION or INSTANCE_METHOD when D1 is ASEND,
       ATHROW, or ACLOSE (no classmethod/staticmethod routines defined
@@ -813,7 +813,7 @@ def scenarios_strategy(draw):
         discovery = draw(st.sampled_from(DiscoveryFactory))
 
     # ASYNC_CM lb excluded: pre-called CM instances are not picklable
-    # inside WorkerProxy.__reduce__ (documented limitation, see #61)
+    # inside WorkerProxy.__wool_reduce__ (documented limitation, see #61)
     lb = draw(st.sampled_from([f for f in LbFactory if f is not LbFactory.ASYNC_CM]))
     credential = draw(st.sampled_from(CredentialType))
     options = draw(st.sampled_from(WorkerOptionsKind))

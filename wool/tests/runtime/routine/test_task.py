@@ -13,13 +13,13 @@ from hypothesis import strategies as st
 from wool import protocol
 from wool.runtime.context import RuntimeContext
 from wool.runtime.context import dispatch_timeout
-from wool.runtime.routine.task import PassthroughSerializer
-from wool.runtime.routine.task import Serializer
 from wool.runtime.routine.task import Task
 from wool.runtime.routine.task import TaskException
 from wool.runtime.routine.task import WorkerProxyLike
 from wool.runtime.routine.task import current_task
 from wool.runtime.routine.task import do_dispatch
+from wool.runtime.serializer import PassthroughSerializer
+from wool.runtime.serializer import Serializer
 
 
 class _PicklableProxy:
@@ -33,6 +33,29 @@ class _PicklableProxy:
             yield "result"
 
         return _stream()
+
+
+def _restore_picklable_proxy(proxy_id):
+    """Reconstruct a _PicklableProxy with the supplied id."""
+    proxy = _PicklableProxy()
+    proxy.id = proxy_id
+    return proxy
+
+
+class _GuardedProxy(_PicklableProxy):
+    """Proxy test double that adopts the Wool pickling protocol.
+
+    Defines __wool_reduce__ for serialization through Wool's pickler and
+    a __reduce_ex__ guard that raises TypeError to model a guarded type.
+    Reconstruction returns a plain _PicklableProxy with the original id
+    preserved, mirroring the production WorkerProxy reduce contract.
+    """
+
+    def __wool_reduce__(self):
+        return (_restore_picklable_proxy, (self.id,))
+
+    def __reduce_ex__(self, *_):
+        raise TypeError("_GuardedProxy cannot be pickled via vanilla pickle/cloudpickle")
 
 
 class TestWorkerProxyLike:
@@ -1490,6 +1513,139 @@ class TestTask:
         # Assert
         assert not task_msg.HasField("serializer")
 
+    def test_to_protobuf_without_serializer_with_guarded_proxy(
+        self, sample_async_callable
+    ):
+        """Test the default Serializer respects __wool_reduce__ on the proxy.
+
+        Given:
+            A Task whose proxy adopts the Wool pickling protocol.
+        When:
+            to_protobuf() is called without an explicit serializer.
+        Then:
+            It should serialize the proxy via wool.__serializer__ — the
+            default fallback honors __wool_reduce__ instead of tripping
+            the __reduce_ex__ guard.
+        """
+        # Arrange
+        proxy = _GuardedProxy()
+        task = Task(
+            id=uuid4(),
+            callable=sample_async_callable,
+            args=(),
+            kwargs={},
+            proxy=proxy,
+        )
+
+        # Act
+        task_msg = task.to_protobuf()
+
+        # Assert
+        assert task_msg.proxy
+        assert task_msg.proxy_id == str(proxy.id)
+
+    def test_to_protobuf_with_custom_serializer_with_guarded_proxy(
+        self, sample_async_callable
+    ):
+        """Test custom Serializer routes the proxy through wool.__serializer__.
+
+        Given:
+            A Task whose proxy is a guarded type and a user-supplied
+            Serializer that is not PassthroughSerializer; the user
+            serializer counts dumps invocations so the test can verify
+            its participation in payload-field serialization.
+        When:
+            to_protobuf(serializer=...) is called.
+        Then:
+            It should pickle the user serializer into the protobuf
+            serializer field, route the four payload fields (callable,
+            args, kwargs) through the user serializer, and route the
+            proxy field through wool.__serializer__ so the proxy bytes
+            are decodable via cloudpickle.loads even though the user
+            serializer would otherwise mishandle guarded types.
+        """
+
+        # Arrange
+        class _RecordingSerializer:
+            """User serializer that records dumps invocations."""
+
+            def __init__(self):
+                self.dumps_calls = []
+
+            def __hash__(self):
+                return hash(_RecordingSerializer)
+
+            def __eq__(self, other):
+                return isinstance(other, _RecordingSerializer)
+
+            def __reduce__(self):
+                return (_RecordingSerializer, ())
+
+            def dumps(self, obj):
+                self.dumps_calls.append(obj)
+                return cloudpickle.dumps(obj)
+
+            def loads(self, data):
+                return cloudpickle.loads(data)
+
+        proxy = _GuardedProxy()
+        task = Task(
+            id=uuid4(),
+            callable=sample_async_callable,
+            args=(),
+            kwargs={},
+            proxy=proxy,
+        )
+        user_serializer = _RecordingSerializer()
+
+        # Act — must not raise even though the user serializer would
+        task_msg = task.to_protobuf(serializer=user_serializer)
+
+        # Assert — proxy bytes round-trip via stock cloudpickle.loads
+        assert task_msg.proxy
+        restored_proxy = cloudpickle.loads(task_msg.proxy)
+        assert isinstance(restored_proxy, _PicklableProxy)
+        # Assert — protobuf carries the user serializer
+        assert task_msg.HasField("serializer")
+        # Assert — user serializer received callable/args/kwargs but not the proxy
+        assert sample_async_callable in user_serializer.dumps_calls
+        assert () in user_serializer.dumps_calls
+        assert {} in user_serializer.dumps_calls
+        assert proxy not in user_serializer.dumps_calls
+
+    def test_from_protobuf_without_serializer_with_guarded_proxy(
+        self, sample_async_callable
+    ):
+        """Test the to_protobuf / from_protobuf round-trip with no explicit serializer.
+
+        Given:
+            A Task whose proxy is a guarded type.
+        When:
+            The Task is serialized via to_protobuf() and deserialized via
+            from_protobuf(), both with the default fallback (no explicit
+            Serializer).
+        Then:
+            The restored Task's proxy and proxy_id should match the
+            original.
+        """
+        # Arrange
+        proxy = _GuardedProxy()
+        original = Task(
+            id=uuid4(),
+            callable=sample_async_callable,
+            args=(),
+            kwargs={},
+            proxy=proxy,
+        )
+
+        # Act
+        restored = Task.from_protobuf(original.to_protobuf())
+
+        # Assert
+        assert restored.id == original.id
+        assert isinstance(restored.proxy, _PicklableProxy)
+        assert restored.proxy.id == proxy.id
+
     def test_to_protobuf_with_serializer(self, sample_async_callable, picklable_proxy):
         """Test to_protobuf with serializer sets the serializer field.
 
@@ -1628,11 +1784,11 @@ class TestPassthroughSerializer:
         """Test dumps returns a 16-byte token.
 
         Given:
-            An arbitrary Python object
+            An arbitrary Python object.
         When:
-            ``dumps`` is called
+            ``dumps`` is called.
         Then:
-            It should return a 16-byte bytes token
+            It should return a 16-byte bytes token.
         """
         # Arrange
         serializer = PassthroughSerializer()
@@ -1649,11 +1805,11 @@ class TestPassthroughSerializer:
         """Test dumps returns unique tokens for distinct objects.
 
         Given:
-            Two distinct Python objects
+            Two distinct Python objects.
         When:
-            ``dumps`` is called on each
+            ``dumps`` is called on each.
         Then:
-            It should return different tokens for each object
+            It should return different tokens for each object.
         """
         # Arrange
         serializer = PassthroughSerializer()
@@ -1671,12 +1827,12 @@ class TestPassthroughSerializer:
         """Test loads retrieves the original object by identity.
 
         Given:
-            An arbitrary Python object stored via ``dumps``
+            An arbitrary Python object stored via ``dumps``.
         When:
-            ``loads`` is called with the returned token
+            ``loads`` is called with the returned token.
         Then:
             It should return the exact same object (identity, not
-            equality)
+            equality).
         """
         # Arrange
         serializer = PassthroughSerializer()
@@ -1693,12 +1849,12 @@ class TestPassthroughSerializer:
         """Test loads consumes the stored entry.
 
         Given:
-            An object serialized via ``dumps``
+            An object serialized via ``dumps``.
         When:
-            ``loads`` is called twice with the same data
+            ``loads`` is called twice with the same data.
         Then:
             It should raise ``KeyError`` on the second call because
-            the entry was consumed
+            the entry was consumed.
         """
         # Arrange
         serializer = PassthroughSerializer()
@@ -1711,31 +1867,74 @@ class TestPassthroughSerializer:
         with pytest.raises(KeyError):
             serializer.loads(data)
 
-    def test_isinstance_with_serializer_protocol(self):
+    def test___instancecheck___with_serializer_protocol(self):
         """Test PassthroughSerializer satisfies the Serializer protocol.
 
         Given:
-            A PassthroughSerializer instance
+            A PassthroughSerializer instance.
         When:
-            Checked against the Serializer protocol via isinstance
+            isinstance is evaluated against the runtime-checkable
+            Serializer protocol.
         Then:
-            It should be recognized as a Serializer
+            It should return True.
         """
-        # Arrange & act
+        # Arrange, act, & assert
+        assert isinstance(PassthroughSerializer(), Serializer)
+
+    def test_hash_and_equality_contract(self):
+        """Test all PassthroughSerializer instances are interchangeable.
+
+        Given:
+            Two distinct PassthroughSerializer instances and an arbitrary
+            object of a different type.
+        When:
+            Their hashes and equality are evaluated.
+        Then:
+            The two PassthroughSerializer instances should compare equal,
+            share a hash (so the LRU cache deduplicates them), and not
+            compare equal to the other-type object.
+        """
+        # Arrange
+        first = PassthroughSerializer()
+        second = PassthroughSerializer()
+
+        # Act & assert
+        assert first == second
+        assert hash(first) == hash(second)
+        assert first != object()
+
+    def test_dumps_with_guarded_proxy(self):
+        """Test PassthroughSerializer stores guarded objects by identity.
+
+        Given:
+            A PassthroughSerializer instance and a proxy that adopts the
+            Wool pickling protocol (__wool_reduce__ + __reduce_ex__ guard).
+        When:
+            The serializer dumps and loads the proxy.
+        Then:
+            It should return the exact same object (identity), bypassing
+            __wool_reduce__ and __reduce_ex__ entirely — passthrough
+            never invokes pickle on the payload.
+        """
+        # Arrange
         serializer = PassthroughSerializer()
+        proxy = _GuardedProxy()
+
+        # Act
+        restored = serializer.loads(serializer.dumps(proxy))
 
         # Assert
-        assert isinstance(serializer, Serializer)
+        assert restored is proxy
 
     def test_cloudpickle_roundtrip(self):
         """Test PassthroughSerializer survives cloudpickle serialization.
 
         Given:
-            A PassthroughSerializer instance
+            A PassthroughSerializer instance.
         When:
-            Serialized and deserialized via cloudpickle
+            Serialized and deserialized via cloudpickle.
         Then:
-            It should produce a functional PassthroughSerializer
+            It should produce a functional PassthroughSerializer.
         """
         # Arrange
         original = PassthroughSerializer()

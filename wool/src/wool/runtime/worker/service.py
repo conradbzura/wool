@@ -230,13 +230,13 @@ class WorkerService(protocol.WorkerServicer):
             try:
                 if isasyncgen(task):
                     async for result in task:
-                        result = protocol.Message(dump=cloudpickle.dumps(result))
+                        result = protocol.Message(dump=wool.__serializer__.dumps(result))
                         yield protocol.Response(result=result)
                 elif isinstance(task, asyncio.Task):
-                    result = protocol.Message(dump=cloudpickle.dumps(await task))
+                    result = protocol.Message(dump=wool.__serializer__.dumps(await task))
                     yield protocol.Response(result=result)
             except (Exception, asyncio.CancelledError) as e:
-                exception = protocol.Message(dump=cloudpickle.dumps(e))
+                exception = protocol.Message(dump=wool.__serializer__.dumps(e))
                 yield protocol.Response(exception=exception)
 
     async def stop(
@@ -485,7 +485,7 @@ class WorkerService(protocol.WorkerServicer):
             The incoming bidirectional request stream.
         :yields:
             The :class:`asyncio.Task` or async generator for the
-            wool task.
+            Wool task.
 
         """
         if iscoroutinefunction(work_task.callable):

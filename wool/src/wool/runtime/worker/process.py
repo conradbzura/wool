@@ -76,8 +76,8 @@ class WorkerProcess(Process):
     :param backpressure:
         Optional admission control hook. See
         :class:`~wool.runtime.worker.service.BackpressureLike`.
-        Serialized with ``cloudpickle`` for transfer to the
-        subprocess.
+        Serialized via :data:`wool.__serializer__` for transfer to
+        the subprocess.
     :param args:
         Additional args for :class:`multiprocessing.Process`.
     :param kwargs:
@@ -128,7 +128,7 @@ class WorkerProcess(Process):
         self._extra = extra if extra is not None else {}
         self._metadata = None
         self._backpressure = (
-            cloudpickle.dumps(backpressure) if backpressure is not None else None
+            wool.__serializer__.dumps(backpressure) if backpressure is not None else None
         )
         self._get_metadata, self._set_metadata = Pipe(duplex=False)
 
