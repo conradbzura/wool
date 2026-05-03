@@ -2042,7 +2042,7 @@ class TestPassthroughSerializer:
             shared _keys
         """
         # Arrange
-        from wool.runtime.routine.task import _passthrough_pool
+        from wool.runtime.serializer import _passthrough_pool
 
         task_id = uuid4()
 
@@ -2068,7 +2068,7 @@ class TestPassthroughSerializer:
             entries are not retained beyond dispatch lifetime
         """
         # Arrange
-        from wool.runtime.routine.task import _passthrough_pool
+        from wool.runtime.serializer import _passthrough_pool
 
         task_id = uuid4()
         baseline = _passthrough_pool.stats.total_entries
