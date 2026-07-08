@@ -1,0 +1,20 @@
+[package]
+name = "tonic_echo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+async-stream = "0.3"
+futures = "0.3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

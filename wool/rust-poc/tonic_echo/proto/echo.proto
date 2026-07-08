@@ -1,0 +1,10 @@
+syntax = "proto3";
+package echo;
+
+message Msg {
+  bytes data = 1;
+}
+
+service Echo {
+  rpc Exchange(stream Msg) returns (stream Msg);
+}

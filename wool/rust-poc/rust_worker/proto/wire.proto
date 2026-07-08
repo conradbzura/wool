@@ -1,0 +1,192 @@
+syntax = "proto3";
+
+package wool.runtime.protobuf.wire;
+
+message RuntimeContext {
+    optional double dispatch_timeout = 1;
+}
+
+message Task {
+    string version = 1;
+    string id = 2;
+    string caller = 3;
+    string tag = 4;
+    string proxy_id = 5;
+    bytes proxy = 6;
+    bytes callable = 7;
+    bytes args = 8;
+    bytes kwargs = 9;
+    int32 timeout = 10;
+    optional RuntimeContext runtime_context = 11;
+}
+
+// Minimal envelope for pre-deserialization metadata extraction.
+// Used by interceptors to parse fields 1–4 from any Task wire
+// format without touching the cloudpickle payload bytes.
+message TaskEnvelope {
+    string version = 1;
+    string id = 2;
+    string caller = 3;
+    string tag = 4;
+}
+
+// Wire shape for a single wool.ContextVar within a ChainManifest
+// snapshot. Mirrors the in-memory wool.ContextVar identity
+// and carries the var's per-snapshot state: an optional
+// cloudpickled value. An absent value signals a reset-to-
+// no-prior-value on the sender's chain.
+message ContextVar {
+    // Namespace component of the ContextVar identity.
+    string namespace = 1;
+    // Name component of the ContextVar identity.
+    string name = 2;
+    // Cloudpickled value. Unset when the var has no
+    // current value in this snapshot.
+    optional bytes value = 3;
+    // Hex ids of this var's wool.Token instances that have been spent
+    // (successfully reset) somewhere in the chain. Propagates
+    // cross-process single-use enforcement: a token whose id appears
+    // here has already been used and any further reset raises. Rides on
+    // both Request and Response frames so the spent state flows in both
+    // directions. Chain-local and ephemeral — carried per-var on the
+    // chain, unioned on ingress, pruned when the var is re-set, and
+    // dropped with the chain (and on an asyncio.create_task fork).
+    repeated string spent_tokens = 4;
+    // Hex ids of this var's live (unspent) wool.Token instances minted
+    // in the context this manifest snapshots. The receiver's mount
+    // anchors a wire-reconstituted token — making it resettable there —
+    // only if its id appears here: a token minted in a sibling context
+    // the sender does not continue is absent and stays an orphan. Like
+    // spent_tokens this is chain-local and ephemeral — dropped on an
+    // asyncio.create_task fork; a spent id is pruned from here so the
+    // live and spent sets stay disjoint.
+    repeated string unspent_tokens = 5;
+}
+
+// wool.Chain wire shape — the manifest of a chain crossing the
+// wire. Rides on every Request and Response frame to carry the
+// sender's wool.ContextVar snapshot and the wool.Chain id that
+// scopes the logical execution chain.
+message ChainManifest {
+    // wool.Chain id as hex string. Stable across sequential
+    // awaits inside the same asyncio task; fresh on
+    // asyncio.create_task boundaries. Empty for root dispatches
+    // that will start a new chain on the receiver.
+    string id = 1;
+    // ContextVar entries — each one carries identity, optional value,
+    // and its per-var spent/unspent token ids.
+    repeated ContextVar vars = 2;
+}
+
+message Message {
+    bytes dump = 1;
+}
+
+message Ack {
+    // Acknowledgment that the task was received and processing started
+    string version = 1;
+}
+
+// Negative acknowledgment: the worker rejected the task during the
+// parse phase, before any Ack. Always emitted alone (no preceding
+// Ack, no following frames). Carries the original parse-phase
+// exception so the client re-raises the actual failure class.
+// Envelope-level rejections (e.g., protocol-version mismatch) ride
+// gRPC status codes (FAILED_PRECONDITION) instead.
+message Nack {
+    // Dumped original exception. Encoded with wool.__serializer__
+    // (cloudpickle). Caller side falls back to RpcError on a
+    // deserialization mismatch. Same dump format as
+    // Response.exception.
+    optional Message exception = 1;
+}
+
+service Worker {
+    rpc dispatch (stream Request) returns (stream Response);
+    rpc stop (StopRequest) returns (Void);
+}
+
+message Request {
+    oneof payload {
+        Task task = 1;
+        Void next = 2;
+        Message send = 3;
+        Message throw = 4;
+    }
+    // Caller's wool.Chain snapshot. Propagates the caller's
+    // state to the worker on task frames, and forward-propagates
+    // caller mutations to the worker on streaming frames.
+    ChainManifest context = 5;
+}
+
+message Response {
+    oneof payload {
+        Ack ack = 1;
+        Nack nack = 2;
+        Message result = 3;
+        Message exception = 4;
+    }
+    // Worker's post-yield/post-return wool.Chain snapshot,
+    // back-propagated to the caller.
+    ChainManifest context = 5;
+}
+
+message StopRequest {
+    float timeout = 1;
+}
+
+message WorkerMetadata {
+    // Unique identifier for the worker instance
+    string uid = 1;
+
+    // gRPC target address (e.g. "host:port", "unix:path")
+    string address = 2;
+
+    // Process ID of the worker
+    int32 pid = 3;
+
+    // Version string of the worker software
+    string version = 4;
+
+    // Capability tags for worker filtering and selection
+    repeated string tags = 5;
+
+    // Additional arbitrary metadata as key-value pairs
+    map<string, string> extra = 6;
+
+    // Whether the worker requires secure TLS/mTLS connections
+    bool secure = 7;
+
+    // gRPC channel configuration advertised by the worker.
+    // Clients use these settings when connecting to this worker.
+    ChannelOptions connection = 8;
+}
+
+message ChannelOptions {
+    // Maximum inbound message size in bytes.
+    int32 max_receive_message_length = 1;
+
+    // Maximum outbound message size in bytes.
+    int32 max_send_message_length = 2;
+
+    // Interval in milliseconds between HTTP/2 keepalive pings.
+    int32 keepalive_time_ms = 3;
+
+    // Time in milliseconds to wait for a keepalive pong before
+    // considering the connection dead.
+    int32 keepalive_timeout_ms = 4;
+
+    // Whether to send keepalive pings with no active RPCs.
+    bool keepalive_permit_without_calls = 5;
+
+    // Max keepalive pings allowed when no data/header frames are sent.
+    int32 max_pings_without_data = 6;
+
+    // Max concurrent HTTP/2 streams per connection.
+    int32 max_concurrent_streams = 7;
+
+    // Default compression algorithm (maps to grpc.Compression enum value).
+    int32 compression = 8;
+}
+
+message Void {}

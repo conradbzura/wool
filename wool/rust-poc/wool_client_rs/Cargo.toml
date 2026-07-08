@@ -1,0 +1,25 @@
+[package]
+name = "wool_client_rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "wool_client_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3-async-runtimes = { version = "0.23", features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["full"] }
+tonic = "0.12"
+prost = "0.13"
+tokio-stream = "0.1"
+futures = "0.3"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
