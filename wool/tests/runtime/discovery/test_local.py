@@ -3192,20 +3192,21 @@ class TestLocalDiscoverySubscriber:
         # Assert
         assert seen == expected
 
-    def test_subscriber_should_be_a_distinct_object_per_call_when_key_matches(
-        self, namespace
-    ):
-        """Test each subscriber call returns a fresh object of the same type.
+    def test___new___should_return_distinct_object_when_key_matches(self, namespace):
+        """Test constructing a Subscriber returns a fresh object each call.
 
         Given:
             A namespace and a fixed poll interval
         When:
-            `LocalDiscovery.Subscriber` is called twice with the same
+            `LocalDiscovery.Subscriber` is constructed twice with the same
             namespace and poll interval
         Then:
-            It should return two distinct objects of the same type — the
-            singleton cache fans a shared source behind a fresh wrapper per
-            call rather than returning the same object.
+            It should return two distinct objects of the same type.
+
+        Note:
+            The metaclass returns a fresh wrapper over a shared source per
+            call; that sharing is not observable through object identity, so
+            this test pins only the per-call distinctness.
         """
         # Act
         first = LocalDiscovery.Subscriber(namespace, poll_interval=0.05)
