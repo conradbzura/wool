@@ -330,10 +330,7 @@ class LocalDiscovery(Discovery):
         :returns:
             A publisher instance for broadcasting worker events.
         """
-        return self.Publisher(
-            self._namespace,
-            block_size=self._block_size,
-        )
+        return self.Publisher(self._namespace, block_size=self._block_size)
 
     @property
     def subscriber(self) -> DiscoverySubscriberLike:
@@ -406,7 +403,7 @@ class LocalDiscovery(Discovery):
         #: See `~wool.DiscoveryPublisherLike.bind_host` for the contract.
         bind_host: str = "127.0.0.1"
 
-        def __init__(self, namespace: str, *, block_size: int = 512):
+        def __init__(self, namespace: str, *, block_size: int = 1024):
             if block_size < 0:
                 raise ValueError("Block size must be positive")
             self._namespace = namespace
