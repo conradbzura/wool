@@ -29,12 +29,12 @@ from wool.runtime.discovery.local import _short_hash
 
 from .conftest import _TIMEOUT
 
-#: Announce, re-announce, update, and drop workers on a namespace this
-#: interpreter owns, so the same segments are attached repeatedly and
-#: then unlinked by their creator — the sequence that faults. ``mode``
-#: selects the attach path; "legacy" forces the branch interpreters
-#: below 3.13 take, which is otherwise unreachable on 3.13.
-_PUBLISH_SCRIPT = """
+#: Shared prelude for the borrower scripts below. ``mode`` selects the
+#: attach path; "legacy" forces the branch interpreters below 3.13 take,
+#: which is otherwise unreachable on 3.13. The path that actually ran is
+#: reported from the constructor's arguments rather than by re-reading the
+#: version the override set: only the modern path passes ``track``.
+_SCRIPT_PRELUDE = """
 import asyncio
 import sys
 import uuid
@@ -48,9 +48,6 @@ mode, namespace = sys.argv[1:3]
 if mode == "legacy":
     local.sys = SimpleNamespace(version_info=(3, 12, 0, "final", 0))
 
-# Report the path that actually ran, observed from the constructor's
-# arguments rather than by re-reading the version the override set:
-# only the modern path passes ``track``.
 _mapping = local.SharedMemory
 _paths = set()
 
@@ -62,7 +59,14 @@ def _observing(*args, **kwargs):
 
 
 local.SharedMemory = _observing
+"""
 
+#: Announce, re-announce, update, and drop workers on a namespace this
+#: interpreter owns, so the same segments are attached repeatedly and
+#: then unlinked by their creator — the sequence that faults.
+_PUBLISH_SCRIPT = (
+    _SCRIPT_PRELUDE
+    + """
 
 async def main():
     workers = [
@@ -89,23 +93,15 @@ asyncio.run(main())
 print("path=" + ",".join(sorted(_paths)), flush=True)
 print("done", flush=True)
 """
+)
 
 #: Attach to a namespace this interpreter does not own, then exit. The
 #: creating process must still find its segment afterwards: only a creator
 #: may unlink, and a tracked attach would have this process's tracker do it
 #: on the way out (bpo-38119).
-_ATTACHER_SCRIPT = """
-import asyncio
-import sys
-from types import SimpleNamespace
-
-import wool.runtime.discovery.local as local
-from wool.runtime.discovery.local import LocalDiscovery
-
-mode, namespace = sys.argv[1:3]
-if mode == "legacy":
-    local.sys = SimpleNamespace(version_info=(3, 12, 0, "final", 0))
-
+_ATTACHER_SCRIPT = (
+    _SCRIPT_PRELUDE
+    + """
 
 async def main():
     # Borrow the owner's registry. Binding maps a segment this
@@ -117,8 +113,36 @@ async def main():
 
 
 asyncio.run(main())
+print("path=" + ",".join(sorted(_paths)), flush=True)
 print("done", flush=True)
 """
+)
+
+#: Publish through a borrowing publisher, then read it back through a
+#: borrowing subscriber, which holds the owner's registry mapped for the
+#: whole iteration — the mapping that must stay untracked in a process
+#: that did not create it.
+_SUBSCRIBER_SCRIPT = (
+    _SCRIPT_PRELUDE
+    + """
+
+async def main():
+    worker = WorkerMetadata(
+        uid=uuid.uuid4(), address="localhost:50051", pid=1, version="1.0"
+    )
+    async with LocalDiscovery.Publisher(namespace) as publisher:
+        await publisher.publish("worker-added", worker)
+        async for event in LocalDiscovery.Subscriber(namespace, poll_interval=0.05):
+            print("discovered %s" % event.type, flush=True)
+            break
+        await publisher.publish("worker-dropped", worker)
+
+
+asyncio.run(main())
+print("path=" + ",".join(sorted(_paths)), flush=True)
+print("done", flush=True)
+"""
+)
 
 #: The superseded pattern, in pure standard library: attach to a segment
 #: this interpreter created, undo the attach's registration, then unlink.
@@ -225,6 +249,39 @@ class TestCrossProcessTracker:
             # which would then try to unlink it at session exit after
             # the owner already had — the very fault this file asserts
             # the absence of.
+            _attach(_short_hash(namespace)).close()
+
+    @pytest.mark.parametrize("mode", ["legacy", "native"])
+    def test___aiter___should_keep_the_segment_when_a_subscriber_exits(self, mode):
+        """Test a borrowing subscriber's exit leaves the owner's segment.
+
+        Given:
+            A namespace this process owns with one worker published,
+            and an independent interpreter that iterates a borrowing
+            Subscriber on it to its first event via either attach path.
+        When:
+            That interpreter exits and its resource tracker drains.
+        Then:
+            It should leave the segment mapped with no tracker
+            complaint — a subscriber holds the registry mapped for its
+            whole iteration, so a tracked attach here would have a
+            borrower unlink the owner's namespace.
+        """
+        # Arrange
+        namespace = f"tracker-sub-{uuid.uuid4().hex[:12]}"
+
+        # Act
+        with LocalDiscovery(namespace):
+            result = _run(_SUBSCRIBER_SCRIPT, mode, namespace)
+
+            # Assert — the owner is still inside its context, so the
+            # segment must still be there for it to map.
+            assert result.returncode == 0, result.stderr
+            assert "discovered" in result.stdout, result.stdout
+            if mode == "legacy":
+                assert "path=legacy" in result.stdout, result.stdout
+            assert "leaked shared_memory" not in result.stderr, result.stderr
+            assert "KeyError" not in result.stderr, result.stderr
             _attach(_short_hash(namespace)).close()
 
     def test_unregister_should_emit_tracker_output_when_an_attach_undoes_it(self):
