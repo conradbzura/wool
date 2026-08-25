@@ -138,6 +138,17 @@ class WorkerPool:
         surfaces are additionally subject to the underlying
         `WorkerProxy`'s admission gate.
 
+        A pool with no ``spawn`` announces no workers of its own, so
+        there a bare `~wool.DiscoverySubscriberLike` is accepted as
+        well — the form a process uses to borrow a namespace another
+        process owns (see `~wool.LocalDiscovery` for the ownership
+        rule). Such a subscriber must be re-iterable and picklable, as
+        `~wool.DiscoverySubscriberLike` requires; a service satisfying
+        `~wool.DiscoveryLike` is always reduced to its ``subscriber``,
+        even where the service is itself iterable. A pool that does
+        spawn must supply a full `~wool.DiscoveryLike`, having workers
+        of its own to announce.
+
         .. caution::
 
            A pre-called context-manager instance passed as
@@ -403,7 +414,11 @@ class WorkerPool:
         self,
         *,
         lease: int | None = None,
-        discovery: DiscoveryLike | Factory[DiscoveryLike],
+        discovery: (
+            DiscoveryLike
+            | DiscoverySubscriberLike
+            | Factory[DiscoveryLike | DiscoverySubscriberLike]
+        ),
         loadbalancer: (
             LoadBalancerLike | Factory[LoadBalancerLike]
         ) = RoundRobinLoadBalancer,
@@ -483,7 +498,12 @@ class WorkerPool:
         size: int | None = None,
         lease: int | None = None,
         worker: WorkerFactoryLike | None = None,
-        discovery: DiscoveryLike | Factory[DiscoveryLike] | None = None,
+        discovery: (
+            DiscoveryLike
+            | DiscoverySubscriberLike
+            | Factory[DiscoveryLike | DiscoverySubscriberLike]
+            | None
+        ) = None,
         loadbalancer: (
             LoadBalancerLike | Factory[LoadBalancerLike]
         ) = RoundRobinLoadBalancer,
@@ -681,9 +701,10 @@ class WorkerPool:
 
                 @asynccontextmanager
                 async def create_proxy():
-                    async with resolved(
-                        discovery, expect=DiscoveryLike
-                    ) as discovery_svc:
+                    async with resolved(discovery, expect=DiscoveryLike) as service:
+                        # `expect` enforced the protocol; the cast informs the
+                        # checker, which cannot see through it.
+                        discovery_svc = cast(DiscoveryLike, service)
                         async with self._worker_context(
                             *tags,
                             spawn=spawn,
@@ -740,10 +761,19 @@ class WorkerPool:
                 @asynccontextmanager
                 async def create_proxy():
                     async with resolved(
-                        discovery, expect=DiscoveryLike
+                        discovery, expect=(DiscoveryLike, DiscoverySubscriberLike)
                     ) as discovery_svc:
+                        # A durable pool spawns nothing and so never publishes,
+                        # for which a subscriber alone suffices. DiscoveryLike is
+                        # tested first: DiscoverySubscriberLike is satisfied by
+                        # `__aiter__` alone, which a full service may also expose.
+                        subscriber = (
+                            discovery_svc.subscriber
+                            if isinstance(discovery_svc, DiscoveryLike)
+                            else discovery_svc
+                        )
                         async with self._make_proxy(
-                            discovery=discovery_svc.subscriber,
+                            discovery=subscriber,
                             loadbalancer=loadbalancer,
                             lease=lease,
                             quorum=quorum,
