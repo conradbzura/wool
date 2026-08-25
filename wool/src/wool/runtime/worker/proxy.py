@@ -61,6 +61,7 @@ from wool.runtime.worker.connection import WorkerConnection
 from wool.runtime.worker.connection import channel_pool_hold
 from wool.runtime.worker.exceptions import UnparsableVersionWarning
 from wool.runtime.worker.metadata import WorkerMetadata
+from wool.utilities.afilter import afilter
 from wool.utilities.noreentry import noreentry
 from wool.utilities.throttle import Throttle
 
@@ -344,7 +345,12 @@ class WorkerProxy:
     dispatches over the channels of the loop it was started on.
 
     :param pool_uri:
-        Pool identifier for discovery-based connection.
+        Pool identifier for discovery-based connection. The proxy
+        borrows that namespace through a `~wool.LocalDiscovery.Subscriber`
+        built without a ``poll_interval``, so proxies naming one pool
+        URI in one context share a subscription — see
+        `~wool.LocalDiscovery` for what that sharing means once the
+        namespace's owner exits.
     :param tags:
         Additional tags for filtering discovered workers.
     :param discovery:
@@ -679,7 +685,12 @@ class WorkerProxy:
                 def tag_filter(w):
                     return bool(match_tags & w.tags)
 
-                self._discovery = LocalDiscovery(pool_uri).subscribe(filter=tag_filter)
+                # A borrower: this proxy reads the namespace its pool
+                # owns — from a worker subprocess, more often than not —
+                # and never creates a registry of its own.
+                self._discovery = afilter(
+                    tag_filter, LocalDiscovery.Subscriber(pool_uri)
+                )
             case (None, discovery, None) if discovery is not None:
                 self._discovery = discovery
             case (None, None, workers) if workers is not None:
