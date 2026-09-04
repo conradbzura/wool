@@ -87,7 +87,7 @@ class Resource(Generic[T]):
             )
 
         self._released = True
-        if self._resource:
+        if self._resource is not None:
             await self._pool.release(self._key)
 
 
