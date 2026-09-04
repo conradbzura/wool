@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 from typing import Awaitable
@@ -99,28 +100,30 @@ class ResourcePool(Generic[T]):
     automatically cleaned up after all references are released and the TTL
     expires.
 
-    **Loop affinity.** A pool serves one running event loop at a time. It
-    binds to the first loop that uses it and rebinds when used from
-    another loop once the bound loop is no longer running, dropping every
-    cached entry without running its finalizer: a resource cannot be torn
-    down from a loop other than the one that made it. Every dropped
-    entry is reported at warning level, referenced and idle alike: a
-    drop is not an expiry, so an idle entry the TTL would have closed
-    is abandoned rather than finalized, and both counts name a resource
-    that outlived every chance to release it. Using a bound pool from a
-    second *running* loop raises `RuntimeError`, so tearing a pool down
-    belongs to the loop that owns it.
+    **Loop partitioning.** A pool serves any number of running event
+    loops at once, each through a private partition only that loop can
+    reach: entries, reference counts, and TTL timers are never shared
+    across loops, because a pooled resource can only be used and
+    finalized on the loop that created it. `acquire`, `release`,
+    `expire`, `clear`, `stats`, and `pending_cleanup` therefore act on
+    the calling loop's partition alone, and a process-wide clear does not
+    exist. A partition is finalized by clearing it from its own loop
+    before that loop stops. A partition whose loop has stopped without
+    doing so is swept the next time a new loop reaches the pool: its
+    entries are dropped without running their finalizers and the drop is
+    reported at warning level, since a resource stranded that way is a
+    leak whether or not anything still referenced it.
 
     :param factory:
         Function to create new objects (sync or async).
     :param finalizer:
-        Optional cleanup function (sync or async). It runs while the pool
-        holds its internal lock, so it must not await `acquire`,
-        `release`, `expire` or `clear` — those take the same lock and the
-        call deadlocks; the read-only members are lock-free and safe. An
-        `Exception` it raises is suppressed, a `BaseException` propagates
-        to whichever operation ran the finalizer, and the entry is
-        evicted either way.
+        Optional cleanup function (sync or async). It runs while the
+        partition holds its lock, so it must not await `acquire`,
+        `release`, `expire`, `expire_all` or `clear` — those take the
+        same lock and the call deadlocks; the read-only members are
+        lock-free and safe. An `Exception` it raises is suppressed, a
+        `BaseException` propagates to whichever operation ran the
+        finalizer, and the entry is evicted either way.
     :param ttl:
         Time-to-live in seconds after last reference is released.
     """
@@ -181,67 +184,8 @@ class ResourcePool(Generic[T]):
         self._factory = factory
         self._finalizer = finalizer
         self._ttl = ttl
-        self._cache: dict[Any, ResourcePool.CacheEntry] = {}
-        self._mutex: asyncio.Lock | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-
-    @property
-    def _lock(self) -> asyncio.Lock:
-        """Return the mutex serializing this pool on its bound loop.
-
-        Binds the pool on first use and rebinds it when the running loop
-        differs from the bound one and the bound one is no longer running
-        — see the class docstring for what a rebind drops. Every method
-        that touches ``_cache`` takes this lock first, so the loop check
-        happens once per operation.
-
-        :raises RuntimeError:
-            If the pool is bound to another loop that is still running.
-
-        .. rubric:: Implementation notes
-
-        `asyncio.Lock` binds to a loop the first time it is *contended*
-        — the uncontended acquire path never consults one — and never
-        unbinds, so a single mutex built at construction would serve
-        every uncontended caller and then raise for the first contender
-        on any later loop. Liveness is `is_running`, not `is_closed`: a
-        loop that has stopped but not yet closed cannot contend the
-        mutex, and both the worker's loop rotation and the test fixtures
-        stop a loop before closing it. `is_running` reads one attribute,
-        so it is safe to call from another thread.
-        """
-        loop = asyncio.get_running_loop()
-        if self._loop is not loop:
-            if self._loop is not None and self._loop.is_running():
-                raise RuntimeError(
-                    "ResourcePool is bound to another running event loop; "
-                    "use one pool per loop"
-                )
-            self._rebind(loop)
-        assert self._mutex is not None
-        return self._mutex
-
-    def _rebind(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Bind this pool to ``loop``, dropping what the previous loop left.
-
-        The dropped entries are never finalized: their finalizer would
-        run against a loop that is no longer running. Both counts are
-        logged — see the class docstring for why an idle drop is a leak
-        and not a deferred expiry.
-        """
-        if self._cache:
-            referenced = sum(1 for e in self._cache.values() if e.reference_count > 0)
-            idle = len(self._cache) - referenced
-            _log.warning(
-                "ResourcePool rebinding to a new event loop; dropping %d "
-                "referenced and %d idle entries left by a loop that is no "
-                "longer running (finalizers not run)",
-                referenced,
-                idle,
-            )
-            self._cache.clear()
-        self._mutex = asyncio.Lock()
-        self._loop = loop
+        self._partitions: dict[asyncio.AbstractEventLoop, _Partition[T]] = {}
+        self._registry_lock = threading.Lock()
 
     async def __aenter__(self):
         """Async context manager entry.
@@ -266,7 +210,11 @@ class ResourcePool(Generic[T]):
     @property
     def stats(self) -> Stats:
         """
-        Return cache statistics.
+        Return cache statistics for the calling loop's partition.
+
+        Reading resolves the calling loop's partition like every other
+        operation: it registers the partition on first use, which also
+        sweeps the partitions of loops that have stopped.
 
         .. note::
             This is synchronous for convenience, but should only be called
@@ -274,19 +222,15 @@ class ResourcePool(Generic[T]):
 
         :returns:
             `ResourcePool.Stats` containing current statistics.
+        :raises RuntimeError:
+            If there is no running event loop.
         """
-        return self.Stats(
-            total_entries=len(self._cache),
-            referenced_entries=sum(
-                1 for e in self._cache.values() if e.reference_count > 0
-            ),
-            pending_cleanup=len(self.pending_cleanup),
-        )
+        return self._partition().stats
 
     @property
     def pending_cleanup(self):
         """
-        Map cache keys to their pending cleanup work.
+        Map the calling loop's cache keys to their pending cleanup work.
 
         A pending entry holds either an unfired TTL timer or a
         cleanup task that has not finished.
@@ -294,12 +238,10 @@ class ResourcePool(Generic[T]):
         :returns:
             Dictionary mapping each such key to its pending TTL timer
             or cleanup task.
+        :raises RuntimeError:
+            If there is no running event loop; see `stats`.
         """
-        return {
-            k: v.timer if v.timer is not None else v.cleanup
-            for k, v in self._cache.items()
-            if v.timer is not None or (v.cleanup is not None and not v.cleanup.done())
-        }
+        return self._partition().pending_cleanup
 
     def get(self, key: Any) -> Resource[T]:
         """
@@ -325,19 +267,7 @@ class ResourcePool(Generic[T]):
         :returns:
             The cached or newly created object.
         """
-        async with self._lock:
-            if key in self._cache:
-                entry = self._cache[key]
-                entry.reference_count += 1
-                entry.doomed = False
-                self._cancel_timer(entry)
-                await self._cancel_cleanup(entry)
-                return entry.obj
-            else:
-                # Cache miss - create new object
-                obj = await self._await(self._factory, key)
-                self._cache[key] = self.CacheEntry(obj=obj, reference_count=1)
-                return obj
+        return await self._partition().acquire(key)
 
     async def release(self, key: Any) -> None:
         """
@@ -361,30 +291,7 @@ class ResourcePool(Generic[T]):
         the resource: a task spawned there would be orphaned by the
         closing loop, and the resource abandoned with it.
         """
-        async with self._lock:
-            if key not in self._cache:
-                return
-            entry = self._cache[key]
-
-            if entry.reference_count <= 0:
-                raise ValueError(f"Reference count for key '{key}' is already 0")
-
-            entry.reference_count -= 1
-
-            if entry.reference_count <= 0:
-                if entry.doomed or self._ttl <= 0:
-                    # Inline rather than a spawned task: with nothing to
-                    # defer to, a task spawned here may never be run.
-                    await self._cleanup(key)
-                else:
-                    # Defer cleanup with a plain timer rather than a
-                    # task parked on a TTL sleep: an unfired
-                    # TimerHandle is discarded silently at loop close,
-                    # whereas a parked task is destroyed pending —
-                    # and, if never started, its coroutine emits a
-                    # "never awaited" RuntimeWarning.
-                    loop = asyncio.get_running_loop()
-                    entry.timer = loop.call_later(self._ttl, self._expire, key)
+        await self._partition().release(key)
 
     async def expire(self, key: Any) -> None:
         """Treat *key* as TTL-expired now, finalizing it once unreferenced.
@@ -397,30 +304,26 @@ class ResourcePool(Generic[T]):
         finalized by the release that drops its last reference, before
         that release returns, so in-flight users always drain first.
         Re-acquiring a marked entry before that release clears the mark —
-        re-access resurrects, matching the pool's timer-cancellation
-        semantics. Unlike `clear`, which tears the whole pool down
-        regardless of reference count, this never finalizes a resource out
-        from under an active reference. Expiring a key that is not cached
-        is a silent no-op.
+        re-access resurrects, matching the
+        pool's timer-cancellation semantics. Unlike `clear`, which tears
+        the whole partition down regardless of reference count, this
+        never finalizes a resource out from under an active reference.
+        Expiring a key that is not cached is a silent no-op.
 
         :param key:
             The cache key to expire.
         """
-        async with self._lock:
-            entry = self._cache.get(key)
-            if entry is None:
-                return
-            await self._retire(key, entry)
+        await self._partition().expire(key)
 
     async def expire_all(self) -> None:
-        """Treat every cached key as TTL-expired now.
+        """Treat every key the calling loop cached as TTL-expired now.
 
-        `expire` applied to every cached key at once (see `expire` for
-        the per-key drain-first and resurrection semantics): the
-        retirement primitive for a pool whose loop stays running. Unlike
-        `clear`, it does not wait for the finalizers of referenced
-        entries; each runs in the release that drops the entry's last
-        reference (see `release`).
+        `expire` applied to every key in the calling loop's partition at
+        once (see `expire` for the per-key drain-first and resurrection
+        semantics): the retirement primitive for a loop that stays
+        running. Unlike `clear`, it does not wait for the finalizers of
+        referenced entries; each runs in the release that drops the
+        entry's last reference (see `release`).
 
         Retirement is all-or-nothing in reach, not in outcome: every
         cached key is retired even if finalizing one of them fails. An
@@ -442,6 +345,150 @@ class ResourcePool(Generic[T]):
         every key it had not reached yet, i.e., the leak the primitive
         exists to close, reappearing under cancellation.
         """
+        await self._partition().expire_all()
+
+    async def clear(self) -> None:
+        """Finalize every entry the calling loop cached and cancel its cleanups.
+
+        The teardown primitive: it force-finalizes regardless of reference
+        count, which is correct when the loop's use of the pool is over
+        and there is nothing left to drain for. It is loop-scoped: another
+        loop's partition is untouched and must be cleared from that loop,
+        the only place its finalizers can run. To retire keys while the
+        loop stays in use, use `expire` or `expire_all`, which drain
+        first: clearing with references outstanding lets a later release
+        land on whatever entry has since been rebuilt under the same key.
+        """
+        await self._partition().clear()
+
+    def _partition(self) -> _Partition[T]:
+        """Return the running loop's partition, creating it on first use.
+
+        Creating a partition also sweeps every partition whose loop is no
+        longer running — see the class docstring for what a sweep drops
+        and how it is reported.
+
+        .. rubric:: Implementation notes
+
+        The registry is the only state shared across loops, so its lookup
+        is the only cross-thread critical section: synchronous, O(1) on a
+        hit, and never held across an ``await``. It takes an explicit
+        `threading.Lock` rather than relying on dict atomicity under the
+        GIL, which free-threaded Python does not preserve. Sweeping on the
+        miss path keeps the hit path constant-time and matches when a
+        stale partition first becomes observable: a loop that stopped
+        without clearing leaves nothing to react to until another loop
+        arrives. Liveness is `is_running`, not `is_closed`: a partition
+        holds an `asyncio.Lock` and timers that only a running loop can
+        drive, and `is_running` reads one attribute, so it is safe to
+        call from another thread.
+        """
+        loop = asyncio.get_running_loop()
+        with self._registry_lock:
+            partition = self._partitions.get(loop)
+            if partition is None:
+                stale = [owner for owner in self._partitions if not owner.is_running()]
+                for owner in stale:
+                    self._partitions.pop(owner).discard(self._name)
+                partition = _Partition(self._factory, self._finalizer, self._ttl)
+                self._partitions[loop] = partition
+        return partition
+
+    @property
+    def _name(self) -> str:
+        """Identify this pool in log records by its factory."""
+        return getattr(self._factory, "__qualname__", None) or repr(self._factory)
+
+
+class _Partition(Generic[T]):
+    """One event loop's share of a `ResourcePool`.
+
+    Holds the cache, the `asyncio.Lock` serializing it, and the TTL
+    timers for a single loop; the owning pool routes every operation
+    here from that loop alone. The caching semantics implemented here
+    are documented on `ResourcePool`, which owns the contract.
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[Any], T | Awaitable[T]],
+        finalizer: Callable[[T], None | Awaitable[None]] | None,
+        ttl: float,
+    ):
+        self._factory = factory
+        self._finalizer = finalizer
+        self._ttl = ttl
+        self._cache: dict[Any, ResourcePool.CacheEntry] = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def stats(self) -> ResourcePool.Stats:
+        return ResourcePool.Stats(
+            total_entries=len(self._cache),
+            referenced_entries=sum(
+                1 for e in self._cache.values() if e.reference_count > 0
+            ),
+            pending_cleanup=len(self.pending_cleanup),
+        )
+
+    @property
+    def pending_cleanup(self):
+        return {
+            k: v.timer if v.timer is not None else v.cleanup
+            for k, v in self._cache.items()
+            if v.timer is not None or (v.cleanup is not None and not v.cleanup.done())
+        }
+
+    async def acquire(self, key: Any) -> T:
+        async with self._lock:
+            if key in self._cache:
+                entry = self._cache[key]
+                entry.reference_count += 1
+                entry.doomed = False
+                self._cancel_timer(entry)
+                await self._cancel_cleanup(entry)
+                return entry.obj
+            else:
+                # Cache miss - create new object
+                obj = await _call(self._factory, key)
+                self._cache[key] = ResourcePool.CacheEntry(obj=obj, reference_count=1)
+                return obj
+
+    async def release(self, key: Any) -> None:
+        async with self._lock:
+            if key not in self._cache:
+                return
+            entry = self._cache[key]
+
+            if entry.reference_count <= 0:
+                raise ValueError(f"Reference count for key '{key}' is already 0")
+
+            entry.reference_count -= 1
+
+            if entry.reference_count <= 0:
+                if entry.doomed or self._ttl <= 0:
+                    # Inline rather than a spawned task: with nothing to
+                    # defer to, a task spawned here may never be run —
+                    # see `ResourcePool.release`.
+                    await self._cleanup(key)
+                else:
+                    # Defer cleanup with a plain timer rather than a
+                    # task parked on a TTL sleep: an unfired
+                    # TimerHandle is discarded silently at loop close,
+                    # whereas a parked task is destroyed pending —
+                    # and, if never started, its coroutine emits a
+                    # "never awaited" RuntimeWarning.
+                    loop = asyncio.get_running_loop()
+                    entry.timer = loop.call_later(self._ttl, self._expire, key)
+
+    async def expire(self, key: Any) -> None:
+        async with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return
+            await self._retire(key, entry)
+
+    async def expire_all(self) -> None:
         async with self._lock:
             failure: BaseException | None = None
             for key, entry in list(self._cache.items()):
@@ -453,23 +500,41 @@ class ResourcePool(Generic[T]):
                 raise failure
 
     async def clear(self) -> None:
-        """Finalize every cached entry and cancel pending cleanups.
-
-        The teardown primitive: it force-finalizes regardless of reference
-        count, which is correct when the pool itself is going away and
-        there is nothing left to drain for. To retire keys while the pool
-        stays in use, use `expire` or `expire_all`, which drain first.
-        """
         async with self._lock:
             for key in list(self._cache.keys()):
                 await self._cleanup(key)
+
+    def discard(self, name: str) -> None:
+        """Drop every entry without finalizing it, reporting what was lost.
+
+        The path a partition takes when its loop is found to have
+        stopped: the finalizers cannot run without that loop, so the
+        entries are abandoned and the drop is logged at warning level
+        with the referenced and idle counts. Timers are left to be
+        discarded with their loop.
+
+        :param name:
+            How the owning pool identifies itself in the log record.
+        """
+        if not self._cache:
+            return
+        referenced = sum(1 for e in self._cache.values() if e.reference_count > 0)
+        _log.warning(
+            "ResourcePool(%s): dropping %d referenced and %d idle entries "
+            "stranded by an event loop that stopped without clearing its "
+            "partition (finalizers not run)",
+            name,
+            referenced,
+            len(self._cache) - referenced,
+        )
+        self._cache.clear()
 
     def _cancel_timer(self, entry: ResourcePool.CacheEntry) -> None:
         """
         Cancel an entry's pending TTL timer, if any.
 
-        The timer always belongs to the bound loop, so a plain cancel
-        suffices.
+        The timer always belongs to this partition's loop, so a plain
+        cancel suffices.
 
         :param entry:
             The cache entry whose timer to cancel.
@@ -504,21 +569,38 @@ class ResourcePool(Generic[T]):
         """
         Spawn the cleanup task for an expired entry.
 
-        Runs synchronously, as a timer callback, on the bound loop; see
-        `_finalize` for how the spawned task tolerates a concurrent
-        re-acquire. A timer that fires on a loop this pool has since
-        left is ignored — its entry was dropped at the rebind.
+        Runs synchronously, as a timer callback, on this partition's
+        loop; see `_finalize` for how the spawned task tolerates a
+        concurrent re-acquire. A timer that outlived its partition —
+        one swept while its loop was stopped, then resumed — finds
+        nothing cached and is ignored.
 
         :param key:
             The cache key whose TTL elapsed.
         """
-        if asyncio.get_running_loop() is not self._loop:
-            return
         entry = self._cache.get(key)
         if entry is None:
             return
         entry.timer = None
         entry.cleanup = asyncio.get_running_loop().create_task(self._finalize(key))
+
+    async def _retire(self, key: Any, entry: ResourcePool.CacheEntry) -> None:
+        """
+        Retire one entry: finalize it now if unreferenced, else mark it.
+
+        .. warning::
+            Must be called while holding the lock.
+
+        :param key:
+            The cache key to retire.
+        :param entry:
+            The entry cached under ``key``.
+        """
+        if entry.reference_count <= 0:
+            # Also cancels any pending TTL timer or cleanup task.
+            await self._cleanup(key)
+        else:
+            entry.doomed = True
 
     async def _finalize(self, key: Any) -> None:
         """
@@ -541,24 +623,6 @@ class ResourcePool(Generic[T]):
 
         except asyncio.CancelledError:
             pass
-
-    async def _retire(self, key: Any, entry: ResourcePool.CacheEntry) -> None:
-        """
-        Retire one entry: finalize it now if unreferenced, else mark it.
-
-        .. warning::
-            Must be called while holding the lock.
-
-        :param key:
-            The cache key to retire.
-        :param entry:
-            The entry cached under ``key``.
-        """
-        if entry.reference_count <= 0:
-            # Also cancels any pending TTL timer or cleanup task.
-            await self._cleanup(key)
-        else:
-            entry.doomed = True
 
     async def _cleanup(self, key: Any) -> None:
         """
@@ -589,31 +653,32 @@ class ResourcePool(Generic[T]):
             try:
                 if self._finalizer:
                     try:
-                        await self._await(self._finalizer, entry.obj)
+                        await _call(self._finalizer, entry.obj)
                     except Exception:
                         pass
             finally:
                 del self._cache[key]
 
-    async def _await(self, func: Callable, *args) -> Any:
-        """
-        Call a function that might be sync or async.
 
-        If the function is a coroutine function, await it. Otherwise, call it
-        synchronously. If the result is a coroutine, await that as well.
+async def _call(func: Callable, *args) -> Any:
+    """
+    Call a function that might be sync or async.
 
-        :param func:
-            The function to call.
-        :param args:
-            Arguments to pass to the function.
-        :returns:
-            The result of the function call.
-        """
-        if asyncio.iscoroutinefunction(func):
-            return await func(*args)
-        else:
-            result = func(*args)
-            # Check if the result is a coroutine and await it if so
-            if asyncio.iscoroutine(result):
-                return await result
-            return result
+    If the function is a coroutine function, await it. Otherwise, call it
+    synchronously. If the result is a coroutine, await that as well.
+
+    :param func:
+        The function to call.
+    :param args:
+        Arguments to pass to the function.
+    :returns:
+        The result of the function call.
+    """
+    if asyncio.iscoroutinefunction(func):
+        return await func(*args)
+    else:
+        result = func(*args)
+        # Check if the result is a coroutine and await it if so
+        if asyncio.iscoroutine(result):
+            return await result
+        return result

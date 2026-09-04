@@ -6,10 +6,9 @@ import time
 import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from unittest.mock import Mock
 
 import pytest
+from hypothesis import HealthCheck
 from hypothesis import given
 from hypothesis import settings
 from hypothesis import strategies
@@ -37,20 +36,14 @@ def factory_functions(draw):
     if factory_type == "sync_simple":
 
         def sync_factory(key):
-            obj = Mock()
-            obj.name = f"sync-{key}"
-            obj.created_by = "sync_simple"
-            return obj
+            return SimpleNamespace(name=f"sync-{key}", created_by="sync_simple")
 
         return sync_factory
 
     elif factory_type == "async_simple":
 
         async def async_factory(key):
-            obj = Mock()
-            obj.name = f"async-{key}"
-            obj.created_by = "async_simple"
-            return obj
+            return SimpleNamespace(name=f"async-{key}", created_by="async_simple")
 
         return async_factory
 
@@ -75,10 +68,7 @@ def factory_functions(draw):
                 return self.sync_factory(key)
 
             def sync_factory(self, key):
-                obj = Mock()
-                obj.name = f"callable-{key}"
-                obj.created_by = "callable"
-                return obj
+                return SimpleNamespace(name=f"callable-{key}", created_by="callable")
 
         return CallableLike()
 
@@ -92,10 +82,9 @@ def factory_functions(draw):
                 return self.async_factory().__await__()
 
             async def async_factory(self):
-                obj = Mock()
-                obj.name = f"awaitable-{self.key}"
-                obj.created_by = "awaitable"
-                return obj
+                return SimpleNamespace(
+                    name=f"awaitable-{self.key}", created_by="awaitable"
+                )
 
         return AwaitableLike
 
@@ -148,23 +137,37 @@ def finalizer_functions(draw):
 
 
 @pytest.fixture
-def mock_resource_factory():
+def mock_resource_factory(mocker):
     """Create a mock factory with consistent behavior."""
-    factory = Mock()
-    factory.return_value = Mock(name="test-resource")
+    factory = mocker.Mock()
+    factory.return_value = mocker.Mock(name="test-resource")
     return factory
 
 
 @pytest.fixture
-def mock_finalizer():
-    """Create a mock finalizer that tracks calls."""
-    return AsyncMock()
+def resource_pool_immediate_cleanup(mocker, mock_resource_factory):
+    """Build a ``ttl=0`` pool that finalizes on the last release.
+
+    Returns the pool, its factory mock, and its awaitable finalizer
+    mock.
+    """
+    finalizer = mocker.AsyncMock()
+    pool = ResourcePool(factory=mock_resource_factory, finalizer=finalizer, ttl=0)
+    yield pool, mock_resource_factory, finalizer
 
 
 @pytest.fixture
-def resource_pool_immediate_cleanup(mock_resource_factory, mock_finalizer):
-    """Create a resource pool with TTL=0 for immediate cleanup testing."""
-    return ResourcePool(factory=mock_resource_factory, finalizer=mock_finalizer, ttl=0)
+def ttl_pool(mocker):
+    """Build a long-TTL pool whose factory and finalizer are mocks.
+
+    Returns the pool, its factory mock (which yields the string
+    ``"resource"``), and its awaitable finalizer mock. The 60 second TTL
+    keeps a released entry cached for the whole of a test, so nothing
+    expires underneath an assertion.
+    """
+    factory = mocker.Mock(return_value="resource")
+    finalizer = mocker.AsyncMock()
+    yield ResourcePool(factory=factory, finalizer=finalizer, ttl=60), factory, finalizer
 
 
 @pytest.fixture
@@ -179,6 +182,79 @@ def retired_entry_pool(mocker):
     finalizer = mocker.AsyncMock()
     pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=60)
     return pool, finalizer, factory
+
+
+@pytest.fixture
+def background_loops():
+    """Run event loops on daemon threads for cross-loop tests.
+
+    Yields a ``spawn()`` returning a handle onto a freshly started
+    loop: ``handle.loop`` is the loop itself, ``handle.submit(coro)``
+    schedules a coroutine on it and returns the concurrent future,
+    ``handle.run(coro)`` submits and waits for the result, and
+    ``handle.close()`` stops, joins, and closes it. Every spawned loop
+    is closed at teardown, so a test only calls ``close`` when it needs
+    the loop to stop mid-test.
+    """
+
+    class BackgroundLoop:
+        def __init__(self):
+            self.loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+            self._thread.start()
+
+        def submit(self, coro):
+            return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+        def run(self, coro, timeout=5):
+            return self.submit(coro).result(timeout=timeout)
+
+        def close(self, timeout=5):
+            if self.loop.is_closed():
+                return
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self._thread.join(timeout=timeout)
+            self.loop.close()
+
+    handles = []
+
+    def spawn():
+        handle = BackgroundLoop()
+        handles.append(handle)
+        return handle
+
+    yield spawn
+
+    for handle in handles:
+        handle.close()
+
+
+@pytest.fixture
+def stranded_loop():
+    """Leave pool entries behind on a loop that has stopped running.
+
+    Yields a ``strand(coro, *, close=True)`` that drives the coroutine
+    to completion on a fresh event loop and returns
+    ``(loop, result)``. The loop is closed on the way out by default,
+    or merely stopped when ``close=False``, so a test can distinguish
+    a closed loop from one that stopped without closing, or resume it
+    to let a stale timer fire. Every loop is closed at teardown.
+    """
+    loops = []
+
+    def strand(coro, *, close=True):
+        loop = asyncio.new_event_loop()
+        loops.append(loop)
+        try:
+            return loop, loop.run_until_complete(coro)
+        finally:
+            if close:
+                loop.close()
+
+    yield strand
+
+    for loop in loops:
+        loop.close()
 
 
 @pytest.fixture
@@ -251,48 +327,6 @@ def counting_factory():
 
 
 class TestResourcePool:
-    def test_acquire_should_serialize_when_contended_on_a_later_loop(self):
-        """Test a pool outliving one loop still serializes on the next.
-
-        Given:
-            A pool bound to one event loop by a contended acquire there,
-            and that loop has since closed.
-        When:
-            Two callers contend the same pool on a fresh loop.
-        Then:
-            The pool should rebind, so the second caller waits for the
-            first rather than raising and a process-global pool -- the
-            module-level channel pool being one -- keeps working past the
-            loop that first bound it.
-        """
-        # Arrange
-        pool = ResourcePool(lambda key: object())
-
-        async def contend():
-            held = asyncio.Event()
-            waited = False
-
-            async def second():
-                nonlocal waited
-                await held.wait()
-                async with pool._lock:
-                    waited = True
-
-            async with pool._lock:
-                task = asyncio.ensure_future(second())
-                held.set()
-                await asyncio.sleep(0)
-            await task
-            return waited
-
-        # Act
-        first_loop = asyncio.run(contend())
-        second_loop = asyncio.run(contend())
-
-        # Assert
-        assert first_loop is True
-        assert second_loop is True
-
     @staticmethod
     @strategies.composite
     def setup(draw, *, max_key_count=5):
@@ -332,7 +366,6 @@ class TestResourcePool:
         return setup
 
     @pytest.mark.asyncio
-    @settings(max_examples=50, deadline=None)
     @given(setup=setup())
     async def test_get_should_return_resource_instance(self, setup):
         """Test that get returns a Resource instance.
@@ -354,7 +387,147 @@ class TestResourcePool:
         assert isinstance(resource_acquisition, Resource)
 
     @pytest.mark.asyncio
-    async def test_release_should_decrement_reference_counts(self):
+    async def test_get_should_handle_none_key(self, mocker):
+        """Test resource pool handles None key appropriately.
+
+        Given:
+            A resource pool
+        When:
+            get() is called with None key
+        Then:
+            Should handle None key as a valid cache key
+        """
+        # Arrange
+        mock_resource = mocker.Mock()
+        mock_factory = mocker.Mock(return_value=mock_resource)
+        pool = ResourcePool(factory=mock_factory, ttl=0)
+
+        # Act & assert
+        # None should be treated as a valid key
+        async with pool.get(None) as resource:
+            assert resource is mock_resource
+
+        # Resource should be cleaned up after use
+        assert pool.stats.total_entries == 0
+
+    @pytest.mark.asyncio
+    async def test_acquire_should_share_one_resource_when_contended_on_same_key(
+        self, counting_factory
+    ):
+        """Test concurrent operations on same key maintain consistency.
+
+        Given:
+            A resource pool with TTL
+        When:
+            Multiple coroutines acquire and release the same key concurrently
+        Then:
+            Resource pool should maintain consistency and not leak resources
+        """
+        # Arrange
+        pool = ResourcePool(factory=counting_factory, ttl=0.1)
+
+        # Act
+        async def acquire_release_worker():
+            async with pool.get("shared-key") as resource:
+                await asyncio.sleep(0.01)  # Small delay to increase contention
+                return resource
+
+        # Run multiple concurrent workers
+        tasks = [acquire_release_worker() for _ in range(10)]
+        results = await asyncio.gather(*tasks)
+
+        # Assert
+        # All workers should get the same resource instance (cached)
+        assert len(set(results)) == 1  # All got the same resource
+        # Factory should only be called once despite concurrent access
+        assert counting_factory.call_count == 1
+        # Pool should be consistent after all operations
+        assert pool.stats.total_entries <= 1  # 0 or 1 depending on TTL timing
+
+    @pytest.mark.asyncio
+    async def test_acquire_should_cancel_pending_cleanup_when_reacquired_within_ttl(
+        self, mocker
+    ):
+        """Test TTL cleanup is cancelled when resource is reacquired.
+
+        Given:
+            A pool with TTL > 0 and a scheduled cleanup
+        When:
+            The resource is reacquired before TTL expires
+        Then:
+            Cleanup should be cancelled and resource kept
+        """
+        # Arrange
+        mock_resource = mocker.Mock()
+        mock_factory = mocker.Mock(return_value=mock_resource)
+        mock_finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=0.1)
+
+        key = "ttl-cancel-test"
+
+        # Act
+        # Acquire and release to schedule cleanup
+        async with pool.get(key):
+            pass
+
+        # Should be scheduled for cleanup
+        assert pool.stats.total_entries == 1
+        assert pool.stats.referenced_entries == 0
+        assert pool.stats.pending_cleanup == 1
+
+        # Reacquire the resource while cleanup is still waiting
+        async with pool.get(key) as resource:
+            # Assert - cleanup should be cancelled and resource reused
+            assert resource is mock_resource
+            assert pool.stats.referenced_entries == 1
+
+        # After reacquisition and release, verify finalizer wasn't called
+        # (which would indicate the original resource was preserved)
+        mock_finalizer.assert_not_called()
+
+        # Resource should still exist due to TTL
+        assert pool.stats.total_entries == 1
+        assert pool.stats.referenced_entries == 0
+
+    @pytest.mark.asyncio
+    async def test_acquire_should_cancel_in_flight_cleanup_when_reacquired_after_expiry(
+        self, expiry_race_pool
+    ):
+        """Test acquire cancels a fired cleanup racing on the pool lock.
+
+        Given:
+            A pool whose expired key's TTL timer has fired while the
+            pool lock is held by another key's acquire, so the
+            spawned cleanup task and a queued re-acquire of the
+            expired key both wait on the lock with the re-acquire
+            first
+        When:
+            The lock holder completes and the queued re-acquire runs
+        Then:
+            It should cancel the in-flight cleanup, return the cached
+            object without re-invoking the factory or finalizer, and
+            leave the key without pending cleanup
+        """
+        # Arrange
+        pool, finalizer, factory_calls, release_blocker = expiry_race_pool
+        blocker_task, reacquire_task = await _queue_behind_fired_cleanup(
+            pool, factory_calls, pool.acquire("expired")
+        )
+
+        # Act
+        release_blocker.set()
+        acquired = await reacquire_task
+        await blocker_task
+
+        # Assert
+        assert acquired == "obj-expired"
+        assert factory_calls.count("expired") == 1
+        finalizer.assert_not_awaited()
+        assert "expired" not in pool.pending_cleanup
+        assert pool.stats.total_entries == 2
+
+    @pytest.mark.asyncio
+    async def test_release_should_decrement_reference_counts(self, mocker):
         """Test releasing resources decrements reference counts properly.
 
         Given:
@@ -365,7 +538,7 @@ class TestResourcePool:
             Should properly decrement ref counts or cleanup and remove resources
         """
         # Arrange - Create pool with TTL to keep resources after context exit
-        mock_factory = Mock()
+        mock_factory = mocker.Mock()
         pool = ResourcePool(factory=mock_factory, ttl=60)
 
         # Create some test resources
@@ -426,7 +599,9 @@ class TestResourcePool:
         assert pool.stats.referenced_entries == 0
 
     @pytest.mark.asyncio
-    async def test_release_should_raise_value_error_when_zero_reference_count(self):
+    async def test_release_should_raise_value_error_when_zero_reference_count(
+        self, ttl_pool
+    ):
         """Test releasing key with zero ref count raises ValueError.
 
         Given:
@@ -438,48 +613,168 @@ class TestResourcePool:
             zero
         """
         # Arrange
-        # Create a new resource with unique key using a pool with TTL > 0
-        # so the resource stays in cache after release
-        mock_factory = Mock()
-        mock_finalizer = AsyncMock()
-        ttl_pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
-
+        # Acquire and release once to get the reference count to 0; the
+        # long TTL keeps the entry cached afterwards.
+        pool, _, _ = ttl_pool
         unique_key = "test-zero-ref-count"
-        mock_resource = Mock()
-        mock_resource.name = unique_key
-        mock_factory.return_value = mock_resource
-
-        # Act & assert
-        # Acquire and release once to get ref count to 0 (but stays in cache due to TTL)
-        async with ttl_pool.get(unique_key):
+        async with pool.get(unique_key):
             pass
 
-        # Now try to release again - should raise ValueError
+        # Act & assert
         with pytest.raises(
             ValueError,
             match=f"Reference count for key '{unique_key}' is already 0",
         ):
-            await ttl_pool.release(unique_key)
+            await pool.release(unique_key)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "ttl, retire_first",
-        [(0, False), (60, True)],
-        ids=["zero-ttl", "retired-while-referenced"],
-    )
-    async def test_finalizer_should_still_evict_entry_when_raising_base_exception(
-        self, ttl, retire_first
+    async def test_release_should_finalize_immediately_when_ttl_zero(
+        self, resource_pool_immediate_cleanup
+    ):
+        """Test TTL=0 performs immediate cleanup as expected.
+
+        Given:
+            A resource pool with TTL=0
+        When:
+            A resource is acquired and released
+        Then:
+            Should perform immediate cleanup without scheduling
+        """
+        # Arrange
+        pool, factory, finalizer = resource_pool_immediate_cleanup
+        mock_resource = factory.return_value
+
+        # Act
+        async with pool.get("test-key") as resource:
+            # While in context, resource should exist
+            assert resource is mock_resource
+            assert pool.stats.total_entries == 1
+            assert pool.stats.referenced_entries == 1
+
+        # Assert
+        # After context exit with TTL=0, should be immediately cleaned up
+        assert pool.stats.total_entries == 0
+        assert pool.stats.referenced_entries == 0
+        assert pool.stats.pending_cleanup == 0  # No pending cleanup tasks
+        finalizer.assert_awaited_once_with(mock_resource)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ttl", [0, 0.1, 1, 1.1, 10, 10.1])
+    async def test_release_should_schedule_cleanup_according_to_ttl(self, mocker, ttl):
+        """Test specific TTL values defer or run cleanup accordingly.
+
+        Given:
+            A pool with specific TTL value
+        When:
+            A resource is acquired and released
+        Then:
+            It should finalize immediately for TTL 0 and defer
+            cleanup for positive TTLs
+        """
+        # Arrange
+        mock_factory = mocker.Mock(return_value=mocker.Mock(name="test-obj"))
+        mock_finalizer = mocker.Mock()
+        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=ttl)
+
+        # Act
+        async with pool.get("test-key"):
+            pass
+
+        # Assert
+        if ttl == 0:
+            mock_finalizer.assert_called_once()
+            assert pool.stats.total_entries == 0
+            assert pool.stats.pending_cleanup == 0
+        else:
+            mock_finalizer.assert_not_called()
+            assert pool.stats.total_entries == 1
+            assert pool.stats.pending_cleanup == 1
+
+    @pytest.mark.asyncio
+    async def test_release_should_finalize_after_ttl_elapses(self, mocker):
+        """Test TTL-based cleanup schedules and executes properly.
+
+        Given:
+            A pool with TTL > 0
+        When:
+            A resource reference count reaches 0
+        Then:
+            Should schedule cleanup after TTL expires
+        """
+        # Arrange
+        mock_resource = mocker.Mock()
+        mock_factory = mocker.Mock(return_value=mock_resource)
+        mock_finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=0.1)
+
+        key = "ttl-test"
+
+        # Act
+        # Acquire and immediately release
+        async with pool.get(key) as resource:
+            assert resource is mock_resource
+            assert pool.stats.total_entries == 1
+            assert pool.stats.referenced_entries == 1
+
+        # Resource should still be in cache with cleanup deferred
+        assert pool.stats.total_entries == 1
+        assert pool.stats.referenced_entries == 0
+        assert pool.stats.pending_cleanup == 1
+        mock_finalizer.assert_not_called()
+
+        # Assert
+        # Wait for cleanup to complete using polling with timeout
+        start_time = time.time()
+        while (key in pool.pending_cleanup) and (time.time() - start_time < 2.0):
+            await asyncio.sleep(0.01)
+
+        # Resource should now be cleaned up
+        assert pool.stats.total_entries == 0
+        mock_finalizer.assert_called_once_with(mock_resource)
+
+    @pytest.mark.asyncio
+    async def test_release_should_evict_entry_when_finalizer_raises(self, mocker):
+        """Test finalizer exceptions are caught and logged.
+
+        Given:
+            A finalizer that raises an exception
+        When:
+            Resource cleanup occurs
+        Then:
+            Exception should be caught and resource still removed
+        """
+        # Arrange
+        mock_resource = mocker.Mock()
+        mock_factory = mocker.Mock(return_value=mock_resource)
+
+        async def failing_finalizer(_):
+            raise ValueError("Finalizer failed")
+
+        pool = ResourcePool(factory=mock_factory, finalizer=failing_finalizer)
+
+        key = "test"
+
+        # Act & assert
+        # This should not raise despite finalizer failing
+        async with pool.get(key):
+            pass
+
+        # Resource should still be cleaned up
+        assert pool.stats.total_entries == 0
+
+    @pytest.mark.asyncio
+    async def test_release_should_evict_entry_when_finalizer_raises_base_exception(
+        self, mocker
     ):
         """Test a cancelled finalizer still evicts the cache entry.
 
         Given:
-            A pool that finalizes inline — either because it has no TTL
-            or because the entry was retired by ``expire`` while still
-            referenced — whose finalizer raises ``CancelledError`` — a
-            ``BaseException``, not an ``Exception`` — on its first call,
-            modelling cleanup that runs under a cancelled teardown
+            A ``ttl=0`` pool whose finalizer raises
+            ``CancelledError`` — a ``BaseException``, not an
+            ``Exception`` — on its first call, modelling cleanup that
+            runs under a cancelled teardown
         When:
-            A resource is acquired and released, driving the inline
+            A resource is acquired and released, driving immediate
             cleanup whose finalizer raises
         Then:
             The ``CancelledError`` propagates, but the torn-down entry
@@ -497,21 +792,20 @@ class TestResourcePool:
                 # First cleanup runs under cancellation.
                 raise asyncio.CancelledError()
 
-        factory = Mock(
+        factory = mocker.Mock(
             side_effect=[
                 SimpleNamespace(name="first"),
                 SimpleNamespace(name="second"),
             ]
         )
-        pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=ttl)
+        pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=0)
 
         # Act
-        # Acquire then release: rc -> 0 drives inline cleanup, whose
+        # Acquire then release: rc -> 0 drives immediate cleanup, whose
         # finalizer raises CancelledError out of the release.
         with pytest.raises(asyncio.CancelledError):
             async with pool.get("key"):
-                if retire_first:
-                    await pool.expire("key")
+                pass
 
         # Assert
         # The finalized resource must not survive in the cache.
@@ -522,638 +816,73 @@ class TestResourcePool:
             assert resource.name == "second"
         assert factory.call_count == 2
 
-    def test_acquire_should_rebuild_resource_when_bound_loop_closed(self, mocker):
-        """Test acquire rebuilds a resource whose loop has closed.
+    @pytest.mark.asyncio
+    async def test_release_should_finalize_before_returning_when_entry_retired(
+        self, ttl_pool
+    ):
+        """Test the release of a retired entry finalizes it inline.
 
         Given:
-            A pool whose cached entry, released with a pending TTL timer,
-            belongs to an event loop that has since closed.
+            A long-TTL pool holding a referenced entry that expire_all
+            has retired.
         When:
-            The same key is acquired from a fresh event loop.
+            The last reference is released.
         Then:
-            It should rebind to the fresh loop, drop the orphaned entry
-            without running the finalizer, invoke the factory again, and
-            leave no pending cleanup.
+            It should have awaited the finalizer and emptied the
+            partition by the time release returns, spawning no task to
+            do it later — a task would be orphaned by a loop that stops
+            straight after the release.
         """
         # Arrange
-        factory = mocker.Mock(return_value="obj")
-        finalizer = mocker.AsyncMock()
-        pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=60)
-        closed_loop = asyncio.new_event_loop()
-
-        async def acquire_and_release():
-            async with pool.get("key"):
-                pass
-
-        closed_loop.run_until_complete(acquire_and_release())
-        closed_loop.close()
+        pool, _, finalizer = ttl_pool
+        await pool.acquire("key")
+        await pool.expire_all()
+        tasks_before = asyncio.all_tasks()
 
         # Act
-        acquired = asyncio.run(pool.acquire("key"))
+        await pool.release("key")
 
         # Assert
-        assert acquired == "obj"
-        assert factory.call_count == 2
-        finalizer.assert_not_awaited()
-        assert pool.pending_cleanup == {}
-        assert pool.stats.total_entries == 1
-
-    def test_clear_should_skip_orphans_when_bound_loop_closed(self, mocker):
-        """Test clear drops, without finalizing, what another loop left.
-
-        Given:
-            A pool whose cached entry belongs to an event loop that has
-            since closed.
-        When:
-            The pool is cleared from a fresh event loop.
-        Then:
-            It should drop the orphaned entry without running its
-            finalizer -- the resource cannot be closed from another loop
-            -- and finish with an empty cache and no pending cleanup.
-        """
-        # Arrange
-        finalizer = mocker.AsyncMock()
-        pool = ResourcePool(
-            factory=mocker.Mock(return_value="obj"), finalizer=finalizer, ttl=60
-        )
-        closed_loop = asyncio.new_event_loop()
-
-        async def acquire_and_release():
-            async with pool.get("key"):
-                pass
-
-        closed_loop.run_until_complete(acquire_and_release())
-        closed_loop.close()
-
-        # Act
-        asyncio.run(pool.clear())
-
-        # Assert
-        finalizer.assert_not_awaited()
+        finalizer.assert_awaited_once_with("resource")
         assert pool.stats.total_entries == 0
-        assert pool.pending_cleanup == {}
+        assert not pool.pending_cleanup
+        assert asyncio.all_tasks() == tasks_before
 
-    def test_acquire_should_raise_when_bound_to_another_running_loop(self, mocker):
-        """Test a pool refuses a second loop while its own is running.
-
-        Given:
-            A pool bound to an event loop that is still running on
-            another thread.
-        When:
-            The pool is used from a second event loop.
-        Then:
-            It should raise RuntimeError naming the other running loop
-            rather than rebinding, so one pool never serves two live
-            loops.
-        """
-        # Arrange
-        pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
-        live_loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=live_loop.run_forever, daemon=True)
-        thread.start()
-        try:
-            asyncio.run_coroutine_threadsafe(pool.acquire("key"), live_loop).result(
-                timeout=5
-            )
-
-            # Act & assert
-            with pytest.raises(RuntimeError, match="another running event loop"):
-                asyncio.run(pool.acquire("other"))
-        finally:
-            live_loop.call_soon_threadsafe(live_loop.stop)
-            thread.join(timeout=5)
-            live_loop.close()
-
-    def test_acquire_should_rebind_when_bound_loop_closed(self, mocker):
-        """Test a fresh loop starts from an empty cache.
-
-        Given:
-            A pool that cached and released an entry on an event loop
-            that has since closed, leaving that entry's TTL timer behind.
-        When:
-            A different key is acquired from a fresh event loop.
-        Then:
-            It should hold only the new entry: the old one and its timer
-            are gone, and its finalizer never ran.
-        """
-        # Arrange
-        finalizer = mocker.AsyncMock()
-        pool = ResourcePool(
-            factory=mocker.Mock(return_value="obj"), finalizer=finalizer, ttl=60
-        )
-        closed_loop = asyncio.new_event_loop()
-
-        async def acquire_and_release():
-            async with pool.get("key"):
-                pass
-
-        closed_loop.run_until_complete(acquire_and_release())
-        assert "key" in pool.pending_cleanup
-        closed_loop.close()
-
-        # Act
-        asyncio.run(pool.acquire("other"))
-
-        # Assert
-        assert pool.stats.total_entries == 1
-        assert pool.pending_cleanup == {}
-        finalizer.assert_not_awaited()
-
-    def test_acquire_should_warn_when_dropping_referenced_orphan(self, mocker, caplog):
-        """Test a still-referenced orphan is reported as a leak.
-
-        Given:
-            A pool whose bound loop closed while an entry was still
-            referenced.
-        When:
-            The pool is used from a fresh event loop.
-        Then:
-            It should log one WARNING from wool.runtime.resourcepool
-            reporting the referenced entry it dropped without finalizing.
-        """
-        # Arrange
-        pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
-        closed_loop = asyncio.new_event_loop()
-        closed_loop.run_until_complete(pool.acquire("key"))
-        closed_loop.close()
-
-        # Act
-        with caplog.at_level(logging.WARNING, logger="wool.runtime.resourcepool"):
-            asyncio.run(pool.acquire("other"))
-
-        # Assert
-        records = [r for r in caplog.records if r.name == "wool.runtime.resourcepool"]
-        assert len(records) == 1
-        assert records[0].levelno == logging.WARNING
-        assert "1 referenced" in records[0].getMessage()
-
-    def test_acquire_should_warn_when_dropping_idle_orphan(self, mocker, caplog):
-        """Test an idle orphan is reported as a leak too.
-
-        Given:
-            A pool whose bound loop closed with only idle entries cached
-            (released, awaiting their TTL).
-        When:
-            The pool is used from a fresh event loop.
-        Then:
-            It should log one WARNING from wool.runtime.resourcepool
-            reporting the idle entry it dropped without finalizing,
-            since a drop abandons the resource where the TTL it was
-            waiting on would have closed it.
-        """
-        # Arrange
-        pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
-        closed_loop = asyncio.new_event_loop()
-
-        async def acquire_and_release():
-            async with pool.get("key"):
-                pass
-
-        closed_loop.run_until_complete(acquire_and_release())
-        closed_loop.close()
-
-        # Act
-        with caplog.at_level(logging.WARNING, logger="wool.runtime.resourcepool"):
-            asyncio.run(pool.acquire("other"))
-
-        # Assert
-        records = [r for r in caplog.records if r.name == "wool.runtime.resourcepool"]
-        assert len(records) == 1
-        assert records[0].levelno == logging.WARNING
-        assert "1 idle" in records[0].getMessage()
-
-    def test_acquire_should_rebind_when_bound_loop_stopped_but_not_closed(self, mocker):
-        """Test liveness is whether the bound loop runs, not whether it closed.
-
-        Given:
-            A pool bound to an event loop that has stopped running but
-            has not been closed.
-        When:
-            The pool is used from a second event loop.
-        Then:
-            It should rebind rather than raise -- a loop that is not
-            running cannot be contending the mutex -- and rebuild the
-            resource on the new loop.
-        """
-        # Arrange
-        factory = mocker.Mock(return_value="obj")
-        pool = ResourcePool(factory=factory, ttl=60)
-        stopped_loop = asyncio.new_event_loop()
-        stopped_loop.run_until_complete(pool.acquire("key"))
-        try:
-            # Act
-            acquired = asyncio.run(pool.acquire("key"))
-        finally:
-            stopped_loop.close()
-
-        # Assert
-        assert acquired == "obj"
-        assert factory.call_count == 2
-
-    def test_release_should_ignore_stale_timer_from_a_loop_the_pool_left(self, mocker):
-        """Test a TTL timer left on an earlier loop cannot touch a later loop's cache.
-
-        Given:
-            A pool that released an entry on one event loop, scheduling
-            its TTL timer there, then rebound to a second loop that
-            acquired the same key and still holds it.
-        When:
-            The first loop resumes long enough for that stale timer to
-            fire.
-        Then:
-            It should leave the second loop's entry untouched -- still
-            cached and still referenced, its finalizer never run --
-            rather than finalize it or rebind the pool.
-        """
-        # Arrange
-        finalizer = mocker.AsyncMock()
-        pool = ResourcePool(
-            factory=mocker.Mock(return_value="obj"), finalizer=finalizer, ttl=0.05
-        )
-        first_loop = asyncio.new_event_loop()
-
-        async def acquire_and_release():
-            async with pool.get("key"):
-                pass
-
-        first_loop.run_until_complete(acquire_and_release())
-        asyncio.run(pool.acquire("key"))
-        try:
-            # Act
-            first_loop.run_until_complete(asyncio.sleep(0.1))
-        finally:
-            first_loop.close()
-
-        # Assert
-        assert pool.stats.total_entries == 1
-        assert pool.stats.referenced_entries == 1
-        finalizer.assert_not_awaited()
-
-    def test_release_should_leave_no_pending_task_when_loop_closes_before_ttl(
+    @pytest.mark.asyncio
+    async def test_release_should_finalize_before_returning_when_entry_expired(
         self, mocker
     ):
-        """Test release defers cleanup without parking a task on the loop.
+        """Test the release of an expired entry finalizes it inline.
 
         Given:
-            A pool with a positive TTL whose resource is released on
-            a dedicated event loop.
+            A long-TTL pool holding a referenced entry that expire() has
+            marked for its key.
         When:
-            The loop is closed and garbage-collected before the TTL
-            elapses.
+            The last reference is released.
         Then:
-            It should leave no pending task on the loop and emit no
-            RuntimeWarning when the deferred cleanup is collected.
+            It should have awaited the finalizer and emptied the pool by
+            the time release returns, spawning no task to do it later,
+            the same way a whole-pool retirement is settled.
         """
         # Arrange
-        loop = asyncio.new_event_loop()
-
-        def create_release_and_drop():
-            pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
-
-            async def acquire_release():
-                async with pool.get("key"):
-                    pass
-
-            loop.run_until_complete(acquire_release())
-
-        # Act
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            create_release_and_drop()
-            pending = asyncio.all_tasks(loop)
-            loop.close()
-            gc.collect()
-
-        # Assert
-        assert pending == set()
-        assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
-
-    @pytest.mark.asyncio
-    async def test_acquire_should_cancel_in_flight_cleanup_when_reacquired_after_expiry(
-        self, expiry_race_pool
-    ):
-        """Test acquire cancels a fired cleanup racing on the pool lock.
-
-        Given:
-            A pool whose expired key's TTL timer has fired while the
-            pool lock is held by another key's acquire, so the
-            spawned cleanup task and a queued re-acquire of the
-            expired key both wait on the lock with the re-acquire
-            first
-        When:
-            The lock holder completes and the queued re-acquire runs
-        Then:
-            It should cancel the in-flight cleanup, return the cached
-            object without re-invoking the factory or finalizer, and
-            leave the key without pending cleanup
-        """
-        # Arrange
-        pool, finalizer, factory_calls, release_blocker = expiry_race_pool
-        blocker_task, reacquire_task = await _queue_behind_fired_cleanup(
-            pool, factory_calls, pool.acquire("expired")
-        )
-
-        # Act
-        release_blocker.set()
-        acquired = await reacquire_task
-        await blocker_task
-
-        # Assert
-        assert acquired == "obj-expired"
-        assert factory_calls.count("expired") == 1
-        finalizer.assert_not_awaited()
-        assert "expired" not in pool.pending_cleanup
-        assert pool.stats.total_entries == 2
-
-    @pytest.mark.asyncio
-    async def test_expire_should_cancel_in_flight_cleanup_when_expired_after_ttl(
-        self, expiry_race_pool
-    ):
-        """Test expire cancels a fired cleanup racing on the pool lock.
-
-        Given:
-            A pool whose expired key's TTL timer has fired while the
-            pool lock is held by another key's acquire, so the
-            spawned cleanup task and a queued expiry of the expired
-            key both wait on the lock with the expiry first
-        When:
-            The lock holder completes and the queued expiry runs
-        Then:
-            It should cancel the in-flight cleanup, still run the
-            finalizer exactly once, and evict the entry
-        """
-        # Arrange
-        pool, finalizer, factory_calls, release_blocker = expiry_race_pool
-        blocker_task, clear_task = await _queue_behind_fired_cleanup(
-            pool, factory_calls, pool.expire("expired")
-        )
-
-        # Act
-        release_blocker.set()
-        await clear_task
-        await blocker_task
-
-        # Assert
-        finalizer.assert_awaited_once_with("obj-expired")
-        assert "expired" not in pool.pending_cleanup
-        assert pool.stats.total_entries == 1
-
-    @pytest.mark.asyncio
-    @settings(max_examples=50, deadline=None)
-    @given(
-        operations=strategies.lists(
-            strategies.tuples(
-                strategies.sampled_from(["acquire", "release", "expire"]),
-                strategies.sampled_from(["a", "b", "c"]),
-            ),
-            max_size=30,
-        )
-    )
-    async def test_release_should_maintain_bookkeeping_invariants(self, operations):
-        """Test acquire, release and expire keep bookkeeping consistent.
-
-        Given:
-            Any interleaved sequence of acquire, release and expire
-            operations over a small key domain, where releases are
-            applied only while a reference is held
-        When:
-            The sequence is applied step by step to a long-TTL pool
-        Then:
-            It should evict a retired key the instant the release that
-            drops its last reference returns, keeping total entries,
-            referenced entries, pending cleanup and the finalized
-            objects equal to the model's at every step
-        """
-        # Arrange
-        finalized = []
+        mock_finalizer = mocker.AsyncMock()
         pool = ResourcePool(
-            factory=lambda key: f"obj-{key}",
-            finalizer=finalized.append,
+            factory=mocker.Mock(return_value="resource"),
+            finalizer=mock_finalizer,
             ttl=60,
         )
-        model_refcount = {}
-        model_doomed = set()
-        model_finalized = []
-
-        # Act & assert
-        for operation, key in operations:
-            if operation == "acquire":
-                await pool.acquire(key)
-                model_refcount[key] = model_refcount.get(key, 0) + 1
-                model_doomed.discard(key)
-            elif operation == "expire":
-                if key in model_refcount:
-                    if model_refcount[key] > 0:
-                        model_doomed.add(key)
-                    else:
-                        del model_refcount[key]
-                        model_finalized.append(f"obj-{key}")
-                await pool.expire(key)
-            elif model_refcount.get(key, 0) > 0:
-                await pool.release(key)
-                model_refcount[key] -= 1
-                if model_refcount[key] == 0 and key in model_doomed:
-                    model_doomed.discard(key)
-                    del model_refcount[key]
-                    model_finalized.append(f"obj-{key}")
-
-            stats = pool.stats
-            assert stats.total_entries == len(model_refcount)
-            assert stats.referenced_entries == sum(
-                1 for count in model_refcount.values() if count > 0
-            )
-            assert set(pool.pending_cleanup) == {
-                key for key, count in model_refcount.items() if count == 0
-            }
-            assert finalized == model_finalized
-
-    @pytest.mark.asyncio
-    async def test_clear_should_finalize_all_resources(self):
-        """Test clearing the pool calls finalizer on all resources.
-
-        Given:
-            A pool with resources
-        When:
-            Clear is called without specific key
-        Then:
-            All resources should be finalized and cache cleared
-        """
-        # Arrange - Create pool with TTL to keep resources after context exit
-        mock_factory = Mock()
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
-
-        # Create some resources
-        test_resources = []
-        for i in range(3):
-            mock_resource = Mock(name=f"resource-{i}")
-            test_resources.append(mock_resource)
-            mock_factory.return_value = mock_resource
-            async with pool.get(f"key-{i}"):
-                pass  # Creates and caches the resource
-
-        # Verify initial state
-        assert pool.stats.total_entries == 3
-
-        # Act
-        await pool.clear()
-
-        # Assert
-        # All resources should be cleaned up and cache cleared
-        assert pool.stats.total_entries == 0
-
-        # Finalizer should have been called for all resources
-        assert mock_finalizer.call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_expire_should_leave_other_entries_when_key_expired(self):
-        """Test expiring one key retires only that key.
-
-        Given:
-            A pool holding two unreferenced entries under a long TTL.
-        When:
-            One of them is expired.
-        Then:
-            It should finalize that entry alone, leaving the other cached
-            and its resource untouched.
-        """
-        # Arrange
-        finalized = []
-
-        async def factory(key):
-            return f"obj-{key}"
-
-        async def finalizer(resource):
-            finalized.append(resource)
-
-        pool = ResourcePool(factory, finalizer=finalizer, ttl=3600)
-        async with pool:
-            await pool.acquire("key1")
-            await pool.acquire("key2")
-            await pool.release("key1")
-            await pool.release("key2")
-            assert pool.stats.total_entries == 2
-
-            # Act
-            await pool.expire("key1")
-
-            # Assert
-            assert finalized == ["obj-key1"]
-            assert pool.stats.total_entries == 1
-            assert "key2" in pool.pending_cleanup
-
-    @pytest.mark.asyncio
-    async def test_expire_should_finalize_immediately_when_unreferenced(self):
-        """Test expiring an unreferenced entry skips its remaining TTL.
-
-        Given:
-            A long-TTL pool holding an unreferenced entry whose TTL timer is
-            pending.
-        When:
-            expire() is called with that entry's key.
-        Then:
-            It should run the finalizer immediately, remove the entry, and
-            leave no pending cleanup — no TTL wait.
-        """
-        # Arrange
-        mock_factory = Mock(return_value="resource")
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
-        async with pool.get("key"):
-            pass  # Released: the TTL timer is now armed.
-        assert "key" in pool.pending_cleanup
-
-        # Act
+        await pool.acquire("key")
         await pool.expire("key")
+        tasks_before = asyncio.all_tasks()
+
+        # Act
+        await pool.release("key")
 
         # Assert
         mock_finalizer.assert_awaited_once_with("resource")
         assert pool.stats.total_entries == 0
         assert not pool.pending_cleanup
-
-    @pytest.mark.asyncio
-    async def test_expire_should_not_finalize_while_referenced(self):
-        """Test expiring a referenced entry leaves the in-flight user alone.
-
-        Given:
-            A long-TTL pool holding an entry with an active reference.
-        When:
-            expire() is called.
-        Then:
-            It should leave the resource unfinalized and the entry cached —
-            an in-flight user is never torn out from under.
-        """
-        # Arrange
-        mock_factory = Mock(return_value="resource")
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
-        await pool.acquire("key")
-
-        # Act
-        await pool.expire("key")
-
-        # Assert
-        mock_finalizer.assert_not_awaited()
-        assert pool.stats.total_entries == 1
-
-    @pytest.mark.asyncio
-    async def test_release_should_finalize_retired_entry_when_last_reference_released(
-        self, retired_entry_pool
-    ):
-        """Test a retired entry is finalized as soon as its users drain.
-
-        Given:
-            A long-TTL pool holding an entry that has been retired by
-            ``expire`` while still referenced.
-        When:
-            The last reference is released.
-        Then:
-            It should have awaited the finalizer before the release
-            returns, without waiting out the TTL and without leaving
-            pending cleanup behind for the loop to drain.
-        """
-        # Arrange
-        pool, finalizer, _ = retired_entry_pool
-        await pool.acquire("key")
-        await pool.expire("key")
-
-        # Act
-        await pool.release("key")
-
-        # Assert
-        finalizer.assert_awaited_once_with("first")
-        assert pool.stats.total_entries == 0
-        assert not pool.pending_cleanup
-
-    @pytest.mark.asyncio
-    async def test_release_should_not_finalize_retired_entry_when_references_remain(
-        self, retired_entry_pool
-    ):
-        """Test a retired entry survives a release that does not drain it.
-
-        Given:
-            A long-TTL pool holding an entry with two live references
-            that has been retired by ``expire`` while referenced.
-        When:
-            Only one of the two references is released.
-        Then:
-            It should leave the resource unfinalized and the entry
-            cached and still referenced, with no cleanup pending.
-        """
-        # Arrange
-        pool, finalizer, _ = retired_entry_pool
-        await pool.acquire("key")
-        await pool.acquire("key")
-        await pool.expire("key")
-
-        # Act
-        await pool.release("key")
-
-        # Assert
-        finalizer.assert_not_awaited()
-        assert pool.stats.total_entries == 1
-        assert pool.stats.referenced_entries == 1
-        assert not pool.pending_cleanup
+        assert asyncio.all_tasks() == tasks_before
 
     @pytest.mark.asyncio
     async def test_release_should_evict_retired_entry_when_cancelled_mid_finalizer(
@@ -1197,7 +926,7 @@ class TestResourcePool:
         assert await pool.acquire("key") == "second"
 
     def test_release_should_finalize_retired_entry_when_loop_ends_immediately(
-        self, mocker, caplog
+        self, mocker, caplog, stranded_loop
     ):
         """Test a release during shutdown closes the resource before returning.
 
@@ -1227,17 +956,15 @@ class TestResourcePool:
         pool = ResourcePool(
             factory=mocker.Mock(return_value="obj"), finalizer=finalizer, ttl=60
         )
-        loop = asyncio.new_event_loop()
 
-        async def acquire_and_retire():
+        async def acquire_retire_release():
             await pool.acquire("key")
             await pool.expire("key")
-
-        loop.run_until_complete(acquire_and_retire())
+            await pool.release("key")
 
         # Act
         with caplog.at_level(logging.ERROR, logger="asyncio"):
-            loop.run_until_complete(pool.release("key"))
+            loop, _ = stranded_loop(acquire_retire_release(), close=False)
             pending = asyncio.all_tasks(loop)
             loop.close()
             gc.collect()
@@ -1245,7 +972,6 @@ class TestResourcePool:
         # Assert
         assert closed == ["obj"]
         assert pending == set()
-        assert pool.stats.total_entries == 0
         assert not [
             record
             for record in caplog.records
@@ -1253,7 +979,168 @@ class TestResourcePool:
         ]
 
     @pytest.mark.asyncio
-    async def test_expire_should_resurrect_entry_when_reacquired(self):
+    @given(
+        operations=strategies.lists(
+            strategies.tuples(
+                strategies.sampled_from(["acquire", "release"]),
+                strategies.sampled_from(["a", "b", "c"]),
+            ),
+            max_size=30,
+        )
+    )
+    async def test_release_should_maintain_bookkeeping_invariants(self, operations):
+        """Test acquire and release keep TTL bookkeeping consistent.
+
+        Given:
+            Any interleaved sequence of acquire and release
+            operations over a small key domain, where releases are
+            applied only while a reference is held
+        When:
+            The sequence is applied step by step to a long-TTL pool
+        Then:
+            It should keep total entries equal to the keys ever
+            acquired, referenced entries equal to the keys with live
+            references, and pending cleanup on exactly the keys whose
+            references all released
+        """
+        # Arrange
+        pool = ResourcePool(factory=lambda key: f"obj-{key}", ttl=60)
+        model_refcount = {}
+
+        # Act & assert
+        for operation, key in operations:
+            if operation == "acquire":
+                await pool.acquire(key)
+                model_refcount[key] = model_refcount.get(key, 0) + 1
+            elif model_refcount.get(key, 0) > 0:
+                await pool.release(key)
+                model_refcount[key] -= 1
+
+            stats = pool.stats
+            assert stats.total_entries == len(model_refcount)
+            assert stats.referenced_entries == sum(
+                1 for count in model_refcount.values() if count > 0
+            )
+            assert set(pool.pending_cleanup) == {
+                key for key, count in model_refcount.items() if count == 0
+            }
+
+    @pytest.mark.asyncio
+    async def test_expire_should_leave_other_entries_when_key_expired(self):
+        """Test expiring one key retires only that key.
+
+        Given:
+            A pool holding two unreferenced entries under a long TTL.
+        When:
+            One of them is expired.
+        Then:
+            It should finalize that entry alone, leaving the other cached
+            and its resource untouched.
+        """
+        # Arrange
+        finalized = []
+
+        async def factory(key):
+            return f"obj-{key}"
+
+        async def finalizer(resource):
+            finalized.append(resource)
+
+        pool = ResourcePool(factory, finalizer=finalizer, ttl=3600)
+        async with pool:
+            await pool.acquire("key1")
+            await pool.acquire("key2")
+            await pool.release("key1")
+            await pool.release("key2")
+            assert pool.stats.total_entries == 2
+
+            # Act
+            await pool.expire("key1")
+
+            # Assert
+            assert finalized == ["obj-key1"]
+            assert pool.stats.total_entries == 1
+            assert "key2" in pool.pending_cleanup
+
+    @pytest.mark.asyncio
+    async def test_expire_should_finalize_immediately_when_unreferenced(self, ttl_pool):
+        """Test expiring an unreferenced entry skips its remaining TTL.
+
+        Given:
+            A long-TTL pool holding an unreferenced entry whose TTL timer is
+            pending.
+        When:
+            expire() is called with that entry's key.
+        Then:
+            It should run the finalizer immediately, remove the entry, and
+            leave no pending cleanup — no TTL wait.
+        """
+        # Arrange
+        pool, _, finalizer = ttl_pool
+        async with pool.get("key"):
+            pass  # Released: the TTL timer is now armed.
+        assert "key" in pool.pending_cleanup
+
+        # Act
+        await pool.expire("key")
+
+        # Assert
+        finalizer.assert_awaited_once_with("resource")
+        assert pool.stats.total_entries == 0
+        assert not pool.pending_cleanup
+
+    @pytest.mark.asyncio
+    async def test_expire_should_not_finalize_while_referenced(self, ttl_pool):
+        """Test expiring a referenced entry leaves the in-flight user alone.
+
+        Given:
+            A long-TTL pool holding an entry with an active reference.
+        When:
+            expire() is called.
+        Then:
+            It should leave the resource unfinalized and the entry cached —
+            an in-flight user is never torn out from under.
+        """
+        # Arrange
+        pool, _, finalizer = ttl_pool
+        await pool.acquire("key")
+
+        # Act
+        await pool.expire("key")
+
+        # Assert
+        finalizer.assert_not_awaited()
+        assert pool.stats.total_entries == 1
+
+    @pytest.mark.asyncio
+    async def test_expire_should_finalize_at_last_release_when_expired(self, ttl_pool):
+        """Test an expired entry is finalized as soon as its users drain.
+
+        Given:
+            A long-TTL pool holding an entry that has been expired while
+            still referenced.
+        When:
+            The last reference is released.
+        Then:
+            It should finalize the resource promptly, without waiting out
+            the TTL.
+        """
+        # Arrange
+        pool, _, finalizer = ttl_pool
+        await pool.acquire("key")
+        await pool.expire("key")
+
+        # Act
+        await pool.release("key")
+        await asyncio.sleep(0)
+
+        # Assert
+        finalizer.assert_awaited_once_with("resource")
+        assert pool.stats.total_entries == 0
+        assert not pool.pending_cleanup
+
+    @pytest.mark.asyncio
+    async def test_expire_should_resurrect_entry_when_reacquired(self, ttl_pool):
         """Test re-acquiring an expired entry cancels its doom.
 
         Given:
@@ -1267,9 +1154,7 @@ class TestResourcePool:
             re-acquire resurrects it — with the finalizer never called.
         """
         # Arrange
-        mock_factory = Mock(return_value="resource")
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
+        pool, _, finalizer = ttl_pool
         async with pool:
             await pool.acquire("key")
             await pool.expire("key")
@@ -1280,12 +1165,12 @@ class TestResourcePool:
             await pool.release("key")
 
             # Assert
-            mock_finalizer.assert_not_awaited()
+            finalizer.assert_not_awaited()
             assert pool.stats.total_entries == 1
             assert "key" in pool.pending_cleanup  # Normal TTL schedule.
 
     @pytest.mark.asyncio
-    async def test_expire_should_not_raise_when_key_unknown(self):
+    async def test_expire_should_not_raise_when_key_unknown(self, ttl_pool):
         """Test expiring an uncached key is a silent no-op.
 
         Given:
@@ -1296,45 +1181,47 @@ class TestResourcePool:
             It should neither raise nor invoke the finalizer.
         """
         # Arrange
-        mock_factory = Mock(return_value="resource")
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
+        pool, _, finalizer = ttl_pool
 
         # Act
         await pool.expire("missing")
 
         # Assert
-        mock_finalizer.assert_not_awaited()
+        finalizer.assert_not_awaited()
         assert pool.stats.total_entries == 0
 
     @pytest.mark.asyncio
-    async def test_expire_all_should_not_raise_when_pool_empty(self, mocker):
-        """Test retiring a pool that holds nothing is a no-op.
+    async def test_expire_should_cancel_in_flight_cleanup_when_expired_after_ttl(
+        self, expiry_race_pool
+    ):
+        """Test expire cancels a fired cleanup racing on the pool lock.
 
         Given:
-            A pool that has never cached anything.
+            A pool whose expired key's TTL timer has fired while the
+            pool lock is held by another key's acquire, so the
+            spawned cleanup task and a queued expiry of the expired
+            key both wait on the lock with the expiry first
         When:
-            expire_all() is awaited.
+            The lock holder completes and the queued expiry runs
         Then:
-            It should return without raising, invoke no finalizer, and
-            leave the pool empty, i.e., the parity of expire with an
-            unknown key.
+            It should cancel the in-flight cleanup, still run the
+            finalizer exactly once, and evict the entry
         """
         # Arrange
-        mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(
-            factory=mocker.Mock(return_value="resource"),
-            finalizer=mock_finalizer,
-            ttl=60,
+        pool, finalizer, factory_calls, release_blocker = expiry_race_pool
+        blocker_task, clear_task = await _queue_behind_fired_cleanup(
+            pool, factory_calls, pool.expire("expired")
         )
 
         # Act
-        await pool.expire_all()
+        release_blocker.set()
+        await clear_task
+        await blocker_task
 
         # Assert
-        mock_finalizer.assert_not_awaited()
-        assert pool.stats.total_entries == 0
-        assert not pool.pending_cleanup
+        finalizer.assert_awaited_once_with("obj-expired")
+        assert "expired" not in pool.pending_cleanup
+        assert pool.stats.total_entries == 1
 
     @pytest.mark.asyncio
     async def test_expire_all_should_finalize_idle_entries_immediately(self, mocker):
@@ -1344,14 +1231,14 @@ class TestResourcePool:
             A pool holding one idle entry awaiting its TTL and one entry
             still referenced.
         When:
-            expire_all() is awaited.
+            expire_all is awaited.
         Then:
             It should finalize the idle entry immediately, leaving the
             referenced one cached with no pending cleanup of its own.
         """
         # Arrange
-        mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(factory=lambda key: key, finalizer=mock_finalizer, ttl=60)
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=lambda key: key, finalizer=finalizer, ttl=60)
         async with pool.get("idle"):
             pass
         await pool.acquire("held")
@@ -1360,7 +1247,7 @@ class TestResourcePool:
         await pool.expire_all()
 
         # Assert
-        mock_finalizer.assert_awaited_once_with("idle")
+        assert list(finalizer.await_args_list) == [mocker.call("idle")]
         assert pool.stats.total_entries == 1
         assert not pool.pending_cleanup
 
@@ -1372,16 +1259,16 @@ class TestResourcePool:
 
         Given:
             A pool whose only entry is referenced and has been retired
-            by expire_all().
+            by expire_all.
         When:
             The last reference is released.
         Then:
             It should finalize that entry then, ending with an empty
-            pool and no pending cleanup.
+            partition and no pending cleanup.
         """
         # Arrange
-        mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(factory=lambda key: key, finalizer=mock_finalizer, ttl=60)
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=lambda key: key, finalizer=finalizer, ttl=60)
         await pool.acquire("held")
         await pool.expire_all()
 
@@ -1389,7 +1276,7 @@ class TestResourcePool:
         await pool.release("held")
 
         # Assert
-        mock_finalizer.assert_awaited_once_with("held")
+        finalizer.assert_awaited_once_with("held")
         assert pool.stats.total_entries == 0
         assert not pool.pending_cleanup
 
@@ -1401,7 +1288,7 @@ class TestResourcePool:
 
         Given:
             A pool whose only entry is referenced and has been retired
-            by expire_all().
+            by expire_all.
         When:
             The same key is acquired again and both references are then
             released.
@@ -1411,9 +1298,9 @@ class TestResourcePool:
             entry cached under its TTL rather than finalizing it.
         """
         # Arrange
-        mock_factory = mocker.Mock(return_value="resource")
-        mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
+        factory = mocker.Mock(return_value="obj")
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=60)
         await pool.acquire("key")
         await pool.expire_all()
 
@@ -1421,13 +1308,42 @@ class TestResourcePool:
         acquired = await pool.acquire("key")
         await pool.release("key")
         await pool.release("key")
+        for _ in range(5):
+            await asyncio.sleep(0)
 
         # Assert
-        assert acquired == "resource"
-        assert mock_factory.call_count == 1
-        mock_finalizer.assert_not_awaited()
+        assert acquired == "obj"
+        assert factory.call_count == 1
+        finalizer.assert_not_awaited()
         assert pool.stats.total_entries == 1
         assert "key" in pool.pending_cleanup
+
+    @pytest.mark.asyncio
+    async def test_expire_all_should_not_raise_when_partition_empty(self, mocker):
+        """Test retiring a partition that holds nothing is a no-op.
+
+        Given:
+            A pool the calling loop has never cached anything in.
+        When:
+            expire_all is awaited.
+        Then:
+            It should return without raising, invoke no finalizer, and
+            leave the partition empty — the parity of expire with an
+            unknown key.
+        """
+        # Arrange
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(
+            factory=mocker.Mock(return_value="obj"), finalizer=finalizer, ttl=60
+        )
+
+        # Act
+        await pool.expire_all()
+
+        # Assert
+        finalizer.assert_not_awaited()
+        assert pool.stats.total_entries == 0
+        assert not pool.pending_cleanup
 
     @pytest.mark.asyncio
     async def test_expire_all_should_finalize_retired_entry_when_release_is_late(
@@ -1437,7 +1353,7 @@ class TestResourcePool:
 
         Given:
             A pool whose only entry is referenced and has been retired
-            by expire_all().
+            by expire_all.
         When:
             The outstanding reference is released and the same key is
             acquired again afterwards.
@@ -1448,9 +1364,9 @@ class TestResourcePool:
             resource handed out since.
         """
         # Arrange
-        mock_factory = mocker.Mock(side_effect=["first", "second"])
-        mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
+        factory = mocker.Mock(side_effect=["first", "second"])
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=60)
         await pool.acquire("key")
         await pool.expire_all()
 
@@ -1459,8 +1375,8 @@ class TestResourcePool:
         reacquired = await pool.acquire("key")
 
         # Assert
-        mock_finalizer.assert_awaited_once_with("first")
-        assert mock_factory.call_count == 2
+        finalizer.assert_awaited_once_with("first")
+        assert factory.call_count == 2
         assert reacquired == "second"
         assert pool.stats.referenced_entries == 1
 
@@ -1470,17 +1386,17 @@ class TestResourcePool:
     async def test_expire_all_should_finalize_every_entry_exactly_once(
         self, reference_counts
     ):
-        """Test retirement drains a whole pool without double finalizing.
+        """Test retirement drains a whole partition without double finalizing.
 
         Given:
-            Any pool of up to five distinct keys whose entries carry
-            reference counts between zero and three.
+            Any partition of up to five distinct keys whose entries
+            carry reference counts between zero and three.
         When:
-            expire_all() is awaited and every outstanding reference is
+            expire_all is awaited and every outstanding reference is
             then released.
         Then:
             It should finalize each cached object exactly once and end
-            with an empty pool holding no pending cleanup.
+            with an empty partition holding no pending cleanup.
         """
         # Arrange
         finalized = []
@@ -1697,169 +1613,42 @@ class TestResourcePool:
         assert pool.stats.total_entries == 1
 
     @pytest.mark.asyncio
-    async def test_release_should_finalize_before_returning_when_entry_retired(
-        self, mocker
-    ):
-        """Test the release of a retired entry finalizes it inline.
+    async def test_clear_should_finalize_all_resources(self, mocker):
+        """Test clearing the pool calls finalizer on all resources.
 
         Given:
-            A long-TTL pool holding a referenced entry that expire_all()
-            has retired.
+            A pool with resources
         When:
-            The last reference is released.
+            Clear is called without specific key
         Then:
-            It should have awaited the finalizer and emptied the pool by
-            the time release returns, spawning no task to do it later — a
-            task would be orphaned by a loop that stops straight after
-            the release.
+            All resources should be finalized and cache cleared
         """
-        # Arrange
+        # Arrange - Create pool with TTL to keep resources after context exit
+        mock_factory = mocker.Mock()
         mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(
-            factory=mocker.Mock(return_value="resource"),
-            finalizer=mock_finalizer,
-            ttl=60,
-        )
-        await pool.acquire("key")
-        await pool.expire_all()
-        tasks_before = asyncio.all_tasks()
+        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=60)
+
+        # Create some resources
+        for i in range(3):
+            mock_factory.return_value = mocker.Mock(name=f"resource-{i}")
+            async with pool.get(f"key-{i}"):
+                pass  # Creates and caches the resource
+
+        # Verify initial state
+        assert pool.stats.total_entries == 3
 
         # Act
-        await pool.release("key")
+        await pool.clear()
 
         # Assert
-        mock_finalizer.assert_awaited_once_with("resource")
+        # All resources should be cleaned up and cache cleared
         assert pool.stats.total_entries == 0
-        assert not pool.pending_cleanup
-        assert asyncio.all_tasks() == tasks_before
+
+        # Finalizer should have been called for all resources
+        assert mock_finalizer.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_release_should_finalize_before_returning_when_entry_expired(
-        self, mocker
-    ):
-        """Test the release of an expired entry finalizes it inline.
-
-        Given:
-            A long-TTL pool holding a referenced entry that expire() has
-            marked for its key.
-        When:
-            The last reference is released.
-        Then:
-            It should have awaited the finalizer and emptied the pool by
-            the time release returns, spawning no task to do it later,
-            the same way a whole-pool retirement is settled.
-        """
-        # Arrange
-        mock_finalizer = mocker.AsyncMock()
-        pool = ResourcePool(
-            factory=mocker.Mock(return_value="resource"),
-            finalizer=mock_finalizer,
-            ttl=60,
-        )
-        await pool.acquire("key")
-        await pool.expire("key")
-        tasks_before = asyncio.all_tasks()
-
-        # Act
-        await pool.release("key")
-
-        # Assert
-        mock_finalizer.assert_awaited_once_with("resource")
-        assert pool.stats.total_entries == 0
-        assert not pool.pending_cleanup
-        assert asyncio.all_tasks() == tasks_before
-
-    @pytest.mark.asyncio
-    async def test_ttl_cleanup_should_schedule_resource_removal(self):
-        """Test TTL-based cleanup schedules and executes properly.
-
-        Given:
-            A pool with TTL > 0
-        When:
-            A resource reference count reaches 0
-        Then:
-            Should schedule cleanup after TTL expires
-        """
-        # Arrange
-        mock_factory = Mock()
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=0.1)
-
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        key = "ttl-test"
-
-        # Act
-        # Acquire and immediately release
-        async with pool.get(key) as resource:
-            assert resource is mock_resource
-            assert pool.stats.total_entries == 1
-            assert pool.stats.referenced_entries == 1
-
-        # Resource should still be in cache with cleanup deferred
-        assert pool.stats.total_entries == 1
-        assert pool.stats.referenced_entries == 0
-        assert pool.stats.pending_cleanup == 1
-        mock_finalizer.assert_not_called()
-
-        # Assert
-        # Wait for cleanup to complete using polling with timeout
-        start_time = time.time()
-        while (key in pool.pending_cleanup) and (time.time() - start_time < 2.0):
-            await asyncio.sleep(0.01)
-
-        # Resource should now be cleaned up
-        assert pool.stats.total_entries == 0
-        mock_finalizer.assert_called_once_with(mock_resource)
-
-    @pytest.mark.asyncio
-    async def test_ttl_cleanup_should_be_cancelled_when_reacquired(self):
-        """Test TTL cleanup is cancelled when resource is reacquired.
-
-        Given:
-            A pool with TTL > 0 and a scheduled cleanup
-        When:
-            The resource is reacquired before TTL expires
-        Then:
-            Cleanup should be cancelled and resource kept
-        """
-        # Arrange
-        mock_factory = Mock()
-        mock_finalizer = AsyncMock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=0.1)
-
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        key = "ttl-cancel-test"
-
-        # Act
-        # Acquire and release to schedule cleanup
-        async with pool.get(key):
-            pass
-
-        # Should be scheduled for cleanup
-        assert pool.stats.total_entries == 1
-        assert pool.stats.referenced_entries == 0
-        assert pool.stats.pending_cleanup == 1
-
-        # Reacquire the resource while cleanup is still waiting
-        async with pool.get(key) as resource:
-            # Assert - cleanup should be cancelled and resource reused
-            assert resource is mock_resource
-            assert pool.stats.referenced_entries == 1
-
-        # After reacquisition and release, verify finalizer wasn't called
-        # (which would indicate the original resource was preserved)
-        mock_finalizer.assert_not_called()
-
-        # Resource should still exist due to TTL
-        assert pool.stats.total_entries == 1
-        assert pool.stats.referenced_entries == 0
-
-    @pytest.mark.asyncio
-    async def test_stats_should_return_accurate_counts(self):
+    async def test_stats_should_return_accurate_counts(self, mocker):
         """Test stats method returns accurate cache statistics.
 
         Given:
@@ -1871,8 +1660,8 @@ class TestResourcePool:
             timers or tasks
         """
         # Arrange
-        mock_factory = Mock()
-        mock_finalizer = AsyncMock()
+        mock_factory = mocker.Mock()
+        mock_finalizer = mocker.AsyncMock()
         pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=0.1)
 
         # Guard: a fresh pool reports zero across all stats.
@@ -1883,7 +1672,7 @@ class TestResourcePool:
 
         # Act
         # Add some resources
-        mock_factory.side_effect = [Mock() for _ in range(3)]
+        mock_factory.side_effect = [mocker.Mock() for _ in range(3)]
 
         async with pool.get("key1"):  # ref_count = 1 while in context
             async with pool.get("key2"):  # ref_count = 1 while in context
@@ -1894,8 +1683,47 @@ class TestResourcePool:
                     assert stats.referenced_entries == 3  # All active
                     assert stats.pending_cleanup == 0  # None scheduled yet
 
+    def test_stats_should_raise_when_no_running_loop(self, mocker):
+        """Test reading stats outside a running loop is an error.
+
+        Given:
+            A pool read from synchronous code, with no event loop
+            running.
+        When:
+            The stats property is accessed.
+        Then:
+            It should raise RuntimeError, since a partition — and so
+            the statistics describing one — only exists relative to a
+            running loop.
+        """
+        # Arrange
+        pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
+
+        # Act & assert
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            pool.stats
+
+    def test_pending_cleanup_should_raise_when_no_running_loop(self, mocker):
+        """Test reading pending cleanup outside a running loop is an error.
+
+        Given:
+            A pool read from synchronous code, with no event loop
+            running.
+        When:
+            The pending_cleanup property is accessed.
+        Then:
+            It should raise RuntimeError, for the same reason stats
+            does: the pending work belongs to a loop's partition.
+        """
+        # Arrange
+        pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
+
+        # Act & assert
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            pool.pending_cleanup
+
     @pytest.mark.asyncio
-    async def test_async_context_manager_should_clear_resources(self):
+    async def test___aexit___should_clear_resources(self, mocker):
         """Test ResourcePool as async context manager clears all on exit.
 
         Given:
@@ -1906,14 +1734,12 @@ class TestResourcePool:
             Should clear all resources on exit
         """
         # Arrange
-        mock_factory = Mock()
-        mock_finalizer = AsyncMock()
+        mock_resource = mocker.Mock()
+        mock_factory = mocker.Mock(return_value=mock_resource)
+        mock_finalizer = mocker.AsyncMock()
 
         # Act & assert
         async with ResourcePool(factory=mock_factory, finalizer=mock_finalizer) as pool:
-            mock_resource = Mock()
-            mock_factory.return_value = mock_resource
-
             async with pool.get("test-key"):
                 assert pool.stats.total_entries == 1
 
@@ -1921,177 +1747,617 @@ class TestResourcePool:
         assert pool.stats.total_entries == 0
         mock_finalizer.assert_called_once_with(mock_resource)
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("ttl", [0, 0.1, 1, 1.1, 10, 10.1])
-    async def test_ttl_should_schedule_cleanup_based_on_value(self, ttl):
-        """Test specific TTL values defer or run cleanup accordingly.
+    def test_acquire_should_isolate_entries_when_two_loops_run_concurrently(
+        self, background_loops
+    ):
+        """Test one pool serves two live loops through separate partitions.
 
         Given:
-            A pool with specific TTL value
+            One pool and two event loops running concurrently on their
+            own threads, with a factory slow enough for acquires to
+            overlap.
         When:
-            A resource is acquired and released
+            Each loop acquires the same key twice concurrently.
         Then:
-            It should finalize immediately for TTL 0 and defer
-            cleanup for positive TTLs
+            It should invoke the factory exactly once per loop, hand each
+            loop its own object, and report one entry per loop, so
+            entries never cross loops while acquires on one loop still
+            serialize.
         """
         # Arrange
-        mock_factory = Mock(return_value=Mock(name="test-obj"))
-        mock_finalizer = Mock()
-        pool = ResourcePool(factory=mock_factory, finalizer=mock_finalizer, ttl=ttl)
+        objects = []
+
+        async def factory(key):
+            await asyncio.sleep(0.05)
+            obj = object()
+            objects.append(obj)
+            return obj
+
+        pool = ResourcePool(factory, ttl=60)
+        handles = [background_loops() for _ in range(2)]
+
+        async def acquire_twice():
+            first, second = await asyncio.gather(
+                pool.acquire("key"), pool.acquire("key")
+            )
+            entries = pool.stats.total_entries
+            await pool.clear()
+            return first, second, entries
 
         # Act
-        async with pool.get("test-key"):
-            pass
+        futures = [handle.submit(acquire_twice()) for handle in handles]
+        results = [future.result(timeout=5) for future in futures]
 
         # Assert
-        if ttl == 0:
-            mock_finalizer.assert_called_once()
-            assert pool.stats.total_entries == 0
-            assert pool.stats.pending_cleanup == 0
-        else:
-            mock_finalizer.assert_not_called()
-            assert pool.stats.total_entries == 1
-            assert pool.stats.pending_cleanup == 1
+        assert len(objects) == 2
+        assert all(first is second for first, second, _ in results)
+        assert results[0][0] is not results[1][0]
+        assert [entries for _, _, entries in results] == [1, 1]
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "ttl, retire_first",
-        [(0, False), (60, True)],
-        ids=["zero-ttl", "retired-while-referenced"],
+    @given(loop_count=strategies.integers(2, 5))
+    @settings(
+        max_examples=10,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
     )
-    async def test_finalizer_should_catch_exception_and_remove_resource(
-        self, ttl, retire_first
+    def test_acquire_should_isolate_partitions_when_many_loops_run_concurrently(
+        self, background_loops, loop_count
     ):
-        """Test finalizer exceptions are caught and logged.
+        """Test partitions stay private however many loops share a pool.
 
         Given:
-            A pool that finalizes inline — either because it has no TTL
-            or because the entry was retired by ``expire`` while still
-            referenced — whose finalizer raises an exception
+            One pool and any number of event loops, between two and
+            five, running concurrently on their own threads.
         When:
-            Resource cleanup occurs
+            Every loop acquires the same key twice concurrently.
         Then:
-            Exception should be caught and resource still removed
+            It should invoke the factory exactly once per loop, hand
+            each loop a distinct object shared by both of that loop's
+            acquires, and report exactly one entry to each loop.
         """
         # Arrange
-        mock_factory = Mock()
+        objects = []
 
-        async def failing_finalizer(_):
-            raise ValueError("Finalizer failed")
+        async def factory(key):
+            await asyncio.sleep(0.01)
+            obj = object()
+            objects.append(obj)
+            return obj
 
-        pool = ResourcePool(factory=mock_factory, finalizer=failing_finalizer, ttl=ttl)
+        pool = ResourcePool(factory, ttl=60)
+        handles = [background_loops() for _ in range(loop_count)]
 
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        key = "test"
-
-        # Act & assert
-        # This should not raise despite finalizer failing
-        async with pool.get(key):
-            if retire_first:
-                await pool.expire(key)
-
-        # Resource should still be cleaned up
-        assert pool.stats.total_entries == 0
-
-    @pytest.mark.asyncio
-    async def test_concurrent_should_maintain_consistency_when_acquire_release_same_key(
-        self, counting_factory
-    ):
-        """Test concurrent operations on same key maintain consistency.
-
-        Given:
-            A resource pool with TTL
-        When:
-            Multiple coroutines acquire and release the same key concurrently
-        Then:
-            Resource pool should maintain consistency and not leak resources
-        """
-        # Arrange
-        pool = ResourcePool(factory=counting_factory, ttl=0.1)
+        async def acquire_twice():
+            first, second = await asyncio.gather(
+                pool.acquire("key"), pool.acquire("key")
+            )
+            entries = pool.stats.total_entries
+            await pool.clear()
+            return first, second, entries
 
         # Act
-        async def acquire_release_worker():
-            async with pool.get("shared-key") as resource:
-                await asyncio.sleep(0.01)  # Small delay to increase contention
-                return resource
-
-        # Run multiple concurrent workers
-        tasks = [acquire_release_worker() for _ in range(10)]
-        results = await asyncio.gather(*tasks)
+        try:
+            futures = [handle.submit(acquire_twice()) for handle in handles]
+            results = [future.result(timeout=10) for future in futures]
+        finally:
+            # Retire each example's loops eagerly; the fixture would
+            # otherwise hold every loop of every example open.
+            for handle in handles:
+                handle.close()
 
         # Assert
-        # All workers should get the same resource instance (cached)
-        assert len(set(results)) == 1  # All got the same resource
-        # Factory should only be called once despite concurrent access
-        assert counting_factory.call_count == 1
-        # Pool should be consistent after all operations
-        assert pool.stats.total_entries <= 1  # 0 or 1 depending on TTL timing
+        assert len(objects) == loop_count
+        assert all(first is second for first, second, _ in results)
+        assert len({id(first) for first, _, _ in results}) == loop_count
+        assert [entries for _, _, entries in results] == [1] * loop_count
 
-    @pytest.mark.asyncio
-    async def test_resource_pool_should_cleanup_immediately_when_zero_ttl(
-        self, resource_pool_immediate_cleanup, mock_resource_factory, mock_finalizer
+    def test_release_should_ignore_key_cached_only_on_another_loop(
+        self, mocker, background_loops
     ):
-        """Test TTL=0 performs immediate cleanup as expected.
+        """Test releasing another loop's key touches nothing.
 
         Given:
-            A resource pool with TTL=0
+            A pool holding one referenced entry on an event loop still
+            running on another thread, and a second loop that has
+            cached nothing.
         When:
-            A resource is acquired and released
+            That key is released and then expired from the second loop.
         Then:
-            Should perform immediate cleanup without scheduling
+            It should treat both as silent no-ops against an empty
+            partition, leaving the first loop's entry cached, still
+            referenced, and never finalized.
         """
         # Arrange
-        pool = resource_pool_immediate_cleanup
-        mock_resource = Mock()
-        mock_resource_factory.return_value = mock_resource
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=lambda key: key, finalizer=finalizer, ttl=60)
+        live = background_loops()
+        live.run(pool.acquire("key"))
+
+        async def release_and_expire_elsewhere():
+            await pool.release("key")
+            await pool.expire("key")
+            return pool.stats.total_entries
+
+        async def live_stats():
+            return pool.stats
 
         # Act
-        async with pool.get("test-key") as resource:
-            # While in context, resource should exist
-            assert resource is mock_resource
-            assert pool.stats.total_entries == 1
-            assert pool.stats.referenced_entries == 1
+        entries = asyncio.run(release_and_expire_elsewhere())
 
         # Assert
-        # After context exit with TTL=0, should be immediately cleaned up
-        assert pool.stats.total_entries == 0
-        assert pool.stats.referenced_entries == 0
-        assert pool.stats.pending_cleanup == 0  # No pending cleanup tasks
-        mock_finalizer.assert_awaited_once_with(mock_resource)
+        live_snapshot = live.run(live_stats())
+        assert entries == 0
+        finalizer.assert_not_awaited()
+        assert live_snapshot.total_entries == 1
+        assert live_snapshot.referenced_entries == 1
 
-    @pytest.mark.asyncio
-    async def test_get_should_handle_none_key(self):
-        """Test resource pool handles None key appropriately.
+    def test_expire_all_should_finalize_only_current_loop_partition(
+        self, mocker, background_loops
+    ):
+        """Test retirement stops at the calling loop's partition.
 
         Given:
-            A resource pool
+            A pool holding one idle entry on an event loop still
+            running on another thread and one idle entry on a second
+            loop.
         When:
-            get() is called with None key
+            expire_all is awaited on the second loop.
         Then:
-            Should handle None key as a valid cache key
+            It should finalize that loop's entry alone, leaving the
+            first loop's entry cached with its finalizer never run.
         """
         # Arrange
-        mock_factory = Mock()
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-        pool = ResourcePool(factory=mock_factory, ttl=0)
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=lambda key: key, finalizer=finalizer, ttl=60)
+        live = background_loops()
 
-        # Act & assert
-        # None should be treated as a valid key
-        async with pool.get(None) as resource:
-            assert resource is mock_resource
+        async def cache_idle_entry(key):
+            async with pool.get(key):
+                pass
 
-        # Resource should be cleaned up after use
-        assert pool.stats.total_entries == 0
+        live.run(cache_idle_entry("live"))
+
+        async def retire_own_partition():
+            await cache_idle_entry("own")
+            await pool.expire_all()
+            return pool.stats.total_entries
+
+        async def live_stats():
+            return pool.stats
+
+        # Act
+        remaining = asyncio.run(retire_own_partition())
+
+        # Assert
+        live_snapshot = live.run(live_stats())
+        assert remaining == 0
+        finalizer.assert_awaited_once_with("own")
+        assert live_snapshot.total_entries == 1
+
+    def test_clear_should_finalize_only_current_loop_partition(
+        self, mocker, background_loops
+    ):
+        """Test clear leaves another running loop's entries alone.
+
+        Given:
+            A pool holding one referenced entry on an event loop that is
+            still running on another thread, and one entry on a second
+            loop.
+        When:
+            The pool is cleared from the second loop.
+        Then:
+            It should finalize the second loop's entry only: the first
+            loop's entry stays cached and referenced with its finalizer
+            never run, until that loop clears it.
+        """
+        # Arrange
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=lambda key: key, finalizer=finalizer, ttl=60)
+        live = background_loops()
+
+        async def clear_own_entry():
+            await pool.acquire("second")
+            await pool.clear()
+            return pool.stats.total_entries
+
+        async def live_stats():
+            return pool.stats
+
+        live.run(pool.acquire("first"))
+
+        # Act
+        remaining = asyncio.run(clear_own_entry())
+
+        # Assert
+        live_snapshot = live.run(live_stats())
+        assert remaining == 0
+        finalizer.assert_awaited_once_with("second")
+        assert live_snapshot.total_entries == 1
+        assert live_snapshot.referenced_entries == 1
+
+    def test_stats_should_count_only_current_loop_entries(self, background_loops):
+        """Test stats describe the calling loop's partition alone.
+
+        Given:
+            A pool holding two entries on an event loop running on
+            another thread and one entry on a second loop.
+        When:
+            stats is read on each loop.
+        Then:
+            It should report two entries to the first loop and one to
+            the second.
+        """
+        # Arrange
+        pool = ResourcePool(factory=lambda key: key, ttl=60)
+        live = background_loops()
+
+        async def acquire_many(*keys):
+            for key in keys:
+                await pool.acquire(key)
+            return pool.stats.total_entries
+
+        # Act
+        first = live.run(acquire_many("a", "b"))
+        second = asyncio.run(acquire_many("c"))
+
+        # Assert
+        live.run(pool.clear())
+        assert first == 2
+        assert second == 1
+
+    def test_acquire_should_sweep_partition_when_its_loop_closed(
+        self, mocker, stranded_loop
+    ):
+        """Test a fresh loop starts from an empty partition.
+
+        Given:
+            A pool that cached and released an entry on an event loop
+            that has since closed, leaving that entry's TTL timer behind.
+        When:
+            The same key is acquired from a fresh event loop.
+        Then:
+            It should sweep the closed loop's partition -- the entry and
+            its timer gone, its finalizer never run -- invoke the factory
+            again, and hold only the new entry with no pending cleanup.
+        """
+        # Arrange
+        factory = mocker.Mock(return_value="obj")
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(factory=factory, finalizer=finalizer, ttl=60)
+
+        async def acquire_and_release():
+            async with pool.get("key"):
+                pass
+            return pool.pending_cleanup
+
+        _, pending_before = stranded_loop(acquire_and_release())
+
+        async def acquire_again():
+            acquired = await pool.acquire("key")
+            return acquired, pool.stats.total_entries, pool.pending_cleanup
+
+        # Act
+        acquired, entries, pending = asyncio.run(acquire_again())
+
+        # Assert
+        assert "key" in pending_before
+        assert acquired == "obj"
+        assert factory.call_count == 2
+        finalizer.assert_not_awaited()
+        assert entries == 1
+        assert pending == {}
+
+    def test_acquire_should_sweep_partition_when_its_loop_stopped_but_not_closed(
+        self, mocker, stranded_loop
+    ):
+        """Test liveness is whether a loop runs, not whether it closed.
+
+        Given:
+            A pool holding an entry on an event loop that has stopped
+            running but has not been closed.
+        When:
+            The same key is acquired from a second event loop.
+        Then:
+            It should sweep the stopped loop's partition and rebuild the
+            resource on the new loop, since a loop that is not running
+            cannot finalize what it cached.
+        """
+        # Arrange
+        factory = mocker.Mock(return_value="obj")
+        pool = ResourcePool(factory=factory, ttl=60)
+        stranded_loop(pool.acquire("key"), close=False)
+
+        # Act
+        acquired = asyncio.run(pool.acquire("key"))
+
+        # Assert
+        assert acquired == "obj"
+        assert factory.call_count == 2
+
+    def test_acquire_should_not_warn_when_partition_cleared_before_loop_stopped(
+        self, caplog, stranded_loop
+    ):
+        """Test a partition cleared by its own loop is swept silently.
+
+        Given:
+            A pool whose entry was cleared on its own event loop before
+            that loop closed, leaving an empty partition in the
+            registry.
+        When:
+            The pool is used from a fresh event loop.
+        Then:
+            It should sweep the empty partition without logging
+            anything, because nothing was stranded and there is no leak
+            to report.
+        """
+
+        # Arrange
+        def make_resource(key):
+            return "obj"
+
+        pool = ResourcePool(factory=make_resource, ttl=60)
+
+        async def acquire_and_clear():
+            async with pool.get("key"):
+                pass
+            await pool.clear()
+
+        stranded_loop(acquire_and_clear())
+
+        # Act
+        with caplog.at_level(logging.DEBUG, logger="wool.runtime.resourcepool"):
+            asyncio.run(pool.acquire("other"))
+
+        # Assert
+        assert [r for r in caplog.records if r.name == "wool.runtime.resourcepool"] == []
+
+    def test_acquire_should_warn_when_sweeping_stranded_referenced_entry(
+        self, caplog, stranded_loop
+    ):
+        """Test a still-referenced stranded entry is reported as a leak.
+
+        Given:
+            A pool whose loop closed while an entry was still referenced.
+        When:
+            The pool is used from a fresh event loop.
+        Then:
+            It should log one WARNING from wool.runtime.resourcepool
+            naming the pool by its factory and the referenced entry it
+            dropped without finalizing.
+        """
+
+        # Arrange
+        def make_resource(key):
+            return "obj"
+
+        pool = ResourcePool(factory=make_resource, ttl=60)
+        stranded_loop(pool.acquire("key"))
+
+        # Act
+        with caplog.at_level(logging.DEBUG, logger="wool.runtime.resourcepool"):
+            asyncio.run(pool.acquire("other"))
+
+        # Assert
+        records = [r for r in caplog.records if r.name == "wool.runtime.resourcepool"]
+        assert [r.levelno for r in records] == [logging.WARNING]
+        assert "make_resource" in records[0].getMessage()
+        assert "1 referenced and 0 idle" in records[0].getMessage()
+
+    def test_acquire_should_warn_when_sweeping_stranded_idle_entry(
+        self, caplog, stranded_loop
+    ):
+        """Test an idle stranded entry is reported as a leak too.
+
+        Given:
+            A pool whose loop closed with only an idle entry cached
+            (released, awaiting its TTL).
+        When:
+            The pool is used from a fresh event loop.
+        Then:
+            It should log one WARNING from wool.runtime.resourcepool
+            reporting the idle entry, since an entry the loop never
+            finalized is a leak whether or not it was in use.
+        """
+
+        # Arrange
+        def make_resource(key):
+            return "obj"
+
+        pool = ResourcePool(factory=make_resource, ttl=60)
+
+        async def acquire_and_release():
+            async with pool.get("key"):
+                pass
+
+        stranded_loop(acquire_and_release())
+
+        # Act
+        with caplog.at_level(logging.DEBUG, logger="wool.runtime.resourcepool"):
+            asyncio.run(pool.acquire("other"))
+
+        # Assert
+        records = [r for r in caplog.records if r.name == "wool.runtime.resourcepool"]
+        assert [r.levelno for r in records] == [logging.WARNING]
+        assert "0 referenced and 1 idle" in records[0].getMessage()
+
+    def test_acquire_should_warn_once_per_partition_when_several_loops_stranded(
+        self, caplog, background_loops
+    ):
+        """Test the sweep drains every stale partition, reporting each.
+
+        Given:
+            A pool that cached one entry on each of three event loops
+            running concurrently on their own threads, all of which
+            then stopped without clearing their partitions.
+        When:
+            The pool is used from a fresh event loop.
+        Then:
+            It should log exactly one WARNING per stranded partition,
+            so the whole registry is drained on the first touch rather
+            than one partition at a time.
+        """
+
+        # Arrange
+        def make_resource(key):
+            return "obj"
+
+        pool = ResourcePool(factory=make_resource, ttl=60)
+        handles = [background_loops() for _ in range(3)]
+        for index, handle in enumerate(handles):
+            handle.run(pool.acquire(f"key-{index}"))
+        for handle in handles:
+            handle.close()
+
+        # Act
+        with caplog.at_level(logging.DEBUG, logger="wool.runtime.resourcepool"):
+            asyncio.run(pool.acquire("other"))
+
+        # Assert
+        records = [r for r in caplog.records if r.name == "wool.runtime.resourcepool"]
+        assert [r.levelno for r in records] == [logging.WARNING] * 3
+        assert all("1 referenced and 0 idle" in r.getMessage() for r in records)
+
+    def test_release_should_ignore_stale_timer_from_a_swept_partition(
+        self, mocker, stranded_loop
+    ):
+        """Test a TTL timer left on a swept partition cannot touch a later loop's.
+
+        Given:
+            A pool that released an entry on one event loop, scheduling
+            its TTL timer there, whose partition was then swept when a
+            second loop acquired the same key and still holds it.
+        When:
+            The first loop resumes long enough for that stale timer to
+            fire.
+        Then:
+            It should leave the second loop's entry untouched -- still
+            cached and still referenced, its finalizer never run.
+        """
+        # Arrange
+        finalizer = mocker.AsyncMock()
+        pool = ResourcePool(
+            factory=mocker.Mock(return_value="obj"), finalizer=finalizer, ttl=0.05
+        )
+
+        async def acquire_and_release():
+            async with pool.get("key"):
+                pass
+
+        async def stats():
+            return pool.stats
+
+        first_loop, _ = stranded_loop(acquire_and_release(), close=False)
+        second_loop, _ = stranded_loop(pool.acquire("key"), close=False)
+
+        # Act
+        first_loop.run_until_complete(asyncio.sleep(0.1))
+        second = second_loop.run_until_complete(stats())
+
+        # Assert
+        assert second.total_entries == 1
+        assert second.referenced_entries == 1
+        finalizer.assert_not_awaited()
+
+    def test_release_should_leave_no_pending_task_when_loop_closes_before_ttl(
+        self, mocker, stranded_loop
+    ):
+        """Test release defers cleanup without parking a task on the loop.
+
+        Given:
+            A pool with a positive TTL whose resource is released on
+            a dedicated event loop.
+        When:
+            The loop is closed and garbage-collected before the TTL
+            elapses.
+        Then:
+            It should leave no pending task on the loop and emit no
+            RuntimeWarning when the deferred cleanup is collected.
+        """
+
+        # Arrange
+        def create_release_and_drop():
+            pool = ResourcePool(factory=mocker.Mock(return_value="obj"), ttl=60)
+
+            async def acquire_release():
+                async with pool.get("key"):
+                    pass
+
+            loop, _ = stranded_loop(acquire_release(), close=False)
+            return loop
+
+        # Act
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loop = create_release_and_drop()
+            pending = asyncio.all_tasks(loop)
+            loop.close()
+            gc.collect()
+
+        # Assert
+        assert pending == set()
+        assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
 
 
 class TestResource:
     """Test suite for the Resource class."""
 
     @pytest.mark.asyncio
-    async def test_context_manager_should_auto_release(self):
+    async def test___aenter___should_raise_when_acquired_twice(self, mocker):
+        """Test that re-acquiring the same Resource instance raises error.
+
+        Given:
+            A Resource that has been used as context manager once
+        When:
+            Attempting to use it as context manager again
+        Then:
+            Should raise RuntimeError
+        """
+        # Arrange
+        mock_resource = mocker.Mock()
+        mock_factory = mocker.Mock(return_value=mock_resource)
+        pool = ResourcePool(factory=mock_factory, ttl=0)
+        resource_acquisition = pool.get("test-key")
+
+        # First use as context manager
+        async with resource_acquisition as resource:
+            assert resource is mock_resource
+
+        # Act & assert
+        # Second use as context manager should fail
+        with pytest.raises(RuntimeError, match="Cannot re-acquire a resource"):
+            async with resource_acquisition:
+                pass
+
+    @pytest.mark.asyncio
+    async def test___aenter___should_propagate_exception_when_acquire_fails(
+        self, mocker
+    ):
+        """Test a failed acquisition leaves the Resource usable again.
+
+        Given:
+            A Resource whose pool fails the first acquisition of its
+            key and succeeds on the next.
+        When:
+            The Resource is entered, raising, and then entered again.
+        Then:
+            It should propagate the first failure and still admit the
+            second entry, because a failed acquisition consumes nothing.
+        """
+        # Arrange
+        factory = mocker.Mock(side_effect=[RuntimeError("Acquire failed"), "resource"])
+        pool = ResourcePool(factory=factory, ttl=0)
+        resource_acquisition = pool.get("test-key")
+
+        # Act & assert
+        with pytest.raises(RuntimeError, match="Acquire failed"):
+            async with resource_acquisition:
+                pass
+
+        async with resource_acquisition as resource:
+            assert resource == "resource"
+
+    @pytest.mark.asyncio
+    async def test___aexit___should_release_resource_when_context_exits(self, mocker):
         """Test Resource as async context manager.
 
         Given:
@@ -2102,10 +2368,9 @@ class TestResource:
             Should auto-acquire on enter and auto-release on exit
         """
         # Arrange
-        mock_factory = Mock()
-        mock_resource = Mock()
+        mock_resource = mocker.Mock()
         mock_resource.name = "context-resource"
-        mock_factory.return_value = mock_resource
+        mock_factory = mocker.Mock(return_value=mock_resource)
 
         pool = ResourcePool(factory=mock_factory, ttl=0)
 
@@ -2120,12 +2385,122 @@ class TestResource:
         assert pool.stats.total_entries == 0
 
     @pytest.mark.asyncio
+    async def test___aexit___should_keep_entry_cached_when_ttl_positive(self, ttl_pool):
+        """Test Resource lifecycle with TTL keeps resource in cache.
+
+        Given:
+            A Resource instance with TTL pool
+        When:
+            Used as context manager
+        Then:
+            Should handle lifecycle correctly and resource stays cached due to TTL
+        """
+        # Arrange
+        pool, factory, _ = ttl_pool
+        resource_acquisition = pool.get("test-key")
+
+        # Act
+        # Use as context manager
+        async with resource_acquisition as resource:
+            assert resource is factory.return_value
+            assert pool.stats.referenced_entries == 1
+
+        # Assert
+        # Resource should still exist due to TTL but no longer referenced
+        assert pool.stats.total_entries == 1
+        assert pool.stats.referenced_entries == 0
+
+    @pytest.mark.asyncio
+    @given(resource=strategies.sampled_from([0, 0.0, False, "", b"", (), [], {}, set()]))
+    @settings(max_examples=10, deadline=None)
+    async def test___aexit___should_release_when_resource_is_falsy(self, resource):
+        """Test a falsy resource is still released on context exit.
+
+        Given:
+            A zero-TTL pool whose factory yields any falsy object that
+            is not None — zero, False, or an empty string, bytes,
+            tuple, list, dict, or set. (Whether a factory returning
+            None should pin its entry is an open question, so None is
+            excluded here.)
+        When:
+            The Resource is used as an async context manager and exits.
+        Then:
+            It should drop the reference and finalize the entry, so
+            falsiness never suppresses the release.
+        """
+        # Arrange
+        finalized = []
+        pool = ResourcePool(
+            factory=lambda key: resource,
+            finalizer=lambda obj: finalized.append(obj),
+            ttl=0,
+        )
+
+        # Act
+        async with pool.get("key") as acquired:
+            referenced = pool.stats.referenced_entries
+
+        # Assert
+        assert acquired is resource
+        assert referenced == 1
+        assert pool.stats.total_entries == 0
+        assert len(finalized) == 1
+        assert finalized[0] is resource
+
+    @pytest.mark.asyncio
+    async def test___aexit___should_raise_when_not_acquired(self, mocker):
+        """Test Resource release when not acquired raises RuntimeError.
+
+        Given:
+            A Resource instance that was never acquired
+        When:
+            Attempting to exit context without entering properly
+        Then:
+            Should raise RuntimeError indicating resource was not acquired
+        """
+        # Arrange
+        pool = ResourcePool(factory=mocker.Mock(return_value="resource"), ttl=0)
+        resource = pool.get("test-key")
+
+        # Act & assert - exit without ever entering the context
+        with pytest.raises(
+            RuntimeError, match="Cannot release a resource that was not acquired"
+        ):
+            await resource.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
+    async def test___aexit___should_raise_when_already_released(self, mocker):
+        """Test Resource release when already released raises RuntimeError.
+
+        Given:
+            A Resource instance that was already released
+        When:
+            Attempting to exit context again after normal usage
+        Then:
+            Should raise RuntimeError indicating resource was already released
+        """
+        # Arrange
+        pool = ResourcePool(factory=mocker.Mock(return_value="resource"), ttl=0)
+        resource = pool.get("test-key")
+
+        # Use normally once (which sets the resource released)
+        async with resource:
+            pass
+
+        # Act & assert - exit the already-released context a second time
+        with pytest.raises(
+            RuntimeError,
+            match="Cannot release a resource that has already been released",
+        ):
+            await resource.__aexit__(None, None, None)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "body_error",
         [None, KeyError("boom")],
         ids=["clean-exit", "body-raises"],
     )
-    async def test_context_manager_should_finalize_when_retired_in_body(
+    async def test___aexit___should_finalize_when_retired_in_body(
         self, retired_entry_pool, body_error
     ):
         """Test exiting the context finalizes a resource retired inside it.
@@ -2159,187 +2534,3 @@ class TestResource:
         finalizer.assert_awaited_once_with("first")
         assert pool.stats.total_entries == 0
         assert not pool.pending_cleanup
-
-    @pytest.mark.asyncio
-    async def test_resource_should_have_no_manual_release_method(self):
-        """Test Resource has no manual release method.
-
-        Given:
-            A Resource instance
-        When:
-            Checking for release method
-        Then:
-            Should not have a release method
-        """
-        # Arrange
-        mock_factory = Mock()
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        pool = ResourcePool(factory=mock_factory, ttl=0)
-
-        resource_acquisition = pool.get("test-key")
-
-        # Act & assert
-        # Manual release method should not exist
-        assert not hasattr(resource_acquisition, "release")
-
-    @pytest.mark.asyncio
-    async def test_resource_should_stay_cached_when_ttl_set(self):
-        """Test Resource lifecycle with TTL keeps resource in cache.
-
-        Given:
-            A Resource instance with TTL pool
-        When:
-            Used as context manager
-        Then:
-            Should handle lifecycle correctly and resource stays cached due to TTL
-        """
-        # Arrange
-        mock_factory = Mock()
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        pool = ResourcePool(factory=mock_factory, ttl=60)  # Use TTL to keep resource
-
-        resource_acquisition = pool.get("test-key")
-
-        # Use as context manager
-        async with resource_acquisition as resource:
-            assert resource is mock_resource
-            assert pool.stats.referenced_entries == 1
-
-        # Resource should still exist due to TTL but no longer referenced
-        assert pool.stats.total_entries == 1
-        assert pool.stats.referenced_entries == 0
-
-    @pytest.mark.asyncio
-    async def test_context_manager_should_handle_lifecycle(self):
-        """Test using Resource only as context manager.
-
-        Given:
-            A Resource instance
-        When:
-            Used only as context manager
-        Then:
-            Should handle acquisition and release correctly
-        """
-        # Arrange
-        mock_factory = Mock()
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        pool = ResourcePool(factory=mock_factory, ttl=0)
-
-        # Act & assert
-        # Use only as context manager
-        async with pool.get("test-key") as resource:
-            assert resource is mock_resource
-            assert pool.stats.referenced_entries == 1
-
-        # After context exit, should be cleaned up (TTL=0)
-        assert pool.stats.total_entries == 0
-
-    @pytest.mark.asyncio
-    async def test_acquire_should_raise_runtime_error_when_acquired_twice(self):
-        """Test that re-acquiring the same Resource instance raises error.
-
-        Given:
-            A Resource that has been used as context manager once
-        When:
-            Attempting to use it as context manager again
-        Then:
-            Should raise RuntimeError
-        """
-        mock_factory = Mock()
-        mock_resource = Mock()
-        mock_factory.return_value = mock_resource
-
-        pool = ResourcePool(factory=mock_factory, ttl=0)
-        resource_acquisition = pool.get("test-key")
-
-        # First use as context manager
-        async with resource_acquisition as resource:
-            assert resource is mock_resource
-
-        # Second use as context manager should fail
-        with pytest.raises(RuntimeError, match="Cannot re-acquire a resource"):
-            async with resource_acquisition:
-                pass
-
-    @pytest.mark.asyncio
-    async def test_resource_context_should_propagate_acquire_exception(self):
-        """Test Resource context manager handles acquire exceptions properly.
-
-        Given:
-            A Resource instance from a pool that fails during acquire
-        When:
-            Entering the context manager
-        Then:
-            Should propagate the exception and set _acquired to False
-        """
-        # Arrange
-        mock_pool = AsyncMock()
-        mock_pool.acquire.side_effect = RuntimeError("Acquire failed")
-
-        resource = Resource(pool=mock_pool, key="test-key")
-
-        # Act & assert
-        with pytest.raises(RuntimeError, match="Acquire failed"):
-            async with resource:
-                pass
-
-        # Verify _acquired was set to False during exception handling
-        assert resource._acquired is False
-
-    @pytest.mark.asyncio
-    async def test_resource_context_should_raise_runtime_error_when_not_acquired(self):
-        """Test Resource release when not acquired raises RuntimeError.
-
-        Given:
-            A Resource instance that was never acquired
-        When:
-            Attempting to exit context without entering properly
-        Then:
-            Should raise RuntimeError indicating resource was not acquired
-        """
-        # Arrange
-        mock_pool = AsyncMock()
-        resource = Resource(pool=mock_pool, key="test-key")
-
-        # Act & assert - manually call __aexit__ without calling __aenter__
-        with pytest.raises(
-            RuntimeError, match="Cannot release a resource that was not acquired"
-        ):
-            await resource.__aexit__(None, None, None)
-
-    @pytest.mark.asyncio
-    async def test_resource_context_should_raise_runtime_error_when_already_released(
-        self,
-    ):
-        """Test Resource release when already released raises RuntimeError.
-
-        Given:
-            A Resource instance that was already released
-        When:
-            Attempting to exit context again after normal usage
-        Then:
-            Should raise RuntimeError indicating resource was already released
-        """
-        # Arrange
-        mock_pool = AsyncMock()
-        mock_resource = Mock()
-        mock_pool.acquire.return_value = mock_resource
-
-        resource = Resource(pool=mock_pool, key="test-key")
-
-        # Use normally once (which sets _released = True)
-        async with resource:
-            pass
-
-        # Act & assert - manually call __aexit__ again
-        with pytest.raises(
-            RuntimeError,
-            match="Cannot release a resource that has already been released",
-        ):
-            await resource.__aexit__(None, None, None)

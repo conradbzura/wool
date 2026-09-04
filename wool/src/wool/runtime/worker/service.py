@@ -651,13 +651,16 @@ class WorkerService(protocol.WorkerServicer):
         """Schedule worker-loop shutdown and optionally join the thread.
 
         Finalizes the proxy and discovery-subscriber pools on the worker
-        loop first: they are bound to it, and a `ResourcePool` refuses
-        use from any other running loop, so this finalizer is the one
-        place they can still be cleared. A clear that raises or exceeds
-        the shared `_DRAIN_TIMEOUT` budget is logged and does not
-        prevent the stop; whatever it left cached is dropped when the
-        pool next rebinds. With ``timeout=0`` the clears run best-effort
-        on the daemon thread after this returns.
+        loop first: a `ResourcePool` partitions its entries by loop and
+        only the owning loop can finalize them, so this finalizer is the
+        one place the worker loop's share can still be cleared. Exiting
+        each pooled proxy also releases its hold on the channel pool, so
+        the last one closes the channels the worker loop dispatched over.
+        A clear that raises or exceeds the shared `_DRAIN_TIMEOUT` budget
+        is logged and does not prevent the stop; whatever it left cached
+        is swept and reported by the pool once the loop has stopped. With
+        ``timeout=0`` the clears run best-effort on the daemon thread
+        after this returns.
 
         Drains successive generations of pending tasks on the
         worker loop, then signals the loop to stop. A cancelled

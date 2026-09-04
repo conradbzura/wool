@@ -872,7 +872,7 @@ _channel_pool: ResourcePool[_Channel] = ResourcePool(
 
 
 def channel_pool_stats() -> ResourcePool.Stats:
-    """Report what the process-wide channel pool currently holds.
+    """Report what the channel pool holds for the calling event loop.
 
     Counts cached channels, how many are referenced by an in-flight
     dispatch, and how many are awaiting their idle finalization. A
@@ -881,22 +881,34 @@ def channel_pool_stats() -> ResourcePool.Stats:
 
     :returns:
         A snapshot of the pool's counters at the moment of the call.
+    :raises RuntimeError:
+        If there is no running event loop; see `ResourcePool.stats`.
     """
     return _channel_pool.stats
 
 
 async def clear_channel_pool() -> None:
-    """Close and clear every gRPC channel in the process-wide pool.
+    """Close and clear every gRPC channel cached by the calling event loop.
 
-    `ResourcePool.clear` over the channel pool, across every pool key,
-    including UDS targets; `channel_pool_hold` is the drain-safe
-    retirement path while the process keeps dispatching.
+    `ResourcePool.clear` over the calling loop's partition of the channel
+    pool, across every pool key, including UDS targets; channels another
+    loop cached are left to that loop. `channel_pool_hold` is the
+    drain-safe retirement path while the loop keeps dispatching.
     """
     await _channel_pool.clear()
 
 
+def _channel_pool_hold_factory(key: None) -> ResourcePool[_Channel]:
+    """Return the channel pool as the holds pool's single entry.
+
+    Named rather than a lambda so a swept partition of holds is reported
+    under a recognizable pool name.
+    """
+    return _channel_pool
+
+
 _channel_pool_holds: ResourcePool[ResourcePool[_Channel]] = ResourcePool(
-    factory=lambda _: _channel_pool,
+    factory=_channel_pool_hold_factory,
     finalizer=ResourcePool.expire_all,
     ttl=0,
 )
@@ -921,8 +933,8 @@ def channel_pool_hold() -> Resource[ResourcePool[_Channel]]:
     the channel pool and whose finalizer retires it: a reference count
     that finalizes on the last release is exactly what `ResourcePool`
     already is, so composing it avoids a second counter that would have
-    to reproduce the same rules — and, because both pools bind by loop
-    the same way, a hold can never outlive the channels it governs.
+    to reproduce the same per-loop rules.
+
     ``ttl=0`` makes the final release retire the channels
     inline rather than after a grace period. Retirement is
     `ResourcePool.expire_all` rather than `ResourcePool.clear` because

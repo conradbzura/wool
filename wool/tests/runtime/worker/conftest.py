@@ -67,10 +67,10 @@ async def _clear_channel_pool():
     Covers tests that dispatch through a bare `WorkerConnection`, which
     takes no hold on the pool: closing each test's channels here, on
     their own loop, is the only place a ``grpc.aio`` channel can still
-    be closed — an orphan the next rebind drops never is. The holds
+    be closed — an orphan the next sweep drops never is. The holds
     pool is cleared first, and for the same reason: a test that leaves
     a proxy started strands a referenced hold that the next loop's
-    rebind would report as a leak against whichever test runs then.
+    sweep would report as a leak against whichever test runs then.
     """
     yield
     await connection._channel_pool_holds.clear()
