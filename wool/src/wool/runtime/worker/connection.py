@@ -25,6 +25,7 @@ import grpc.aio
 import wool
 from wool import protocol
 from wool.exceptions import WoolError
+from wool.runtime.resourcepool import Resource
 from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.routine.task import Task
 from wool.runtime.serializer import Serializer
@@ -860,6 +861,11 @@ async def _channel_finalizer(channel: _Channel):
     await channel.close()
 
 
+# One pool for the whole process, so every handle to the same worker
+# shares a channel. A cached channel closes when its TTL expires, or
+# sooner once the last `channel_pool_hold` on its loop is released; a
+# loop that stops without releasing strands its channels, and
+# `ResourcePool` documents how that is reported.
 _channel_pool: ResourcePool[_Channel] = ResourcePool(
     factory=_channel_factory, finalizer=_channel_finalizer, ttl=60
 )
@@ -882,10 +888,50 @@ def channel_pool_stats() -> ResourcePool.Stats:
 async def clear_channel_pool() -> None:
     """Close and clear every gRPC channel in the process-wide pool.
 
-    Invalidates cached channels across every pool key, including
-    UDS targets.
+    `ResourcePool.clear` over the channel pool, across every pool key,
+    including UDS targets; `channel_pool_hold` is the drain-safe
+    retirement path while the process keeps dispatching.
     """
     await _channel_pool.clear()
+
+
+_channel_pool_holds: ResourcePool[ResourcePool[_Channel]] = ResourcePool(
+    factory=lambda _: _channel_pool,
+    finalizer=ResourcePool.expire_all,
+    ttl=0,
+)
+
+
+def channel_pool_hold() -> Resource[ResourcePool[_Channel]]:
+    """Return a hold on the channel pool for the calling event loop.
+
+    Entering the returned `Resource` declares that the pooled channels
+    are in use; releasing it withdraws that declaration. An open hold
+    defers retirement, leaving idle channels to the pool's TTL, and a
+    hold nested inside another retires nothing on its own; the last
+    release retires every cached channel, on the loop that opened them,
+    through `ResourcePool.expire_all` without waiting for the idle TTL.
+
+    :returns:
+        A single-use `Resource` yielding the channel pool itself.
+
+    .. rubric:: Implementation notes
+
+    The holds are references on a one-key `ResourcePool` whose entry is
+    the channel pool and whose finalizer retires it: a reference count
+    that finalizes on the last release is exactly what `ResourcePool`
+    already is, so composing it avoids a second counter that would have
+    to reproduce the same rules — and, because both pools bind by loop
+    the same way, a hold can never outlive the channels it governs.
+    ``ttl=0`` makes the final release retire the channels
+    inline rather than after a grace period. Retirement is
+    `ResourcePool.expire_all` rather than `ResourcePool.clear` because
+    the loop keeps running: a dispatch whose teardown lands after the
+    last hold is released still holds its channel reference, and
+    force-closing under it would let that late release corrupt an entry
+    rebuilt for the same key.
+    """
+    return _channel_pool_holds.get(None)
 
 
 _TEARDOWN_TIMEOUT: Final = 60.0

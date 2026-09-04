@@ -57,6 +57,7 @@ from wool.runtime.worker.connection import HandshakeError
 from wool.runtime.worker.connection import RpcError
 from wool.runtime.worker.connection import TransientRpcError
 from wool.runtime.worker.connection import WorkerConnection
+from wool.runtime.worker.connection import channel_pool_hold
 from wool.runtime.worker.exceptions import UnparsableVersionWarning
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.noreentry import noreentry
@@ -849,7 +850,8 @@ class WorkerProxy:
     async def start(self) -> None:
         """Start the proxy by initiating discovery and load balancing.
 
-        Subscribes to worker discovery, initializes the load-balancer
+        Takes a hold on the loop's channel pool (see `channel_pool_hold`),
+        subscribes to worker discovery, initializes the load-balancer
         context, and launches the worker sentinel task.  A start that
         fails at any step, the quorum wait included, releases what it had
         acquired in reverse order and leaves the proxy un-started; a load
@@ -877,6 +879,7 @@ class WorkerProxy:
             # Pushed first so it runs last, after every context has
             # exited, on both the rollback and the stop path.
             stack.callback(self._reset_state)
+            await stack.enter_async_context(channel_pool_hold())
             self._loadbalancer_service = await stack.enter_async_context(
                 _resolved(self._loadbalancer)
             )
@@ -956,8 +959,10 @@ class WorkerProxy:
 
         Unwinds what `start` acquired in reverse order: sentinel first
         (so it stops reading from the discovery stream), then
-        discovery, then load balancer.  Every step runs even if an
-        earlier one raises, each context manager
+        discovery, then load balancer, and finally the proxy's hold on
+        the channel pool (see `channel_pool_hold`), so the loop's
+        cached channels close once no hold on the pool remains.  Every
+        step runs even if an earlier one raises, each context manager
         among them receives the exception info passed to ``stop``, and
         the proxy counts as stopped afterwards either way.
 
