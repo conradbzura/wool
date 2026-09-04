@@ -7,6 +7,7 @@ fixtures, and builder functions for composable integration tests.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import signal
 import subprocess
@@ -34,9 +35,11 @@ from wool.runtime.context.runtime import dispatch_timeout
 from wool.runtime.discovery.local import LocalDiscovery
 from wool.runtime.loadbalancer.base import NoWorkersAvailable
 from wool.runtime.loadbalancer.roundrobin import RoundRobinLoadBalancer
+from wool.runtime.worker import connection
 from wool.runtime.worker.auth import WorkerCredentials
 from wool.runtime.worker.base import ChannelOptions
 from wool.runtime.worker.base import WorkerOptions
+from wool.runtime.worker.connection import channel_pool_stats
 from wool.runtime.worker.local import LocalWorker
 from wool.runtime.worker.pool import WorkerPool
 
@@ -47,24 +50,67 @@ from .routines import ContextVarPattern
 _TIMEOUT = 30
 
 
-async def poll_until_count(get_uids, expected_count, *, timeout=5.0, interval=0.02):
-    """Poll get_uids() until it reports expected_count uids, or fail.
+async def poll_until(get, predicate, *, describe, timeout=5.0, interval=0.02):
+    """Poll ``get()`` until ``predicate`` accepts its value, or fail.
 
-    Returns the uid set once its size equals expected_count. Replaces a
+    Returns the accepted value. ``get`` may be sync or async. Replaces a
     fixed settle sleep: it waits no longer than necessary and fails
     loudly — rather than silently passing on a change that arrived late
-    — if the count never reaches the expected value within the deadline.
+    — if no value satisfies ``predicate`` within the deadline, naming
+    ``describe`` and the last value seen.
     """
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout
     while True:
-        uids = get_uids()
-        if len(uids) == expected_count:
-            return uids
-        assert loop.time() < deadline, (
-            f"admitted count never reached {expected_count}; last saw {len(uids)}"
-        )
+        value = get()
+        if inspect.isawaitable(value):
+            value = await value
+        if predicate(value):
+            return value
+        assert loop.time() < deadline, f"{describe}; last saw {value!r}"
         await asyncio.sleep(interval)
+
+
+async def poll_until_count(get_uids, expected_count, *, timeout=5.0, interval=0.02):
+    """Poll get_uids() until it reports expected_count uids, or fail."""
+    return await poll_until(
+        get_uids,
+        lambda uids: len(uids) == expected_count,
+        describe=f"admitted count never reached {expected_count}",
+        timeout=timeout,
+        interval=interval,
+    )
+
+
+async def poll_until_channel_pool_settles(*, timeout=5.0, interval=0.02):
+    """Poll the channel pool until it caches nothing, or fail.
+
+    Returns the settled `wool.runtime.resourcepool.ResourcePool.Stats`
+    once ``total_entries`` reaches zero. The channel a pool exit retires
+    closes a beat after ``__aexit__`` returns, so a bare assertion on
+    the counters races that lag; the failure message carries the last
+    snapshot so a real leak names what it stranded.
+    """
+    return await poll_until(
+        channel_pool_stats,
+        lambda stats: stats.total_entries == 0,
+        describe="channel pool never settled to zero entries",
+        timeout=timeout,
+        interval=interval,
+    )
+
+
+async def run_on_foreign_loop(factory):
+    """Run ``factory()`` to completion on a fresh loop on another thread.
+
+    Returns whatever the coroutine returns. ``asyncio.run`` closes its
+    loop the moment the coroutine finishes, so whatever the coroutine
+    left in the channel pool is stranded exactly as it would be in a
+    program whose loop stops — which is the condition a stranded-channel
+    test needs. The factory is called on the worker thread so the
+    coroutine is never created on the calling loop's thread.
+    """
+    return await asyncio.to_thread(lambda: asyncio.run(factory()))
 
 
 async def poll_dispatch_until_pid(target_pid, message, *, timeout=15.0, interval=0.1):
@@ -372,7 +418,7 @@ class _DirectDiscovery:
 # as a plain coroutine, breaking ``async with`` analysis at every call site.
 @asynccontextmanager
 async def build_pool_from_scenario(
-    scenario, credentials_map, *, backpressure=None
+    scenario, credentials_map, *, backpressure=None, proxy_pool_ttl=None
 ) -> AsyncIterator[WorkerPool]:
     """Build and enter a WorkerPool from a complete Scenario.
 
@@ -383,7 +429,13 @@ async def build_pool_from_scenario(
         Optional admission-control hook that overrides the hook the
         ``BackpressureMode`` dimension would otherwise resolve. Tests
         that need a bespoke (e.g. context-var-aware) hook pass it here
-        rather than building a :class:`WorkerPool` by hand.
+        rather than building a `WorkerPool` by hand.
+    :param proxy_pool_ttl:
+        Optional idle TTL, in seconds, for the proxy pool each
+        spawned `wool.LocalWorker` caches its nested-dispatch
+        proxies in. ``None`` leaves the worker's own default in
+        place. Like ``backpressure``, it applies only to the LAN
+        `LocalWorker` processes the builder spawns itself.
     """
     missing = [
         f.name
@@ -538,6 +590,13 @@ async def build_pool_from_scenario(
                 ) as pool:
                     yield pool
             else:
+                worker_kwargs = {
+                    "host": "127.0.0.1",
+                    "options": options,
+                    "backpressure": bp_hook,
+                }
+                if proxy_pool_ttl is not None:
+                    worker_kwargs["proxy_pool_ttl"] = proxy_pool_ttl
                 pool_kwargs = {
                     "loadbalancer": lb,
                     "credentials": creds,
@@ -550,12 +609,7 @@ async def build_pool_from_scenario(
                     # keyword outright rather than pre-supply it.
                     # The publisher-prescribed bind host is covered by
                     # test_lan_publish.py.
-                    "worker": partial(
-                        LocalWorker,
-                        host="127.0.0.1",
-                        options=options,
-                        backpressure=bp_hook,
-                    ),
+                    "worker": partial(LocalWorker, **worker_kwargs),
                     "lazy": lazy,
                     "quorum": quorum,
                 }
@@ -1584,13 +1638,18 @@ def credentials_map(test_certificates):
 async def _clear_channel_pool():
     """Finalize the module-level gRPC channel pool on the loop that used it.
 
-    Prompt finalization only; the pool rebinds and drops orphans on its
-    own, so this is not required for correctness.
+    Closing each test's channels here, on their own loop, is the only
+    place a ``grpc.aio`` channel can still be closed — an orphan the
+    next rebind drops never is. The holds pool is cleared first, and for
+    the same reason: every drop is reported as a leak (see
+    `wool.runtime.resourcepool.ResourcePool`), so a test that leaves a
+    hold open would strand a referenced entry and put a warning in the
+    log of whichever test runs next — which several tests here assert
+    is empty.
     """
     yield
-    import wool.runtime.worker.connection as _conn
-
-    await _conn.clear_channel_pool()
+    await connection._channel_pool_holds.clear()
+    await connection.clear_channel_pool()
 
 
 # Integration tests rely on pytest-asyncio's Task-per-test scoping

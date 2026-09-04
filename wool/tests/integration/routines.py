@@ -20,6 +20,7 @@ from enum import auto
 
 import wool
 from wool.runtime.worker.auth import current_credentials
+from wool.runtime.worker.connection import channel_pool_stats
 
 
 class ContextVarPattern(Enum):
@@ -559,6 +560,24 @@ async def get_pid() -> int:
     Used to observe which worker process executed a dispatch.
     """
     return os.getpid()
+
+
+@wool.routine
+async def worker_channel_pool_stats() -> tuple[int, int, int]:
+    """Report the worker task loop's gRPC channel pool counters.
+
+    Returns ``(total_entries, referenced_entries, pending_cleanup)`` as
+    read on the loop that runs the worker's tasks, which is the loop a
+    nested dispatch caches its channel on. Lets a caller observe what a
+    worker's own outbound channels leave behind — the counters are
+    otherwise invisible from outside the worker process.
+    """
+    stats = channel_pool_stats()
+    return (
+        stats.total_entries,
+        stats.referenced_entries,
+        stats.pending_cleanup,
+    )
 
 
 @wool.routine
