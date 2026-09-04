@@ -43,12 +43,16 @@ from wool.runtime.worker.connection import HandshakeError
 from wool.runtime.worker.connection import RpcError
 from wool.runtime.worker.connection import TransientRpcError
 from wool.runtime.worker.connection import WorkerConnection
+from wool.runtime.worker.connection import channel_pool_hold
+from wool.runtime.worker.connection import channel_pool_stats
 from wool.runtime.worker.exceptions import UnparsableVersionWarning
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.runtime.worker.proxy import WorkerProxy
 from wool.runtime.worker.proxy import is_version_compatible
 from wool.runtime.worker.proxy import parse_version
 from wool.utilities.afilter import afilter
+
+from .conftest import MockDiscoveryService
 
 
 async def _drain_until(predicate, *, timeout=2.0):
@@ -1123,6 +1127,7 @@ class TestWorkerProxy:
 
         # Assert
         assert proxy.started
+        await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_enter_with_lazy_proxy(self, mock_discovery_service):
@@ -1165,6 +1170,7 @@ class TestWorkerProxy:
 
         # Assert
         assert proxy.started
+        await proxy.exit()
 
     @pytest.mark.asyncio
     async def test_enter_already_entered_raises_error(self, mock_discovery_service):
@@ -1228,6 +1234,186 @@ class TestWorkerProxy:
         assert len(proxy.workers) == 0
 
     @pytest.mark.asyncio
+    async def test_stop_should_close_pooled_channels_when_last_proxy_on_loop(
+        self,
+        mock_discovery_service,
+        mock_proxy_session,
+        sample_task,
+        dispatching_stub,
+        pooled_channel,
+    ):
+        """Test the last proxy to stop on a loop closes the loop's channels.
+
+        Given:
+            Two started proxies on the same event loop and an idle
+            channel the module-level pool cached for a dispatch made
+            while both were started.
+        When:
+            The proxies are stopped one after the other.
+        Then:
+            It should leave the channel open after the first stop and
+            close it exactly once after the second, emptying the pool,
+            so a proxy nested inside another never closes channels the
+            outer one still uses.
+        """
+        # Arrange
+        outer = WorkerProxy(discovery=mock_discovery_service, lazy=False, quorum=0)
+        inner = WorkerProxy(discovery=MockDiscoveryService(), lazy=False, quorum=0)
+        await outer.start()
+        await inner.start()
+        connection = WorkerConnection(
+            "localhost:50051", options=ChannelOptions(max_concurrent_streams=10)
+        )
+        async for _ in await connection.dispatch(sample_task):
+            pass
+
+        # Act
+        await inner.stop()
+        closed_after_inner = pooled_channel.close.await_count
+        entries_after_inner = channel_pool_stats().total_entries
+        await outer.stop()
+
+        # Assert
+        assert closed_after_inner == 0
+        assert entries_after_inner == 1
+        pooled_channel.close.assert_awaited_once()
+        assert channel_pool_stats().total_entries == 0
+
+    @pytest.mark.asyncio
+    async def test_start_should_release_channel_pool_hold_when_loadbalancer_invalid(
+        self,
+        mock_discovery_service,
+        mock_proxy_session,
+        sample_task,
+        dispatching_stub,
+        pooled_channel,
+    ):
+        """Test a failed start hands back the channel-pool hold it took.
+
+        Given:
+            A non-lazy proxy whose load balancer is not a
+            `LoadBalancerLike`, so ``start`` raises after taking its
+            channel-pool hold.
+        When:
+            A fresh hold is taken after the failed start, a dispatch
+            caches a channel under it, and that hold is released.
+        Then:
+            It should close the cached channel and empty the pool —
+            which only happens when the failed start's rollback gave its
+            own hold back, leaving the fresh one as the last.
+        """
+        # Arrange
+        proxy = WorkerProxy(
+            discovery=mock_discovery_service,
+            loadbalancer=object(),  # type: ignore[arg-type]
+            lazy=False,
+            quorum=0,
+        )
+
+        # Act
+        with pytest.raises(ValueError):
+            await proxy.start()
+        # The probe hold.
+        async with channel_pool_hold():
+            connection = WorkerConnection(
+                "localhost:50051", options=ChannelOptions(max_concurrent_streams=10)
+            )
+            async for _ in await connection.dispatch(sample_task):
+                pass
+
+        # Assert
+        assert not proxy.started
+        pooled_channel.close.assert_awaited_once()
+        assert channel_pool_stats().total_entries == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_should_release_channel_pool_hold_when_teardown_raises(
+        self,
+        mock_proxy_session,
+        sample_task,
+        dispatching_stub,
+        pooled_channel,
+    ):
+        """Test a raising teardown still hands the channel-pool hold back.
+
+        Given:
+            A started proxy holding the loop's only channel-pool hold,
+            with one idle cached channel and a discovery context manager
+            whose exit raises.
+        When:
+            The proxy is stopped and the error observed.
+        Then:
+            It should still close the cached channel, since the hold's
+            release is guaranteed by the exit stack rather than by the
+            teardowns before it completing.
+        """
+
+        # Arrange
+        class RaisingDiscovery:
+            async def __aenter__(self):
+                return MockDiscoveryService()
+
+            async def __aexit__(self, *args):
+                raise RuntimeError("teardown failed")
+
+        proxy = WorkerProxy(discovery=lambda: RaisingDiscovery(), lazy=False, quorum=0)
+        await proxy.start()
+        connection = WorkerConnection(
+            "localhost:50051", options=ChannelOptions(max_concurrent_streams=10)
+        )
+        async for _ in await connection.dispatch(sample_task):
+            pass
+
+        # Act
+        with pytest.raises(RuntimeError, match="teardown failed"):
+            await proxy.stop()
+
+        # Assert
+        pooled_channel.close.assert_awaited_once()
+        assert channel_pool_stats().total_entries == 0
+
+    @pytest.mark.asyncio
+    async def test_start_should_take_a_fresh_hold_when_restarted_after_stop(
+        self,
+        mock_discovery_service,
+        mock_proxy_session,
+        sample_task,
+        dispatching_stub,
+        pooled_channel,
+    ):
+        """Test a restarted proxy holds the channel pool again.
+
+        Given:
+            A proxy started, dispatched through, and stopped once, so
+            its first hold has been released and cannot be re-entered.
+        When:
+            It is started again, another dispatch caches a channel, and
+            it is stopped a second time.
+        Then:
+            It should close that second channel too, so a restart takes
+            a hold of its own rather than reusing the spent one.
+        """
+        # Arrange
+        proxy = WorkerProxy(discovery=mock_discovery_service, lazy=False, quorum=0)
+        connection = WorkerConnection(
+            "localhost:50051", options=ChannelOptions(max_concurrent_streams=10)
+        )
+        await proxy.start()
+        async for _ in await connection.dispatch(sample_task):
+            pass
+        await proxy.stop()
+
+        # Act
+        await proxy.start()
+        async for _ in await connection.dispatch(sample_task):
+            pass
+        await proxy.stop()
+
+        # Assert
+        assert pooled_channel.close.await_count == 2
+        assert channel_pool_stats().total_entries == 0
+
+    @pytest.mark.asyncio
     async def test_start_already_started_raises_error(
         self, mock_discovery_service, mock_proxy_session
     ):
@@ -1247,6 +1433,7 @@ class TestWorkerProxy:
         # Act & assert
         with pytest.raises(RuntimeError, match="Proxy already started"):
             await proxy.start()
+        await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_exit_not_started_raises_error(self, mock_discovery_service):
@@ -5084,6 +5271,7 @@ class TestWorkerProxy:
         # Assert
         assert results == ["test_result"]
         spy_loadbalancer_with_workers.delegate.assert_called_once()
+        await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_dispatch_not_started_raises_error(
@@ -5481,6 +5669,7 @@ class TestWorkerProxy:
         with pytest.raises(Exception, match="Load balancer error"):
             async for _ in await proxy.dispatch(mock_wool_task):
                 pass
+        await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_dispatch_waits_for_workers_then_dispatches(
@@ -5532,6 +5721,7 @@ class TestWorkerProxy:
 
         # Assert
         assert results == ["test_result"]
+        await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_dispatch_blocks_on_quorum_until_worker_discovered(
