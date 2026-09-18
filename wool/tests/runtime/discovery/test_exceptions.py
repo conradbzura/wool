@@ -24,21 +24,12 @@ from wool.runtime.worker.frame import Frame
 #: each class's own property coverage lives in its own suite.
 _RECONSTRUCTION_CASES = [
     pytest.param(DiscoveryCapacityExhausted, (128,), ("capacity",), id="capacity"),
-    pytest.param(
-        DiscoveryCapacityExhausted, (None,), ("capacity",), id="capacity-unknown"
-    ),
     pytest.param(DiscoveryBlockExhausted, (2048,), ("size",), id="block"),
-    pytest.param(DiscoveryBlockExhausted, (None,), ("size",), id="block-unknown"),
     pytest.param(
         DiscoveryWorkerNotFound, (uuid.UUID(int=7),), ("uid",), id="worker-not-found"
     ),
-    pytest.param(DiscoveryWorkerNotFound, (None,), ("uid",), id="worker-unknown"),
     pytest.param(DiscoveryNamespaceInUse, ("ns",), ("namespace",), id="in-use"),
-    pytest.param(DiscoveryNamespaceInUse, (None,), ("namespace",), id="in-use-unknown"),
     pytest.param(DiscoveryNamespaceNotFound, ("ns",), ("namespace",), id="not-found"),
-    pytest.param(
-        DiscoveryNamespaceNotFound, (None,), ("namespace",), id="not-found-unknown"
-    ),
 ]
 
 
@@ -53,7 +44,7 @@ def _marshalled(error):
 
 
 class TestDiscoveryCapacityExhausted:
-    @given(capacity=st.one_of(st.none(), st.integers()))
+    @given(capacity=st.integers())
     @example(capacity=128)
     @example(capacity=None)
     @settings(max_examples=100)
@@ -63,7 +54,7 @@ class TestDiscoveryCapacityExhausted:
         """Test field exposure and message content over the argument.
 
         Given:
-            Any optional capacity.
+            Any capacity.
         When:
             A DiscoveryCapacityExhausted is constructed from it.
         Then:
@@ -77,19 +68,17 @@ class TestDiscoveryCapacityExhausted:
         assert error.capacity == capacity
 
         message = str(error)
-        assert "No available slots in discovery registry" in message
-        if capacity is None:
-            assert "capacity" not in message
-        else:
-            assert f"capacity {capacity}" in message
+        assert message == (
+            f"No available slots in discovery registry (capacity {capacity})"
+        )
 
-    @given(capacity=st.one_of(st.none(), st.integers()))
+    @given(capacity=st.integers())
     @settings(max_examples=50)
     def test___reduce___should_preserve_its_capacity_across_a_boundary(self, capacity):
         """Test reconstruction survives pickling.
 
         Given:
-            Any optional capacity.
+            Any capacity.
         When:
             A DiscoveryCapacityExhausted is pickled and unpickled.
         Then:
@@ -105,13 +94,13 @@ class TestDiscoveryCapacityExhausted:
         assert restored.capacity == capacity
         assert restored.args == error.args
 
-    @given(capacity=st.one_of(st.none(), st.integers()))
+    @given(capacity=st.integers())
     @settings(max_examples=25)
     def test___init___should_survive_the_worker_exception_serializer(self, capacity):
         """Test the exception survives the worker exception serializer.
 
         Given:
-            Any optional capacity.
+            Any capacity.
         When:
             A DiscoveryCapacityExhausted is encoded in an exception
             response frame and decoded.
@@ -132,7 +121,7 @@ class TestDiscoveryCapacityExhausted:
 
 
 class TestDiscoveryBlockExhausted:
-    @given(size=st.one_of(st.none(), st.integers()))
+    @given(size=st.integers())
     @example(size=2048)
     @example(size=None)
     @settings(max_examples=100)
@@ -154,13 +143,9 @@ class TestDiscoveryBlockExhausted:
         assert error.size == size
 
         message = str(error)
-        assert "Worker metadata exceeds its registered block" in message
-        if size is None:
-            assert "bytes" not in message
-        else:
-            assert f"{size} bytes" in message
+        assert message == f"Worker metadata exceeds its registered block ({size} bytes)"
 
-    @given(size=st.one_of(st.none(), st.integers()))
+    @given(size=st.integers())
     @settings(max_examples=50)
     def test___reduce___should_preserve_its_size_across_a_boundary(self, size):
         """Test reconstruction survives pickling.
@@ -182,7 +167,7 @@ class TestDiscoveryBlockExhausted:
         assert restored.size == size
         assert restored.args == error.args
 
-    @given(size=st.one_of(st.none(), st.integers()))
+    @given(size=st.integers())
     @settings(max_examples=25)
     def test___init___should_survive_the_worker_exception_serializer(self, size):
         """Test the exception survives the worker exception serializer.
@@ -209,7 +194,7 @@ class TestDiscoveryBlockExhausted:
 
 
 class TestDiscoveryWorkerNotFound:
-    @given(uid=st.one_of(st.none(), st.uuids()))
+    @given(uid=st.uuids())
     @example(uid=uuid.UUID(int=7))
     @example(uid=None)
     @settings(max_examples=100)
@@ -231,13 +216,9 @@ class TestDiscoveryWorkerNotFound:
         assert error.uid == uid
 
         message = str(error)
-        assert "not found in discovery registry" in message
-        if uid is None:
-            assert message == "Worker not found in discovery registry"
-        else:
-            assert str(uid) in message
+        assert message == f"Worker {uid} not found in discovery registry"
 
-    @given(uid=st.one_of(st.none(), st.uuids()))
+    @given(uid=st.uuids())
     @settings(max_examples=50)
     def test___reduce___should_preserve_its_uid_across_a_boundary(self, uid):
         """Test reconstruction survives pickling.
@@ -259,7 +240,7 @@ class TestDiscoveryWorkerNotFound:
         assert restored.uid == uid
         assert restored.args == error.args
 
-    @given(uid=st.one_of(st.none(), st.uuids()))
+    @given(uid=st.uuids())
     @settings(max_examples=25)
     def test___init___should_survive_the_worker_exception_serializer(self, uid):
         """Test the exception survives the worker exception serializer.
@@ -286,7 +267,7 @@ class TestDiscoveryWorkerNotFound:
 
 
 class TestDiscoveryNamespaceInUse:
-    @given(namespace=st.one_of(st.none(), st.text()))
+    @given(namespace=st.text())
     @settings(max_examples=100)
     def test___init___should_expose_its_namespace_across_the_argument_domain(
         self, namespace
@@ -294,27 +275,52 @@ class TestDiscoveryNamespaceInUse:
         """Test field exposure and message content over the argument.
 
         Given:
-            Any optional namespace.
+            Any namespace.
         When:
             A DiscoveryNamespaceInUse is constructed from it.
         Then:
-            It should expose the namespace unchanged and quote it in
-            the message, omitting the clause entirely where it is None.
+            It should expose the namespace unchanged, carry it as its
+            sole argument, and render exactly the message quoting it,
+            with no trailing clause and omitting the namespace entirely
+            where it is None.
         """
         # Act
         error = DiscoveryNamespaceInUse(namespace)
 
         # Assert
         assert error.namespace == namespace
+        assert error.args == (namespace,)
 
+        # The whole message, not a substring: a namespace in use has a
+        # live owner, so there is nothing for an operator to go and
+        # remove and nothing a trailing clause could usefully say.
         message = str(error)
-        assert "is already in use" in message
-        if namespace is None:
-            assert message == "Discovery namespace is already in use"
-        else:
-            assert repr(namespace) in message
+        assert message == f"Discovery namespace {namespace!r} is already in use"
 
-    @given(namespace=st.one_of(st.none(), st.text()))
+    def test___init___should_reject_a_segment_argument(self):
+        """Test the error offers no segment for a caller to read.
+
+        Given:
+            The single-argument constructor the namespace-in-use error
+            now exposes, a namespace being in use only while its owner
+            lives
+        When:
+            It is constructed with a second positional argument, and
+            again with a segment keyword
+        Then:
+            It should raise TypeError both times, and an instance built
+            from a namespace alone should expose no segment attribute —
+            there is no backing segment for a caller to read or an
+            operator to remove.
+        """
+        # Act & assert
+        with pytest.raises(TypeError):
+            DiscoveryNamespaceInUse("ns", "segment")
+        with pytest.raises(TypeError):
+            DiscoveryNamespaceInUse("ns", segment="segment")
+        assert not hasattr(DiscoveryNamespaceInUse("ns"), "segment")
+
+    @given(namespace=st.text())
     @settings(max_examples=50)
     def test___reduce___should_preserve_its_namespace_across_a_process_boundary(
         self, namespace
@@ -322,29 +328,32 @@ class TestDiscoveryNamespaceInUse:
         """Test reconstruction survives pickling.
 
         Given:
-            Any optional namespace.
+            Any namespace.
         When:
             A DiscoveryNamespaceInUse is pickled and unpickled.
         Then:
-            It should restore the namespace and its args.
+            It should restore the namespace and carry it as its sole
+            argument on both sides of the boundary.
         """
         # Arrange
         error = DiscoveryNamespaceInUse(namespace)
+        assert error.args == (namespace,)
 
         # Act
         restored = pickle.loads(pickle.dumps(error))
 
-        # Assert
+        # Assert — the shape, not merely whatever tuple the class built:
+        # comparing the two args tuples holds for any signature.
         assert restored.namespace == namespace
-        assert restored.args == error.args
+        assert restored.args == (namespace,)
 
-    @given(namespace=st.one_of(st.none(), st.text()))
+    @given(namespace=st.text())
     @settings(max_examples=25)
     def test___init___should_survive_the_worker_exception_serializer(self, namespace):
         """Test the exception survives the worker exception serializer.
 
         Given:
-            Any optional namespace.
+            Any namespace.
         When:
             A DiscoveryNamespaceInUse is encoded in an exception
             response frame and decoded.
@@ -365,7 +374,7 @@ class TestDiscoveryNamespaceInUse:
 
 
 class TestDiscoveryNamespaceNotFound:
-    @given(namespace=st.one_of(st.none(), st.text()))
+    @given(namespace=st.text())
     @settings(max_examples=100)
     def test___init___should_expose_its_namespace_across_the_argument_domain(
         self, namespace
@@ -373,12 +382,12 @@ class TestDiscoveryNamespaceNotFound:
         """Test field exposure and message content over the argument.
 
         Given:
-            Any optional namespace.
+            Any namespace.
         When:
             A DiscoveryNamespaceNotFound is constructed from it.
         Then:
-            It should expose the namespace unchanged and quote it in
-            the message, omitting the clause entirely where it is None.
+            It should expose the namespace unchanged and render
+            exactly the message quoting it.
         """
         # Act
         error = DiscoveryNamespaceNotFound(namespace)
@@ -386,14 +395,15 @@ class TestDiscoveryNamespaceNotFound:
         # Assert
         assert error.namespace == namespace
 
+        # The whole message: a namespace whose owner is gone may still
+        # have a readable registry, and a successor may already hold one,
+        # so the error must not assert that nothing is there.
         message = str(error)
-        assert "No discovery registry for namespace" in message
-        if namespace is None:
-            assert message == "No discovery registry for namespace"
-        else:
-            assert repr(namespace) in message
+        assert message == (
+            f"Discovery namespace {namespace!r} has no live owner to borrow from"
+        )
 
-    @given(namespace=st.one_of(st.none(), st.text()))
+    @given(namespace=st.text())
     @settings(max_examples=50)
     def test___reduce___should_preserve_its_namespace_across_a_process_boundary(
         self, namespace
@@ -401,7 +411,7 @@ class TestDiscoveryNamespaceNotFound:
         """Test reconstruction survives pickling.
 
         Given:
-            Any optional namespace.
+            Any namespace.
         When:
             A DiscoveryNamespaceNotFound is pickled and unpickled.
         Then:
@@ -417,13 +427,13 @@ class TestDiscoveryNamespaceNotFound:
         assert restored.namespace == namespace
         assert restored.args == error.args
 
-    @given(namespace=st.one_of(st.none(), st.text()))
+    @given(namespace=st.text())
     @settings(max_examples=25)
     def test___init___should_survive_the_worker_exception_serializer(self, namespace):
         """Test the exception survives the worker exception serializer.
 
         Given:
-            Any optional namespace.
+            Any namespace.
         When:
             A DiscoveryNamespaceNotFound is encoded in an exception
             response frame and decoded.
@@ -447,16 +457,17 @@ class TestDiscoveryExceptionReconstruction:
     """Contracts shared by every discovery exception."""
 
     @pytest.mark.parametrize(
-        "cls",
+        ("cls", "argument"),
         [
-            DiscoveryCapacityExhausted,
-            DiscoveryBlockExhausted,
-            DiscoveryWorkerNotFound,
-            DiscoveryNamespaceInUse,
-            DiscoveryNamespaceNotFound,
+            (DiscoveryCapacityExhausted, 128),
+            (DiscoveryBlockExhausted, 2048),
+            (DiscoveryWorkerNotFound, uuid.UUID(int=7)),
+            (DiscoveryNamespaceInUse, "ns"),
+            (DiscoveryNamespaceNotFound, "ns"),
         ],
+        ids=lambda value: getattr(value, "__name__", None),
     )
-    def test___init___should_subclass_wool_error_not_runtime_error(self, cls):
+    def test___init___should_subclass_wool_error_not_runtime_error(self, cls, argument):
         """Test each discovery exception joins the Wool umbrella.
 
         Given:
@@ -468,7 +479,7 @@ class TestDiscoveryExceptionReconstruction:
             re-exported from wool, and not subclass RuntimeError.
         """
         # Arrange
-        raised = cls()
+        raised = cls(argument)
 
         # Act
         try:
