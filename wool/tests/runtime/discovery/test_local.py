@@ -1,10 +1,12 @@
 import asyncio
 import atexit
 import errno
+import fcntl
 import os
 import pickle
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -19,7 +21,6 @@ from pathlib import Path
 from types import MappingProxyType
 from types import SimpleNamespace
 
-import portalocker
 import pytest
 import pytest_asyncio
 from hypothesis import HealthCheck
@@ -32,9 +33,11 @@ from watchdog.observers import Observer
 from tests.helpers import block_path
 from tests.helpers import blocks_directory
 from tests.helpers import discovery_root
+from tests.helpers import generation_directory
 from tests.helpers import namespace_directory
 from tests.helpers import notify_path
 from tests.helpers import registry_path
+from wool.runtime.discovery import local
 from wool.runtime.discovery.base import DiscoverySubscriberLike
 from wool.runtime.discovery.exceptions import DiscoveryBlockExhausted
 from wool.runtime.discovery.exceptions import DiscoveryCapacityExhausted
@@ -273,40 +276,108 @@ def unlink_schedule(mocker, namespace, teardown_log):
     return schedule
 
 
+async def _parked(iterator, *, idle: float, bound: float = 30.0):
+    """Drain an iterator until a pull stays unresolved for ``idle`` seconds.
+
+    Returns that parked pull, so a test can assert on what does or does
+    not complete it. Bounded rather than looping until the stream goes
+    quiet: a subscription that never stops emitting is exactly what such
+    a test exists to catch, and it should fail saying so rather than
+    hang the suite.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + bound
+    pending = asyncio.ensure_future(anext(iterator))
+    while True:
+        try:
+            await asyncio.wait_for(asyncio.shield(pending), timeout=idle)
+        except asyncio.TimeoutError:
+            return pending
+        if loop.time() >= deadline:
+            pending.cancel()
+            raise AssertionError(
+                f"subscription never went quiet for {idle}s within {bound}s"
+            )
+        pending = asyncio.ensure_future(anext(iterator))
+
+
+@pytest.fixture
+def brief_liveness_interval(mocker):
+    """Shorten the subscriber's liveness interval for the calling test.
+
+    A test that must cross a wake boundary is bounded by this interval,
+    so the shipped five seconds would buy nothing but wall clock. `_park`
+    reads it per wait, so patching the module attribute takes effect on
+    an already-parked subscription.
+
+    Returns the patched interval.
+    """
+    interval = 0.25
+    mocker.patch.object(local, "_LIVENESS_INTERVAL", interval)
+    return interval
+
+
+def _is_registry_lock(fd, operation):
+    """Report whether a flock call is the publisher's registry lock.
+
+    The namespace claim and the liveness probe hold directory
+    descriptors; only the registry lock is an exclusive lock on a
+    regular file.
+    """
+    if operation != fcntl.LOCK_EX | fcntl.LOCK_NB:
+        return False
+    return not stat.S_ISDIR(os.fstat(fd).st_mode)
+
+
 @pytest.fixture
 def held_lock(mocker):
-    """Patch portalocker.lock to report the lock is permanently held.
+    """Patch fcntl.flock to report the registry lock is permanently held.
 
-    Every acquisition attempt raises LockException, so a publish resolves
-    only through its lock_timeout deadline, never by acquiring.
+    Every exclusive acquisition raises BlockingIOError, so a publish
+    resolves only through its lock_timeout deadline, never by acquiring.
+    Other flock uses — the namespace claim and the liveness probe — are
+    delegated to the real call.
     """
+    real_flock = fcntl.flock
 
-    def _held(fh, flags):
-        raise portalocker.LockException("Lock held")
+    def _held(fd, operation):
+        if _is_registry_lock(fd, operation):
+            raise BlockingIOError(errno.EWOULDBLOCK, "Lock held")
+        return real_flock(fd, operation)
 
-    mocker.patch.object(portalocker, "lock", side_effect=_held)
+    mocker.patch.object(fcntl, "flock", side_effect=_held)
 
 
 @pytest.fixture
 def contending_lock(mocker):
-    """Return a factory patching portalocker.lock to fail its first n calls.
+    """Return a factory patching fcntl.flock to fail its first n acquisitions.
 
-    The returned callable installs a side effect that raises LockException
-    on the first n acquisition attempts and then delegates to the real
-    lock, returning the mock so a test can assert on its call count.
+    The returned callable installs a side effect that raises
+    BlockingIOError on the first n exclusive acquisitions and then
+    delegates to the real call, returning the mock so a test can assert
+    on its call count. Non-exclusive uses always delegate.
     """
-    real_lock = portalocker.lock
+    real_flock = fcntl.flock
+
+    class _Contention:
+        """Counts registry-lock acquisitions, failed and successful."""
+
+        def __init__(self, n):
+            self.call_count = 0
+            self._n = n
+
+        def __call__(self, fd, operation):
+            if not _is_registry_lock(fd, operation):
+                return real_flock(fd, operation)
+            self.call_count += 1
+            if self.call_count <= self._n:
+                raise BlockingIOError(errno.EWOULDBLOCK, "Lock held")
+            return real_flock(fd, operation)
 
     def _make(n):
-        calls = {"count": 0}
-
-        def _contend(fh, flags):
-            calls["count"] += 1
-            if calls["count"] <= n:
-                raise portalocker.LockException("Lock held")
-            real_lock(fh, flags)
-
-        return mocker.patch.object(portalocker, "lock", side_effect=_contend)
+        contention = _Contention(n)
+        mocker.patch.object(fcntl, "flock", side_effect=contention)
+        return contention
 
     return _make
 
@@ -735,26 +806,140 @@ class TestLocalDiscovery:
                     await publisher.publish("worker-added", metadata)
 
     @pytest.mark.asyncio
-    async def test_publisher_should_propagate_block_size(
+    async def test___enter___should_bind_every_publisher_to_its_block_size(
         self, namespace, oversized_metadata
     ):
-        """Test the publisher property plumbs block_size to publish.
+        """Test the owner's block size binds publishers it never created.
 
         Given:
-            A LocalDiscovery constructed with a block_size larger than
-            the Publisher default and worker metadata whose serialization
+            A LocalDiscovery owning a namespace with a block_size larger
+            than the default, and worker metadata whose serialization
             exceeds any default-sized block
         When:
-            A publisher obtained from the publisher property publishes it
+            A separately constructed Publisher borrows that namespace and
+            publishes the metadata
         Then:
-            It should publish successfully, proving the constructor's
-            block_size governs the nested Publisher — a default-sized
-            block could not hold the metadata.
+            It should publish successfully, the size being the owner's to
+            stamp rather than each borrower's to choose.
         """
-        # Act & assert — success is only possible if block_size propagated
-        with LocalDiscovery(namespace, block_size=65536) as discovery:
-            async with discovery.publisher as publisher:
+        # Act & assert — a borrower that supplied its own size could not
+        # hold this metadata, and two borrowers could not disagree.
+        with LocalDiscovery(namespace, block_size=65536):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
                 await publisher.publish("worker-added", oversized_metadata)
+
+    @pytest.mark.asyncio
+    async def test___enter___should_bind_a_borrower_to_the_owners_capacity(
+        self, namespace, metadata
+    ):
+        """Test the owner's capacity binds a borrower that never set it.
+
+        Given:
+            A LocalDiscovery owning a namespace with a capacity of one,
+            and one worker already registered through a borrower
+        When:
+            That borrower registers a second, distinct worker
+        Then:
+            It should raise DiscoveryCapacityExhausted naming the
+            owner's capacity, not a borrower's idea of one.
+        """
+        # Arrange
+        other = WorkerMetadata(
+            uid=uuid.uuid4(), address="localhost:50052", pid=124, version="1.0"
+        )
+
+        with LocalDiscovery(namespace, capacity=1):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+                # Act & assert
+                with pytest.raises(DiscoveryCapacityExhausted) as excinfo:
+                    await publisher.publish("worker-added", other)
+
+                assert excinfo.value.capacity == 1
+
+    @pytest.mark.asyncio
+    async def test___aenter___should_raise_when_the_registry_is_not_stamped(
+        self, namespace
+    ):
+        """Test a planted registry is not borrowable.
+
+        Given:
+            An owned namespace whose registry has been overwritten with
+            a file carrying no stamped header
+        When:
+            A publisher binds the namespace
+        Then:
+            It should raise DiscoveryNamespaceNotFound rather than
+            trusting a header it did not write.
+        """
+        # Arrange
+        with LocalDiscovery(namespace):
+            registry_path(namespace).write_bytes(b"\x00" * 4096)
+
+            # Act & assert
+            with pytest.raises(DiscoveryNamespaceNotFound):
+                async with LocalDiscovery.Publisher(namespace):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test___aenter___should_raise_when_the_registry_header_is_short(
+        self, namespace
+    ):
+        """Test a truncated registry is not borrowable.
+
+        Given:
+            An owned namespace whose registry has been truncated below
+            the header the owner stamps
+        When:
+            A publisher binds the namespace
+        Then:
+            It should raise DiscoveryNamespaceNotFound rather than
+            reading sizes out of a file too short to hold them.
+        """
+        # Arrange
+        with LocalDiscovery(namespace):
+            registry_path(namespace).write_bytes(b"WLD")
+
+            # Act & assert
+            with pytest.raises(DiscoveryNamespaceNotFound):
+                async with LocalDiscovery.Publisher(namespace):
+                    pass
+
+    def test___exit___should_warn_when_a_swept_entry_cannot_be_removed(
+        self, namespace, unlink_schedule
+    ):
+        """Test an unremovable entry is reported rather than swallowed.
+
+        Given:
+            An owner whose namespace holds a worker block, and a
+            filesystem that refuses one removal during teardown
+        When:
+            The owner exits
+        Then:
+            It should emit a ResourceWarning naming what it could not
+            remove, a stranded generation being the larger of the two
+            leaks this module can produce.
+        """
+        # Arrange
+        owner = LocalDiscovery(namespace)
+        owner.__enter__()
+        # Every removal fails, so the sweep's own report is among them.
+        # `_purge` names a bare entry where `_unlink_quietly` names a
+        # path, which is what tells the two reports apart.
+        unlink_schedule.extend(OSError(errno.EIO, "I/O error") for _ in range(8))
+
+        # Act
+        with pytest.warns(ResourceWarning) as caught:
+            owner.__exit__(None, None, None)
+
+        # Assert
+        removed = [
+            str(warning.message).split("'")[1]
+            for warning in caught
+            if str(warning.message).startswith("failed to remove '")
+        ]
+        assert any("/" not in name for name in removed), removed
 
     def test_subscriber_with_default_instance(self, namespace):
         """Test subscriber property returns Subscriber instance.
@@ -1043,6 +1228,128 @@ class TestLocalDiscovery:
         assert len(events) == 1
         assert events[0].type == "worker-added"
         assert events[0].metadata.uid == metadata.uid
+
+    def test___exit___should_remove_nothing_when_the_claim_was_rejected(
+        self, namespace, tmp_path
+    ):
+        """Test exiting a rejected claim leaves an unrelated directory alone.
+
+        Given:
+            A rejected LocalDiscovery registered for teardown, and an
+            unrelated directory holding the descriptor number that
+            rejection released
+        When:
+            The rejected instance is exited
+        Then:
+            It should leave the unrelated directory's contents in
+            place.
+        """
+        # Arrange
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "important.txt").write_text("keep me")
+
+        with LocalDiscovery(namespace):
+            # Act — pushing before entering is what makes a rejected
+            # instance's teardown run at all.
+            with ExitStack() as stack:
+                rejected = LocalDiscovery(namespace)
+                stack.push(rejected)
+                with pytest.raises(DiscoveryNamespaceInUse):
+                    rejected.__enter__()
+                reissued = os.open(victim, os.O_RDONLY)
+                stack.callback(os.close, reissued)
+
+            # Assert
+            assert [entry.name for entry in victim.iterdir()] == ["important.txt"]
+
+    def test___enter___should_leak_no_descriptors_when_staging_retries(
+        self, namespace, mocker
+    ):
+        """Test a retried claim closes what each failed attempt opened.
+
+        Given:
+            A namespace whose generation publication fails partway
+            through on its first attempts
+        When:
+            A LocalDiscovery enters and exits that namespace
+        Then:
+            It should hold no more open descriptors than before,
+            leaving no lock on a swept generation.
+        """
+        # Arrange
+        real_symlink = os.symlink
+        attempts = []
+
+        def flaky(source, target, **kwargs):
+            attempts.append(target)
+            if len(attempts) <= 3:
+                raise FileNotFoundError(errno.ENOENT, "No such file", str(target))
+            return real_symlink(source, target, **kwargs)
+
+        mocker.patch.object(os, "symlink", side_effect=flaky)
+        before = len(os.listdir("/dev/fd"))
+
+        # Act
+        with LocalDiscovery(namespace):
+            pass
+
+        # Assert
+        assert len(attempts) == 4
+        assert len(os.listdir("/dev/fd")) == before
+
+    @pytest.mark.asyncio
+    async def test___enter___should_preserve_the_incumbent_when_claiming_fails(
+        self, namespace, metadata, mocker
+    ):
+        """Test a claim that fails to lock reclaims nothing.
+
+        Given:
+            An owner's namespace containing a published worker, and a
+            filesystem whose lock call fails with something other than
+            contention
+        When:
+            A second LocalDiscovery is entered on that namespace
+        Then:
+            It should raise the lock's own error and leave the
+            incumbent's worker discoverable.
+        """
+        # Arrange
+        with LocalDiscovery(namespace) as owner:
+            publisher = LocalDiscovery.Publisher(namespace)
+            async with publisher:
+                await publisher.publish("worker-added", metadata)
+
+                real_flock = fcntl.flock
+                claimed = []
+
+                def unlockable(fd, operation):
+                    if operation == fcntl.LOCK_EX | fcntl.LOCK_NB and not claimed:
+                        claimed.append(fd)
+                        raise OSError(errno.ENOLCK, "No locks available")
+                    return real_flock(fd, operation)
+
+                mocker.patch.object(fcntl, "flock", side_effect=unlockable)
+
+                # Act
+                with pytest.raises(OSError) as excinfo:
+                    with LocalDiscovery(namespace):
+                        pass
+
+                # Assert
+                assert excinfo.value.errno == errno.ENOLCK
+                mocker.stopall()
+                events = []
+                subscriber = owner.subscribe(poll_interval=0.05)
+                async with _collecting(subscriber, lambda s: _collect_into(s, events)):
+                    deadline = asyncio.get_running_loop().time() + 2.0
+                    while not events:
+                        if asyncio.get_running_loop().time() > deadline:
+                            pytest.fail("Incumbent's worker was not discoverable")
+                        await asyncio.sleep(0.02)
+
+                assert events[0].type == "worker-added"
+                assert events[0].metadata.uid == metadata.uid
 
     @pytest.mark.asyncio
     async def test___enter___should_recreate_registry_when_namespace_reused(
@@ -2244,6 +2551,45 @@ class TestLocalDiscovery:
                         ),
                     )
 
+    def test___enter___should_sweep_a_killed_predecessors_generation(
+        self, namespace, killed_owner
+    ):
+        """Test a claim reclaims whatever a killed owner left behind.
+
+        Given:
+            A namespace whose owner, in an independent interpreter, was
+            killed with SIGKILL, so none of its teardown ran and its
+            whole generation is still on disk
+        When:
+            A fresh owner claims the namespace
+        Then:
+            It should remove the predecessor's generation before staging
+            its own, leaving only its own generation and the pointer to
+            it — holding the claim proves there is no live writer, so the
+            residue is the successor's to reclaim.
+        """
+        # Arrange
+        with killed_owner():
+            stranded = generation_directory(namespace)
+            assert stranded.is_dir()
+
+        # Vacuity guard — the kill left the generation behind, so the
+        # sweep below has something to remove rather than reporting an
+        # absence it never created.
+        assert stranded.is_dir()
+
+        # Act
+        with LocalDiscovery(namespace, capacity=4):
+            # Assert
+            assert not stranded.exists()
+            live = generation_directory(namespace)
+            entries = sorted(
+                entry.name for entry in namespace_directory(namespace).iterdir()
+            )
+            assert entries == sorted(["current", live.name])
+
+        assert not namespace_directory(namespace).exists()
+
 
 class TestLocalDiscoveryPublisher:
     """Tests for LocalDiscovery.Publisher class.
@@ -2270,64 +2616,6 @@ class TestLocalDiscoveryPublisher:
         # Act & assert
         with pytest.raises(ValueError, match="namespace"):
             LocalDiscovery.Publisher(bad)
-
-    @pytest.mark.parametrize("block_size", [0, -1, 1, 4])
-    def test___init___should_raise_when_block_size_within_the_prefix(
-        self, namespace, block_size
-    ):
-        """Test Publisher rejects a block size the prefix alone fills.
-
-        Given:
-            A block_size no larger than the 4-byte length prefix every
-            block spends before its payload
-        When:
-            Publisher is instantiated
-        Then:
-            It should raise ValueError at construction.
-        """
-        # Act & assert
-        with pytest.raises(
-            ValueError, match="Expected block size greater than the 4-byte"
-        ):
-            LocalDiscovery.Publisher(namespace, block_size=block_size)
-
-    @given(block_size=st.integers())
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    @example(block_size=5)
-    @example(block_size=4)
-    @example(block_size=1)
-    @example(block_size=0)
-    @example(block_size=-1)
-    def test___init___should_validate_block_size_across_domain(
-        self, namespace, block_size
-    ):
-        """Test Publisher validates block_size across the integer domain.
-
-        Given:
-            Any integer block_size.
-        When:
-            A Publisher is instantiated with it.
-        Then:
-            It should raise ValueError naming the offending value exactly
-            when the value does not exceed the length prefix, and
-            construct successfully for every larger value.
-        """
-        # Act & assert
-        if block_size <= 4:
-            with pytest.raises(
-                ValueError,
-                match=(
-                    f"Expected block size greater than the 4-byte length prefix, "
-                    f"got {block_size}"
-                ),
-            ):
-                LocalDiscovery.Publisher(namespace, block_size=block_size)
-        else:
-            publisher = LocalDiscovery.Publisher(namespace, block_size=block_size)
-            assert publisher.namespace == namespace
 
     def test___init___should_raise_when_lock_timeout_negative(self, namespace):
         """Test Publisher rejects a negative lock timeout.
@@ -2571,6 +2859,31 @@ class TestLocalDiscoveryPublisher:
 
         assert excinfo.value.namespace == namespace
         assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+    @pytest.mark.asyncio
+    async def test_publish_should_raise_when_the_publisher_has_exited(
+        self, namespace, metadata
+    ):
+        """Test publishing outside the publisher's context is rejected.
+
+        Given:
+            A Publisher whose context has been entered and exited over a
+            live owner
+        When:
+            That publisher publishes again
+        Then:
+            It should raise RuntimeError naming the misuse, rather than
+            reporting the descriptor it no longer holds.
+        """
+        # Arrange
+        with LocalDiscovery(namespace):
+            publisher = LocalDiscovery.Publisher(namespace)
+            async with publisher:
+                await publisher.publish("worker-added", metadata)
+
+            # Act & assert
+            with pytest.raises(RuntimeError, match="not entered"):
+                await publisher.publish("worker-updated", metadata)
 
     @pytest.mark.asyncio
     async def test_publish_should_not_reach_a_successor_registry_when_stranded(
@@ -3423,8 +3736,8 @@ class TestLocalDiscoveryPublisher:
                 event_received.set()
                 break
 
-        with LocalDiscovery(namespace):
-            publisher = LocalDiscovery.Publisher(namespace, block_size=100)
+        with LocalDiscovery(namespace, block_size=100):
+            publisher = LocalDiscovery.Publisher(namespace)
 
             async with publisher:
                 await publisher.publish("worker-added", worker)
@@ -3475,8 +3788,8 @@ class TestLocalDiscoveryPublisher:
             extra=MappingProxyType({"data": "x" * 20000}),
         )
 
-        with LocalDiscovery(namespace):
-            publisher = LocalDiscovery.Publisher(namespace, block_size=100)
+        with LocalDiscovery(namespace, block_size=100):
+            publisher = LocalDiscovery.Publisher(namespace)
             async with publisher:
                 # Act
                 with pytest.raises(DiscoveryBlockExhausted):
@@ -3526,8 +3839,8 @@ class TestLocalDiscoveryPublisher:
                 events.append(event)
                 event_received.set()
 
-        with LocalDiscovery(namespace):
-            publisher = LocalDiscovery.Publisher(namespace, block_size=100)
+        with LocalDiscovery(namespace, block_size=100):
+            publisher = LocalDiscovery.Publisher(namespace)
             async with publisher:
                 # Act
                 with pytest.raises(DiscoveryBlockExhausted) as excinfo:
@@ -3648,14 +3961,14 @@ class TestLocalDiscoveryPublisher:
             stops an orphan writing to a successor's registry.
         """
         # Arrange — a real lock on the real file, not a patched
-        # portalocker: every other lock test in this class replaces the
+        # fcntl.flock: every other lock test in this class replaces the
         # locking call, so all of them would pass just the same with the
         # lock moved onto a separate file, onto the directory, or
         # nowhere at all. This one fails unless it is on the registry.
         with LocalDiscovery(namespace):
             contender = registry_path(namespace).open("r+b")
             try:
-                portalocker.lock(contender, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 publisher = LocalDiscovery.Publisher(namespace, lock_timeout=0)
 
                 # Act & assert
@@ -4803,8 +5116,8 @@ class TestLocalDiscoveryPublisher:
                 event_received.set()
                 break
 
-        with LocalDiscovery(namespace):
-            publisher_a = LocalDiscovery.Publisher(namespace, block_size=100)
+        with LocalDiscovery(namespace, block_size=100):
+            publisher_a = LocalDiscovery.Publisher(namespace)
             publisher_b = LocalDiscovery.Publisher(namespace)
             async with publisher_a, publisher_b:
                 readding = publisher_b if readd_via_second_publisher else publisher_a
@@ -4859,8 +5172,8 @@ class TestLocalDiscoveryPublisher:
         )
 
         # Act & assert
-        with LocalDiscovery(namespace, capacity=1):
-            publisher = LocalDiscovery.Publisher(namespace, block_size=100)
+        with LocalDiscovery(namespace, capacity=1, block_size=100):
+            publisher = LocalDiscovery.Publisher(namespace)
             async with publisher:
                 await publisher.publish("worker-added", worker)
                 with pytest.raises(DiscoveryBlockExhausted):
@@ -4896,8 +5209,8 @@ class TestLocalDiscoveryPublisher:
             extra=MappingProxyType({"data": "x" * 20000}),
         )
 
-        with LocalDiscovery(namespace):
-            publisher = LocalDiscovery.Publisher(namespace, block_size=100)
+        with LocalDiscovery(namespace, block_size=100):
+            publisher = LocalDiscovery.Publisher(namespace)
             async with publisher:
                 await publisher.publish("worker-added", worker)
                 with pytest.raises(DiscoveryBlockExhausted):
@@ -5183,8 +5496,8 @@ class TestLocalDiscoveryPublisher:
                 event_received.set()
                 break
 
-        with LocalDiscovery(example_ns):
-            publisher = LocalDiscovery.Publisher(example_ns, block_size=100)
+        with LocalDiscovery(example_ns, block_size=100):
+            publisher = LocalDiscovery.Publisher(example_ns)
             async with publisher:
                 await publisher.publish("worker-added", worker)
 
@@ -5303,6 +5616,37 @@ class TestLocalDiscoveryPublisher:
                     elif index in registrar:
                         publisher = registrar.pop(index)
                         await publisher.publish("worker-dropped", roster[index])
+
+    @pytest.mark.asyncio
+    async def test___aenter___should_raise_when_the_owner_was_killed(
+        self, namespace, killed_owner
+    ):
+        """Test a publisher will not bind a namespace whose owner is dead.
+
+        Given:
+            A namespace whose owner, in an independent interpreter, was
+            killed with SIGKILL, so its registry and pointer are both
+            still on disk and still readable
+        When:
+            A publisher binds that namespace
+        Then:
+            It should raise `DiscoveryNamespaceNotFound` — the files
+            surviving say nothing about their owner, so the owner's own
+            lock is what decides whether there is anything to borrow.
+        """
+        # Arrange
+        with killed_owner():
+            pass
+
+        # Vacuity guard — nothing removed the registry, so a check
+        # against the files alone would find this namespace live.
+        assert registry_path(namespace).exists()
+
+        # Act & assert
+        with pytest.raises(DiscoveryNamespaceNotFound) as excinfo:
+            async with LocalDiscovery.Publisher(namespace):
+                pass
+        assert excinfo.value.namespace == namespace
 
 
 class TestLocalDiscoverySubscriber:
@@ -6622,3 +6966,228 @@ def _enter_lifecycle_forest(namespace, forest, owned=False):
             else:
                 generation.enter_context(LocalDiscovery(namespace))
             _enter_lifecycle_forest(namespace, children, owned=True)
+
+
+class TestSubscriberLiveness:
+    """The subscription's own liveness contract, which no file states."""
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_raise_when_the_owner_was_killed(
+        self, namespace, metadata, killed_owner
+    ):
+        """Test a subscription ends when its owner is killed outright.
+
+        Given:
+            A subscription streaming a worker from a namespace whose
+            owner, in an independent interpreter, is then killed with
+            SIGKILL, leaving the registry on disk and still readable
+        When:
+            The subscription scans again
+        Then:
+            It should raise `DiscoveryNamespaceNotFound` rather than
+            serving the snapshot it last read, and report no worker as
+            dropped — the workers may still be running, so an owner
+            leaving is not a membership change.
+        """
+        # Arrange
+        events: list = []
+        with killed_owner():
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+            subscriber = LocalDiscovery.Subscriber(namespace, poll_interval=0.05)
+            iterator = subscriber.__aiter__()
+            first = await asyncio.wait_for(iterator.__anext__(), timeout=5)
+            events.append(first)
+
+            # Act — the owner dies mid-subscription
+        # Vacuity guard — the registry outlived its owner, so nothing
+        # about the files alone marks this subscription stale.
+        assert registry_path(namespace).exists()
+
+        # Assert
+        with pytest.raises(DiscoveryNamespaceNotFound):
+            async with asyncio.timeout(10):
+                while True:
+                    events.append(await iterator.__anext__())
+
+        assert events[0].type == "worker-added"
+        assert events[0].metadata.uid == metadata.uid
+        assert "worker-dropped" not in {event.type for event in events}
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_notice_a_lost_owner_without_a_poll_interval(
+        self, namespace, metadata, killed_owner, brief_liveness_interval
+    ):
+        """Test a subscription with no poll interval still notices.
+
+        Given:
+            A subscription with ``poll_interval=None`` parked on a
+            notification — nothing is left to touch the notification
+            file, so no notification will ever arrive — whose owner is
+            then killed with SIGKILL
+        When:
+            The parked scan is awaited
+        Then:
+            It should raise `DiscoveryNamespaceNotFound` within the
+            liveness floor, because the floor is the only thing that can
+            wake it: without that bound the pull below never completes.
+        """
+        # Arrange
+        loop = asyncio.get_running_loop()
+        with killed_owner() as owner:
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+            subscriber = LocalDiscovery.Subscriber(namespace)
+            iterator = subscriber.__aiter__()
+            await asyncio.wait_for(iterator.__anext__(), timeout=5)
+
+            # Park the subscription: drain whatever the first scan
+            # already produced, then hold a pull that cannot complete
+            # until something rescans.
+            pending = await _parked(iterator, idle=0.5)
+
+            # Vacuity guard — the pull really is parked with no
+            # notification coming, so only the floor can complete it.
+            assert not pending.done()
+
+            # Act
+            owner.kill()
+
+        # Assert
+        started = loop.time()
+        with pytest.raises(DiscoveryNamespaceNotFound):
+            await asyncio.wait_for(pending, timeout=brief_liveness_interval * 40)
+        assert loop.time() - started < brief_liveness_interval * 20
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_emit_nothing_while_idle_without_a_poll_interval(
+        self, namespace, metadata, brief_liveness_interval
+    ):
+        """Test an idle namespace costs a subscription no traffic.
+
+        Given:
+            A live owner with one registered worker, and a drained
+            subscription with ``poll_interval=None``
+        When:
+            No publisher writes for longer than the liveness interval
+        Then:
+            It should emit no further event, the periodic wake being a
+            liveness check rather than a rescan.
+        """
+        # Arrange
+        with LocalDiscovery(namespace):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+                subscriber = LocalDiscovery.Subscriber(namespace)
+                iterator = subscriber.__aiter__()
+                await asyncio.wait_for(iterator.__anext__(), timeout=5)
+                pending = await _parked(iterator, idle=0.5)
+
+                # Act & assert — crossing at least one wake boundary
+                # with nothing to report must stay silent.
+                try:
+                    with pytest.raises(asyncio.TimeoutError):
+                        await asyncio.wait_for(
+                            asyncio.shield(pending),
+                            timeout=brief_liveness_interval * 6,
+                        )
+                finally:
+                    pending.cancel()
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_notice_a_lost_owner_within_a_long_poll_interval(
+        self, namespace, metadata, killed_owner, brief_liveness_interval
+    ):
+        """Test the liveness bound holds above the poll interval too.
+
+        Given:
+            A drained subscription whose ``poll_interval`` is far longer
+            than the liveness interval, whose owner is then killed with
+            SIGKILL
+        When:
+            The parked scan is awaited
+        Then:
+            It should raise `DiscoveryNamespaceNotFound` on the liveness
+            interval rather than waiting out the poll interval.
+        """
+        # Arrange
+        loop = asyncio.get_running_loop()
+        with killed_owner() as owner:
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+            subscriber = LocalDiscovery.Subscriber(
+                namespace, poll_interval=brief_liveness_interval * 400
+            )
+            iterator = subscriber.__aiter__()
+            await asyncio.wait_for(iterator.__anext__(), timeout=5)
+            pending = await _parked(iterator, idle=0.5)
+
+            # Act
+            owner.kill()
+
+        # Assert
+        started = loop.time()
+        with pytest.raises(DiscoveryNamespaceNotFound):
+            await asyncio.wait_for(pending, timeout=brief_liveness_interval * 40)
+        # Bounded by the liveness interval, nowhere near the poll one.
+        assert loop.time() - started < brief_liveness_interval * 20
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_bind_a_successor_after_the_subscription_failed(
+        self, namespace, metadata
+    ):
+        """Test a failed subscription does not poison the namespace.
+
+        Given:
+            A subscription that ended because its owner exited, with no
+            iteration of it left open, and a successor owner that has
+            since claimed the same namespace and published a worker
+        When:
+            A fresh subscriber on that namespace iterates
+        Then:
+            It should discover the successor's worker rather than
+            inheriting the failure. Subscriptions sharing a namespace
+            and poll interval are shared, so a failure that outlived the
+            iterations which saw it would leave the namespace
+            permanently unbindable.
+
+            The bound is the shared subscription's own lifetime, not the
+            failure's: the pool holds no idle entry, so the last
+            iteration to end releases it and the next subscriber builds
+            afresh. An iteration left open and never pulled again holds
+            it open, and the namespace stays unbindable until that
+            iteration is closed — the pool will not finalize a resource
+            out from under a live reference.
+        """
+        # Arrange — fail a subscription the way a lost owner does
+        owner = LocalDiscovery(namespace, capacity=4).__enter__()
+        async with LocalDiscovery.Publisher(namespace) as publisher:
+            await publisher.publish("worker-added", metadata)
+        stale = LocalDiscovery.Subscriber(namespace, poll_interval=0.05)
+        iterator = stale.__aiter__()
+        await asyncio.wait_for(iterator.__anext__(), timeout=5)
+        owner.__exit__(None, None, None)
+        with pytest.raises(DiscoveryNamespaceNotFound):
+            async with asyncio.timeout(10):
+                while True:
+                    await iterator.__anext__()
+
+        # Act — a successor claims the namespace and publishes
+        successor = WorkerMetadata(
+            uid=uuid.uuid4(), address="localhost:50099", pid=999, version="1.0"
+        )
+        with LocalDiscovery(namespace, capacity=4):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", successor)
+
+                # Assert — a fresh subscriber on the same key binds the
+                # successor rather than inheriting the failure
+                fresh = LocalDiscovery.Subscriber(namespace, poll_interval=0.05)
+                async with asyncio.timeout(10):
+                    async for event in fresh:
+                        assert event.metadata.uid == successor.uid
+                        break
