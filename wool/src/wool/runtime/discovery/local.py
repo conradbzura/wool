@@ -395,8 +395,8 @@ class _Binding:
         except (FileNotFoundError, NotADirectoryError) as error:
             raise DiscoveryNamespaceNotFound(namespace) from error
         binding = cls(generation, header, liveness)
-        # A killed owner leaves its generation readable, so binding it
-        # would otherwise succeed against a namespace no process owns.
+        # Proving the owner lives is the whole of what a bind adds to
+        # resolving the pointer; see `_owner_alive`.
         if not binding.alive():
             binding.close()
             raise DiscoveryNamespaceNotFound(namespace)
@@ -429,50 +429,65 @@ class LocalDiscovery(Discovery):
     on one host share a registry of workers identified by a namespace
     string, and a cross-process file lock serializes writes to it.
 
-    **Ownership.** A namespace's registry has exactly one owner: the
-    entered instance holding the namespace's claim. Entering claims the
-    namespace and creates its registry, and exiting reclaims both. The
-    namespace is in use — and a further entry raises
-    `DiscoveryNamespaceInUse` — while *any* process holding the claim
-    lives. That is the owner's process, and anything forked from it
-    after entry; see **Forks**. An owner that never exits, e.g., one
-    abandoned when the interpreter shuts down, reclaims the registry at
-    shutdown.
+    **Ownership.** A namespace has exactly one owner: the entered
+    instance holding the namespace's claim. The owner owns *every*
+    artifact of that namespace — the registry, the notification file,
+    and every worker's metadata block — not merely the ones it created.
+    Entering claims the namespace and creates them; exiting frees all of
+    them, whether or not a borrower is still using them. Nothing a
+    borrower makes outlives the owner it was made under. The namespace is
+    in use — and a further entry raises `DiscoveryNamespaceInUse` —
+    while *any* process holding the claim lives. That is the owner's
+    process, and anything forked from it after entry; see **Forks**. An
+    owner that never exits, e.g., one abandoned when the interpreter
+    shuts down, reclaims the namespace at shutdown.
 
-    A killed owner that was never forked from holds the claim in no
-    surviving process, so the kernel drops it and the next entry on the
-    namespace succeeds, replacing any registry the killed owner left
-    behind. What that entry does *not* reclaim is the rest of the
-    directory; see the note on non-graceful exits in the implementation
-    notes below.
+    Each entry mints a *generation*, a directory holding that owner's
+    artifacts, and publishes it as the namespace's live one. A claim
+    sweeps whatever a killed predecessor left before staging its own,
+    which is sound precisely because a borrower's binding ends with its
+    owner: holding the claim proves no live writer, not merely no live
+    owner. A killed owner's generation therefore survives only until
+    something re-enters that namespace, which for the per-lifecycle
+    ``pool-<uuid>`` namespaces a `~wool.runtime.worker.pool.WorkerPool`
+    mints is never; see the note on non-graceful exits below.
 
-    **Forks.** A process forked from an entered owner inherits both the
-    claim and the owner's teardown, because the claim is a descriptor
-    the fork keeps and the teardown is interpreter state the fork
-    copies. Two consequences follow, and neither is what a forking
-    caller usually wants: the fork's own ordinary exit reclaims the live
-    parent's registry and directory, and the claim itself outlives the
-    parent, so the namespace stays in use until every process holding it
-    has exited. Wool starts its own workers with ``spawn``, which is
-    ``spawn(2)`` and inherits neither. A host that forks should enter a
-    namespace in the process that owns it, and should not fork between
-    entry and exit.
+    **Forks.** A process forked from an entered owner inherits the
+    owner's descriptors and its teardown, because the descriptors are
+    kept across a fork and the teardown is interpreter state the fork
+    copies. The fork *disowns* rather than reclaims: its teardown drops
+    only its own references and removes nothing, so a fork's ordinary
+    exit leaves the live parent's namespace intact. What it cannot undo
+    is the claim itself, which is held per open file description and so
+    outlives the parent: the namespace stays in use, and reads as having
+    a live owner, until every process holding it has exited. Wool starts
+    its own workers with the ``spawn`` start method, which inherits
+    neither. A host that forks should still enter a namespace in the
+    process that owns it, and should not fork between entry and exit.
 
     **Borrowing.** `LocalDiscovery.Publisher` and
     `LocalDiscovery.Subscriber`, including those `publisher`,
-    `subscriber` and `subscribe` return, borrow a namespace's registry
-    and never create one. A borrower *binds* when it opens the registry:
-    a publisher on entry and on each publish, a subscriber when its
-    subscription starts. A bind where the namespace has no registry
-    raises `DiscoveryNamespaceNotFound`.
+    `subscriber` and `subscribe` return, borrow a namespace and never
+    create one. A borrower *binds* when it resolves the live generation
+    and opens its registry: a publisher on entry, a subscriber when its
+    subscription starts. A bind where the namespace has no owner raises
+    `DiscoveryNamespaceNotFound`. A borrower stays pinned to the
+    generation it bound, so it reaches one owner's artifacts and never
+    drifts onto a successor's.
 
-    **Orphaning.** A borrower that outlives its owner is orphaned. A
-    registry it already holds stays readable. Its next bind raises
-    `DiscoveryNamespaceNotFound`, unless a successor owner has entered
-    the namespace, in which case the bind reaches the successor's
-    registry. Orphaning is defined behavior: a borrower holds no claim on
-    the registry, so it has no registry to reclaim. See
-    `LocalDiscovery.Subscriber` for which subscriber iterations bind.
+    **A binding ends with its owner.** A borrower that outlives its owner
+    fails loudly at its next operation with `DiscoveryNamespaceNotFound`
+    — a publisher at its next publish, a subscriber at its next scan —
+    rather than writing into a registry nothing reads or serving the
+    snapshot it last saw. This holds however the owner ended: exiting
+    removes the generation, and an owner killed outright is detected
+    because the lock it held on its generation dies with its process. A
+    subscription raises rather than reporting every worker as dropped,
+    because an owner leaving is not a membership change: those workers
+    may still be running. A borrower that wants to follow the namespace
+    across a handoff re-binds after the error; nothing is re-pointed
+    underneath it. See `LocalDiscovery.Subscriber` for which subscriber
+    iterations bind.
 
     **Lifecycle.** An instance is single-use: any entry attempt spends
     it, so a second entry raises `RuntimeError`. Retrying a rejected
@@ -504,7 +519,7 @@ class LocalDiscovery(Discovery):
         it on entry and a borrower binds at the owner's capacity, so this
         value applies only when this instance is entered. See
         `LocalDiscovery.Publisher.publish` for exhaustion. Defaults to
-        128.
+        `DEFAULT_CAPACITY`.
     :param block_size:
         Size in bytes for each worker's serialized data block. Each
         block spends 4 bytes on a length prefix, leaving
@@ -515,7 +530,8 @@ class LocalDiscovery(Discovery):
         not what is unusable in practice. Defaults to 1024.
     :param lock_timeout:
         Maximum seconds each publisher waits for the cross-process file
-        lock; see `LocalDiscovery.Publisher`. Defaults to 30.0.
+        lock; see `LocalDiscovery.Publisher`. Defaults to
+        `DEFAULT_LOCK_TIMEOUT`.
     :raises ValueError:
         If ``namespace`` does not name a single path component, if
         ``capacity`` is less than 1, if ``block_size`` does not exceed
@@ -550,14 +566,35 @@ class LocalDiscovery(Discovery):
 
     .. rubric:: Implementation notes
 
-    A namespace lives in one directory, ``wool-<namespace>``, under
+    Every namespace lives under one fixed ``wool`` directory, in
     ``/dev/shm`` where Linux provides it and the temporary directory
-    otherwise. The directory holds the registry, i.e., a header and
-    fixed-width slots of worker references, the ``notify`` file
-    subscribers watch, and one metadata block file per published worker,
-    named by the worker's UUID. Every process reads and writes those
-    files at fixed offsets, through the page cache, so a write is visible
-    to every other process holding the same file.
+    otherwise, so the whole subsystem's on-disk state is one subtree and
+    ``rm -rf <root>/wool`` reclaims all of it::
+
+        <root>/wool/<namespace>/     the claim; outlives any one owner
+        ├── current                  symlink to the live generation
+        └── <generation>/            one per owner entry
+            ├── registry
+            ├── registry.tmp         transient, between write and rename
+            ├── notify
+            └── blocks/<worker-uuid>
+
+    ``current.<pid>`` appears beside ``current`` while a generation is
+    being published, for the length of one rename.
+
+    The registry is a header and fixed-width slots of worker references;
+    ``notify`` is the file subscribers watch; each block holds one
+    published worker's metadata. Blocks sit one level down so the
+    directory a subscriber watches carries only registry traffic. Every
+    process reads and writes those files at fixed offsets, through the
+    page cache, so a write is visible to every other process holding the
+    same file.
+
+    Generation names are minted per entry and never reused, so a borrower
+    pinned to one can never find a different owner's file at the path it
+    remembers — a superseded generation is removed outright rather than
+    rewritten, which is what makes a stale handle detectable rather than
+    merely wrong.
 
     The files are read and written rather than memory-mapped. CPython
     forces a device-level flush (``F_FULLFSYNC``) whenever it maps a file
@@ -579,14 +616,34 @@ class LocalDiscovery(Discovery):
     another process's completed reclaim rather than contending with one,
     so a claim resolves rather than livelocking.
 
+    Having taken the claim, an owner sweeps the namespace before staging
+    anything: it removes every generation and pointer it finds, through
+    `_purge`. That is safe only because a binding ends with its owner, so
+    a free claim proves there is no live *writer* rather than merely no
+    live owner. The sweep runs on every retry too, which makes a
+    half-staged generation from a failed attempt self-cleaning.
+
     The owner writes the registry, header included, under a staging name
-    and renames it into place, so no borrower ever binds a registry with
-    an unstamped header.
+    and renames it into place, then publishes the generation by renaming
+    a symlink over ``current``. Both renames are atomic, and the pointer
+    is published last, so a borrower resolves a generation only once its
+    registry is stamped — it binds a complete generation or none.
+
+    Every removal resolves against a descriptor rather than a path,
+    including the named ones in teardown; `_purge` owns why.
+
+    An owner also holds an exclusive lock on its generation directory
+    for that generation's life, and a borrower tests it as part of each
+    operation it was already performing; `_owner_alive` owns what the
+    lock proves and why it is shaped that way. Without it, an owner
+    killed with no successor would be undetectable: its generation is
+    still on disk and still readable, so nothing about the files
+    themselves says it is stale.
 
     Publishers lock the registry file itself rather than a separate lock
     file. The lock and the data it guards therefore always share an
-    inode: an orphaned publisher still locking a reclaimed registry can
-    only write to that registry, never to a successor's. A publish opens
+    inode: a publisher still locking a reclaimed registry can only write
+    to that registry, never to a successor's. A publish opens
     its own handle and closes it on return, rather than a publisher
     holding one for its life. A file lock is held per open file
     description with no nesting count, so a shared handle would let a
@@ -599,37 +656,42 @@ class LocalDiscovery(Discovery):
     The registry is fixed-width by design. Files can grow — `_File`
     sizes with ``ftruncate``, ``pwrite`` extends past the end, and the
     capacity is re-read from the header on every scan — so ``capacity``
-    is not a limitation inherited from the storage the way it was when a
-    registry was a mapped shared-memory segment. It is kept because
-    growth would need a resize protocol between unrelated processes,
+    is a policy rather than a limit the storage imposes. It is kept
+    because growth would need a resize protocol between unrelated
+    processes,
     where subscribers scan without any lock, in exchange for removing a
     bound that callers can already set.
 
-    Borrowers never create the directory or anything in it but their
-    own blocks. Exiting removes the registry, the notification file and
-    the directory; the directory stays while an orphaned publisher still
-    holds a block in it, and that publisher removes the directory with
-    its last block.
+    Borrowers create nothing but blocks, and those belong to the owner's
+    generation rather than to the publisher that made them. A publish
+    that drops a worker removes its block and nulls its slot in the same
+    critical section, under the registry lock it already holds, so the
+    two can never disagree; see `LocalDiscovery.Publisher._drop`. A
+    publisher's exit releases its handles and removes nothing.
 
-    Every teardown path removes files through `_unlink_quietly`, so
-    `__exit__` cannot replace an exception its caller is already
-    unwinding. The shutdown fallback is an `atexit` handler registered on
-    entry and unregistered on exit before the removal runs, so a failed
-    removal leaves no handler armed to fire again at interpreter
-    shutdown.
+    The owner's exit removes the pointer first, so nothing new can
+    resolve the generation; then the generation's contents, so a
+    borrower already pinned to it fails at its next operation; then the
+    namespace directory. Every teardown path removes files through
+    `_unlink_quietly`, so `__exit__` cannot replace an exception its
+    caller is already unwinding. The shutdown fallback is an `atexit`
+    handler registered on entry and unregistered on exit before the
+    removal runs, so a failed removal leaves no handler armed to fire
+    again at interpreter shutdown.
 
-    That fallback is the only reclaimer, and it is interpreter state: it
-    does not run when a process dies from a signal. A ``SIGKILL``, or a
-    ``SIGTERM`` with no handler installed — the ordinary container
-    shutdown path — therefore strands the namespace's directory and one
-    block file per registered worker. A successor entering the same
-    namespace replaces the registry and the notification file but sweeps
-    nothing else, so its own clean exit then fails to remove a directory
-    that is no longer empty, silently. The residue is bounded by the
-    filesystem rather than reclaimed by this module: ``/dev/shm`` is
-    cleared on reboot, and a temporary directory is reaped by the
-    platform's temporary-file sweeper. Because a pool mints a fresh
-    namespace per lifecycle, nothing re-claims an abandoned one.
+    That fallback is interpreter state: it does not run when a process
+    dies from a signal. A ``SIGKILL``, or a ``SIGTERM`` with no handler
+    installed — the ordinary container shutdown path — therefore strands
+    the namespace directory and the whole generation under it. Borrowers
+    are unaffected in correctness, since the liveness lock dies with the
+    process and they fail loudly, but the files remain. The next entry on
+    that namespace sweeps them; what has no such entry is a namespace
+    nothing re-claims, and a pool mints a fresh ``pool-<uuid>`` per
+    lifecycle, so an abandoned one is never re-entered. That residue is
+    bounded by the filesystem rather than reclaimed here: ``/dev/shm`` is
+    cleared on reboot, a temporary directory is reaped by the platform's
+    sweeper, and containment under one ``wool`` directory means
+    ``rm -rf <root>/wool`` reclaims the lot.
     """
 
     _claim: int
@@ -966,9 +1028,9 @@ class LocalDiscovery(Discovery):
             accommodates typical worker metadata including tags and
             extra metadata.
         :param lock_timeout:
-            Maximum seconds to wait for the cross-process file lock before
-            raising `TimeoutError`. ``None`` waits forever. Defaults to
-            30.0.
+            Maximum seconds to wait for the cross-process file lock
+            before raising `TimeoutError`. ``None`` waits forever.
+            Defaults to `DEFAULT_LOCK_TIMEOUT`.
         :raises ValueError:
             If ``namespace`` is outside the domain `LocalDiscovery`
             documents, if ``block_size`` does not exceed the 4-byte
@@ -1135,11 +1197,9 @@ class LocalDiscovery(Discovery):
                 async with _lock(
                     registry, namespace=self._namespace, timeout=self._lock_timeout
                 ):
-                    # Checked under the lock, so a write never lands in a
-                    # registry whose owner is gone. Opening the registry
-                    # already catches an owner that exited and reclaimed
-                    # it; this catches one killed with no successor,
-                    # which leaves the file in place and readable.
+                    # Under the lock, so a write never lands in a
+                    # registry whose owner went away while this publish
+                    # was waiting for it; see `_owner_alive`.
                     if not binding.alive():
                         raise DiscoveryNamespaceNotFound(self._namespace)
                     match type:
@@ -1288,8 +1348,8 @@ class LocalDiscovery(Discovery):
             The block is removed here rather than by the pool's
             finalizer, so the slot and the block it names are freed in
             one critical section under the registry lock this already
-            holds. Removing it outside that lock is what let one
-            publisher's teardown unlink a block another was writing.
+            holds. Removing it outside that lock would let one
+            publisher's teardown unlink a block another is writing.
 
             :param metadata:
                 The worker to unpublish from the namespace's registry.
@@ -1491,12 +1551,11 @@ class LocalDiscovery(Discovery):
                     # at any point during this scan is preserved and
                     # wakes the next one.
                     notification.clear()
-                    # Checked before every read, so a borrower that
-                    # outlived its owner fails here rather than serving
-                    # the snapshot it last saw. `current` catches a
-                    # reclaimed or superseded generation; the liveness
-                    # probe catches an owner killed with no successor,
-                    # which leaves the file in place.
+                    # Before every read, so a borrower that outlived
+                    # its owner fails here rather than serving the
+                    # snapshot it last saw. `current` catches a reclaimed
+                    # or superseded generation, `_owner_alive` an owner
+                    # that died holding one.
                     if not registry.current() or not binding.alive():
                         raise DiscoveryNamespaceNotFound(self._namespace)
                     discovered_workers: dict[str, WorkerMetadata] = {}
@@ -1592,7 +1651,7 @@ class LocalDiscovery(Discovery):
             readmission. Carrying the last good metadata forward reports
             the worker unchanged instead.
 
-            The carry has a floor, because boxes above would otherwise
+            The carry is bounded, because carrying indefinitely would
             turn a *persistent* fault — a corrupted registry, a foreign
             file — into a subscription serving stale metadata forever
             with no signal at all. After `_CARRY_FORWARD_LIMIT`
@@ -1855,8 +1914,8 @@ def _read_block(block: _File) -> bytes:
 
     The prefix and the payload come from one read sized by the block, so
     a refresh landing between them cannot pair a new size with an old
-    payload. State the guarantee honestly: one read against
-    `_write_block`'s one write narrows tearing to a page-level property
+    payload. That narrows tearing rather than excluding it: one read
+    against `_write_block`'s one write leaves it a page-level property
     of the platform, and POSIX promises no atomicity between them.
 
     Sizing the read from the block rather than from the prefix also keeps

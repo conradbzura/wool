@@ -7,8 +7,8 @@ Single home for the typed errors the discovery backends raise.
 Each exception passes its fields positionally to ``super().__init__``,
 so the fallback in the worker's exception serializer, which rebuilds an
 exception as ``cls(*exc.args)``, restores them (see
-`wool.runtime.worker.frame`). A field left out of ``args`` arrives as
-``None``, and a keyword-only field kept in ``args`` fails the rebuild.
+`wool.runtime.worker.frame`). A keyword-only field kept out of ``args``
+fails that rebuild, so every field is positional and required.
 """
 
 from __future__ import annotations
@@ -32,16 +32,15 @@ class DiscoveryCapacityExhausted(WoolError):
 
     :param capacity:
         The number of worker slots the namespace's owner stamped into
-        the registry, when known.
+        the registry.
     """
 
-    def __init__(self, capacity: int | None = None):
+    def __init__(self, capacity: int):
         self.capacity = capacity
         super().__init__(capacity)
 
     def __str__(self) -> str:
-        detail = "" if self.capacity is None else f" (capacity {self.capacity})"
-        return f"No available slots in discovery registry{detail}"
+        return f"No available slots in discovery registry (capacity {self.capacity})"
 
 
 # public
@@ -61,16 +60,15 @@ class DiscoveryBlockExhausted(WoolError):
     `LocalDiscovery.Publisher.publish`.
 
     :param size:
-        The attempted payload size in bytes, when known.
+        The attempted payload size in bytes.
     """
 
-    def __init__(self, size: int | None = None):
+    def __init__(self, size: int):
         self.size = size
         super().__init__(size)
 
     def __str__(self) -> str:
-        detail = "" if self.size is None else f" ({self.size} bytes)"
-        return f"Worker metadata exceeds its registered block{detail}"
+        return f"Worker metadata exceeds its registered block ({self.size} bytes)"
 
 
 # public
@@ -81,16 +79,15 @@ class DiscoveryWorkerNotFound(WoolError):
     ``worker-added`` registers a new worker or refreshes an existing one.
 
     :param uid:
-        The unmatched worker's UID, when known.
+        The unmatched worker's UID.
     """
 
-    def __init__(self, uid: UUID | None = None):
+    def __init__(self, uid: UUID):
         self.uid = uid
         super().__init__(uid)
 
     def __str__(self) -> str:
-        detail = "" if self.uid is None else f" {self.uid}"
-        return f"Worker{detail} not found in discovery registry"
+        return f"Worker {self.uid} not found in discovery registry"
 
 
 # public
@@ -102,34 +99,37 @@ class DiscoveryNamespaceInUse(WoolError):
     `LocalDiscovery` for the ownership contract and what ends a claim.
 
     :param namespace:
-        The namespace whose claim was rejected, when known.
+        The namespace whose claim was rejected.
     """
 
-    def __init__(self, namespace: str | None = None):
+    def __init__(self, namespace: str):
         self.namespace = namespace
         super().__init__(namespace)
 
     def __str__(self) -> str:
-        detail = "" if self.namespace is None else f" {self.namespace!r}"
-        return f"Discovery namespace{detail} is already in use"
+        return f"Discovery namespace {self.namespace!r} is already in use"
 
 
 # public
 class DiscoveryNamespaceNotFound(WoolError):
-    """Raised when a borrower binds a namespace that has no registry.
+    """Raised when a namespace has no live owner to borrow from.
 
-    No owner has created the registry yet, or its owner has exited and
-    reclaimed it. See `LocalDiscovery` for the borrowing and orphaning
-    contract.
+    Raised at a bind where no owner has created the namespace yet, and
+    again at any later operation by a borrower whose owner has since
+    gone: a binding ends with the owner it was made against, so a
+    publisher's next publish and a subscriber's next scan both fail
+    rather than reaching a successor or serving what they last read.
+    This holds whether that owner exited or was killed outright. A
+    borrower that wants to follow the namespace re-binds after this
+    error. See `LocalDiscovery` for the ownership contract.
 
     :param namespace:
-        The namespace whose registry was not found, when known.
+        The namespace that has no live owner.
     """
 
-    def __init__(self, namespace: str | None = None):
+    def __init__(self, namespace: str):
         self.namespace = namespace
         super().__init__(namespace)
 
     def __str__(self) -> str:
-        detail = "" if self.namespace is None else f" {self.namespace!r}"
-        return f"No discovery registry for namespace{detail}"
+        return f"Discovery namespace {self.namespace!r} has no live owner to borrow from"
