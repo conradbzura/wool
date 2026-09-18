@@ -15,7 +15,7 @@ The lock holder runs in a distinct interpreter, so the contention these
 tests exercise crosses a process boundary. The `_HOLDER_SCRIPT`
 subprocess acquires the lock through the production `_lock` context
 manager over the production registry handle, guaranteeing the same file
-and mechanism (``portalocker.LOCK_EX | LOCK_NB``) the publisher waits on.
+and mechanism (``fcntl.LOCK_EX | fcntl.LOCK_NB``) the publisher waits on.
 Driving the private `_lock` this way is a deliberate exception to the
 Test Guide's "no private references" rule: it is a cross-process harness
 to establish a genuinely held lock — no public API holds the discovery
@@ -64,6 +64,7 @@ import time
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceNotFound
 from wool.runtime.discovery.local import _lock
 from wool.runtime.discovery.local import _open_registry
+from wool.runtime.discovery.local import _resolve_generation
 
 
 async def main():
@@ -72,7 +73,7 @@ async def main():
     deadline = time.monotonic() + 30
     while True:
         try:
-            registry = _open_registry(namespace)
+            registry = _open_registry(namespace, _resolve_generation(namespace))
             break
         except DiscoveryNamespaceNotFound:
             if time.monotonic() >= deadline:
