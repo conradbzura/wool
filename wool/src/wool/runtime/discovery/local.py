@@ -4,13 +4,16 @@ import asyncio
 import atexit
 import errno
 import fcntl
+import io
 import logging
 import os
+import stat
 import struct
 import sys
 import tempfile
 import warnings
 from contextlib import AsyncExitStack
+from contextlib import ExitStack
 from contextlib import asynccontextmanager
 from contextlib import closing
 from functools import cache
@@ -18,15 +21,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import AsyncGenerator
 from typing import AsyncIterator
-from typing import BinaryIO
 from typing import Callable
 from typing import Final
 from typing import Iterator
+from typing import NamedTuple
 from typing import Self
 from uuid import UUID
 from uuid import uuid4
 
-import portalocker
 from watchdog.events import FileSystemEvent
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -49,22 +51,49 @@ from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.afilter import afilter
 from wool.utilities.noreentry import noreentry
 
-#: Defaults shared with `wool.runtime.worker.pool`, which sizes a
-#: pool-owned registry from them. Everything below is local to this
-#: module and underscored accordingly.
+#: Worker slots a namespace's registry holds when its owner does not
+#: choose otherwise.
 DEFAULT_CAPACITY: Final = 128
+#: Seconds a publisher waits for the registry lock when its caller does
+#: not choose otherwise.
 DEFAULT_LOCK_TIMEOUT: Final[float] = 30.0
 _REF_WIDTH: Final = 16
 _NULL_REF: Final = b"\x00" * _REF_WIDTH
 _HEADER_MAGIC: Final = b"WLD1"
+_HEADER_FORMAT: Final = "<4sII"
 _HEADER_SIZE: Final = _REF_WIDTH
 _REGISTRY: Final = "registry"
 _STAGING: Final = "registry.tmp"
 _NOTIFY: Final = "notify"
+_ROOT_DIRNAME: Final = "wool"
+_CURRENT: Final = "current"
+_BLOCKS: Final = "blocks"
 _NAME_MAX: Final = 255
 _CARRY_FORWARD_LIMIT: Final = 3
+#: How long a parked subscription waits before re-checking that its
+#: owner still holds the generation it bound. Bounds how long a borrower
+#: can serve a snapshot of a namespace that no longer has a live owner,
+#: independently of how often it rescans: a subscription with no poll
+#: interval would otherwise park on a notification that can no longer
+#: arrive, and one with a long poll interval would wait that interval
+#: out. A liveness wake is not a rescan; see `LocalDiscovery.Subscriber`.
+_LIVENESS_INTERVAL: Final[float] = 5.0
+
+#: Bumped in the child by an `os.register_at_fork` handler, so an owner
+#: entered before a fork can tell that it is running in the fork. See
+#: `LocalDiscovery` for the ownership contract this enforces.
+_fork_generation = 0
 
 logger = logging.getLogger(__name__)
+
+
+def _bump_fork_generation() -> None:
+    """Disown every namespace this process inherited by forking."""
+    global _fork_generation
+    _fork_generation += 1
+
+
+os.register_at_fork(after_in_child=_bump_fork_generation)
 
 
 class _Watchdog(FileSystemEventHandler):
@@ -186,12 +215,21 @@ class _File:
 
     __slots__ = ("file", "path")
 
-    file: BinaryIO
+    file: io.FileIO
     path: Path
 
-    def __init__(self, path: Path, file: BinaryIO):
+    def __init__(self, path: Path, file: io.FileIO):
         self.path = path
         self.file = file
+
+    @property
+    def size(self) -> int:
+        """The file's size in bytes.
+
+        :returns:
+            The size of the open file, whatever its path now names.
+        """
+        return os.fstat(self.file.fileno()).st_size
 
     @classmethod
     def create(cls, path: Path, size: int) -> _File:
@@ -206,42 +244,42 @@ class _File:
         :raises FileExistsError:
             If ``path`` already exists.
         """
-        file = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600), "r+b")
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        # Bound to the raw descriptor before anything else can raise, so
+        # a failure inside the wrapper's construction closes it rather
+        # than losing it.
         try:
-            os.ftruncate(file.fileno(), size)
+            os.ftruncate(descriptor, size)
+            file = io.FileIO(descriptor, "r+", closefd=True)
         except BaseException:  # pragma: no cover
-            file.close()
+            os.close(descriptor)
             _unlink_quietly(path.parent, path.name)
             raise
         return cls(path, file)
 
     @classmethod
-    def open(cls, path: Path) -> _File:
+    def open(cls, path: Path, *, write: bool = True) -> _File:
         """Open an existing file.
 
         :param path:
             The file to open.
+        :param write:
+            Whether the handle may write. A reader passes ``False``: on
+            APFS the write mode is not free, and the subscriber opens
+            every registered worker's block once per scan.
         :returns:
             A handle on the file.
         :raises FileNotFoundError:
             If ``path`` does not exist.
         """
-        return cls(path, path.open("r+b"))
-
-    @property
-    def size(self) -> int:
-        """The file's size in bytes.
-
-        :returns:
-            The size of the open file, whatever its path now names.
-        """
-        return os.fstat(self.file.fileno()).st_size
+        return cls(path, io.FileIO(path, "r+" if write else "r"))
 
     def current(self) -> bool:
         """Report whether this handle's path still names this file.
 
         A handle whose path was removed, or replaced by a successor
-        owner's file, is stale: the file it holds is orphaned.
+        owner's file, is stale: the file it holds is no longer the one
+        that path names, so nothing reads what it writes.
 
         :returns:
             True while the path resolves to the open file.
@@ -279,6 +317,107 @@ class _File:
     def close(self) -> None:
         """Close the file, leaving it in place."""
         self.file.close()
+
+
+class _Header(NamedTuple):
+    """The sizes a namespace's owner stamps into its registry.
+
+    Both bind a borrower: the owner fixes them when it stages the
+    generation, and a borrower reads rather than supplies them, so two
+    publishers cannot disagree about the size of an artifact the owner
+    owns. See `LocalDiscovery` for the ownership contract.
+
+    :param capacity:
+        The maximum number of workers registered at once.
+    :param block_size:
+        The size in bytes of each worker's metadata block.
+    """
+
+    capacity: int
+    block_size: int
+
+
+class _Binding:
+    """A borrower's hold on the generation that was live when it bound.
+
+    Resolving the pointer, proving the registry is there and pinning a
+    descriptor on the generation are one step with one outcome: either
+    this borrower is bound to an owner's incarnation, or the namespace
+    has no live owner to borrow from. Both borrower kinds bind through
+    here, so a publisher and a subscriber cannot disagree about what a
+    missing generation, a replaced directory or a dead owner means.
+
+    A binding ends with the owner it was made against; see
+    `LocalDiscovery` for the borrowing contract and `_owner_alive` for
+    how a dead owner is detected.
+
+    :param generation:
+        The generation directory this binding holds.
+    :param liveness:
+        A descriptor on that directory, pinned for the binding's life.
+    """
+
+    __slots__ = ("generation", "header", "_liveness")
+
+    def __init__(self, generation: Path, header: _Header, liveness: int) -> None:
+        self.generation = generation
+        self.header = header
+        self._liveness = liveness
+
+    @classmethod
+    def bind(cls, namespace: str) -> Self:
+        """Resolve a namespace's live generation and hold it.
+
+        :param namespace:
+            The namespace to borrow.
+        :returns:
+            A binding on the generation that was live at this moment.
+        :raises DiscoveryNamespaceNotFound:
+            If the namespace has no live owner to borrow from.
+        """
+        generation = _resolve_generation(namespace)
+        # Read and then released: a publisher opens its own handle per
+        # publish, so the descriptor it locks is the one it writes, and a
+        # subscriber keeps a handle of its own. The sizes come with the
+        # bind because they are the owner's to fix, not a borrower's.
+        with closing(_open_registry(namespace, generation)) as registry:
+            # A registry the pointer reaches was stamped before the
+            # pointer existed, so an unstamped one was planted rather
+            # than staged and there is nothing here to borrow. This is
+            # the only place the header is validated; every later read
+            # happens against a binding that already passed.
+            try:
+                header = _read_header(registry)
+            except ValueError as error:
+                raise DiscoveryNamespaceNotFound(namespace) from error
+        try:
+            liveness = os.open(generation, os.O_RDONLY)
+        except (FileNotFoundError, NotADirectoryError) as error:
+            raise DiscoveryNamespaceNotFound(namespace) from error
+        binding = cls(generation, header, liveness)
+        # A killed owner leaves its generation readable, so binding it
+        # would otherwise succeed against a namespace no process owns.
+        if not binding.alive():
+            binding.close()
+            raise DiscoveryNamespaceNotFound(namespace)
+        return binding
+
+    def alive(self) -> bool:
+        """Report whether the owner this binding was made against lives.
+
+        :returns:
+            True while that owner's process holds the generation.
+        """
+        return _owner_alive(self._liveness)
+
+    def close(self) -> None:
+        """Release the descriptor this binding pins.
+
+        Closing is idempotent, and a closed binding reports its owner as
+        gone rather than guessing from a descriptor it no longer holds.
+        """
+        liveness, self._liveness = self._liveness, -1
+        _close_quietly(liveness)
 
 
 # public
@@ -496,7 +635,10 @@ class LocalDiscovery(Discovery):
     _claim: int
     _cleanup: Callable[[], None] | None
     _filter: Final[PredicateFunction | None]
+    _fork_generation: int
+    _liveness: int
     _namespace: Final[str]
+    _owner_pid: int
     _poll_interval: Final[float | None]
 
     def __init__(
@@ -526,7 +668,13 @@ class LocalDiscovery(Discovery):
         self._block_size = block_size
         self._lock_timeout = lock_timeout
         self._claim = -1
+        self._liveness = -1
         self._cleanup = None
+        # Both are restamped by `__enter__`, which is the entry that owns
+        # the claim; an instance constructed before a fork and entered in
+        # the child owns its own claim and must not disown it.
+        self._fork_generation = _fork_generation
+        self._owner_pid = os.getpid()
 
     @noreentry
     def __enter__(self) -> Self:
@@ -541,22 +689,46 @@ class LocalDiscovery(Discovery):
         :raises DiscoveryNamespaceInUse:
             If a live owner holds the namespace; see `LocalDiscovery`.
         """
-        directory = _directory(self._namespace)
+        # Stamped before anything can fail, so a fork racing this entry
+        # either sees an instance that was never entered — whose release
+        # is a no-op — or one stamped with the pre-fork generation, which
+        # disowns. See **Forks** in `LocalDiscovery`.
+        self._fork_generation = _fork_generation
+        self._owner_pid = os.getpid()
+        directory = _namespace_directory(self._namespace)
         while True:
-            directory.mkdir(exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
             try:
-                self._claim = os.open(directory, os.O_RDONLY)
+                claim = os.open(directory, os.O_RDONLY)
             except FileNotFoundError:
                 continue
+            # Taking the claim is its own step, because a failure here
+            # means the opposite of a failure below it: until the lock
+            # is held this process owns nothing, so there is nothing of
+            # this owner's to release and releasing would purge the
+            # incumbent's generation. Only the claim itself is closed.
             try:
-                fcntl.flock(self._claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                os.close(claim)
+                raise DiscoveryNamespaceInUse(self._namespace) from error
+            except BaseException:
+                os.close(claim)
+                raise
+            # Stored only once the lock is held, so `_release` never sees
+            # a descriptor this owner did not claim; see `_release`.
+            self._claim = claim
+            try:
                 # See the directory re-check in the implementation notes.
-                if _same_file(self._claim, directory):
+                if _same_file(claim, directory):
+                    # Holding the claim proves no live writer, now that a
+                    # borrower's binding ends with its owner, so whatever
+                    # a killed predecessor left is this owner's to sweep.
+                    # Before staging, and on every retry, so a partially
+                    # staged generation is self-cleaning.
+                    _purge(claim)
                     self._stage(directory)
                     break
-            except BlockingIOError as error:
-                os.close(self._claim)
-                raise DiscoveryNamespaceInUse(self._namespace) from error
             except (FileNotFoundError, NotADirectoryError):
                 # The directory was removed, or replaced by something
                 # that is not a directory, after it was opened. Both are
@@ -567,7 +739,11 @@ class LocalDiscovery(Discovery):
             except BaseException:
                 self._release()
                 raise
-            os.close(self._claim)
+            # Exchanged for the sentinel before closing, so a retry that
+            # then fails outside this block cannot leave a closed number
+            # on the instance for `_release` to act on.
+            claim, self._claim = self._claim, -1
+            os.close(claim)
         self._cleanup = atexit.register(self._release)
         return self
 
@@ -607,11 +783,7 @@ class LocalDiscovery(Discovery):
         :returns:
             A publisher instance for broadcasting worker events.
         """
-        return self.Publisher(
-            self._namespace,
-            block_size=self._block_size,
-            lock_timeout=self._lock_timeout,
-        )
+        return self.Publisher(self._namespace, lock_timeout=self._lock_timeout)
 
     @property
     def subscriber(self) -> DiscoverySubscriberLike:
@@ -656,27 +828,64 @@ class LocalDiscovery(Discovery):
         return subscriber
 
     def _stage(self, directory: Path) -> None:
-        """Create the claimed namespace's registry and notification file.
+        """Create this owner's generation and publish it as the live one.
 
-        Replaces any registry a killed owner left behind. See
+        Every artifact of the namespace lives under a generation
+        directory this owner creates and locks, so a borrower binds one
+        owner's incarnation and never drifts onto a successor's. See
         `LocalDiscovery`'s implementation notes for why the registry is
-        staged.
+        staged and why the pointer is published last.
+
+        Staging either publishes a generation or leaves this instance as
+        it found it, so a caller may retry without cleaning up after a
+        failed attempt. The generation's own directory may survive a
+        failure; the next attempt's sweep removes it.
 
         :param directory:
             The claimed namespace's directory.
         :raises FileNotFoundError:
             If the directory was removed after it was claimed.
         """
-        staging = directory / _STAGING
-        descriptor = os.open(staging, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+        generation = directory / uuid4().hex
+        (generation / _BLOCKS).mkdir(parents=True)
+        # Held for this generation's whole life. A borrower that cannot
+        # take it shared knows the owner's process is alive; see
+        # `_owner_alive`.
+        liveness = os.open(generation, os.O_RDONLY)
         try:
-            # Truncation zero-fills, so every slot already reads as `_NULL_REF`.
-            os.ftruncate(descriptor, _HEADER_SIZE + self._capacity * _REF_WIDTH)
-            os.pwrite(descriptor, struct.pack("<4sI", _HEADER_MAGIC, self._capacity), 0)
-        finally:
-            os.close(descriptor)
-        os.replace(staging, directory / _REGISTRY)
-        (directory / _NOTIFY).touch()
+            fcntl.flock(liveness, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            staging = generation / _STAGING
+            descriptor = os.open(staging, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                # Truncation zero-fills, so every slot already reads as
+                # `_NULL_REF`.
+                os.ftruncate(descriptor, _HEADER_SIZE + self._capacity * _REF_WIDTH)
+                os.pwrite(
+                    descriptor,
+                    struct.pack(
+                        _HEADER_FORMAT,
+                        _HEADER_MAGIC,
+                        self._capacity,
+                        self._block_size,
+                    ),
+                    0,
+                )
+            finally:
+                os.close(descriptor)
+            os.replace(staging, generation / _REGISTRY)
+            (generation / _NOTIFY).touch()
+            # Published last and atomically, so no borrower resolves a
+            # generation before its registry is stamped.
+            pointer = directory / f"{_CURRENT}.{os.getpid()}"
+            os.symlink(generation.name, pointer)
+            os.rename(pointer, directory / _CURRENT)
+        except BaseException:
+            _close_quietly(liveness)
+            raise
+        # Assigned only once the generation is published, so a caller
+        # that retries a half-staged attempt has nothing to clean up:
+        # every failure above closed what it opened.
+        self._liveness = liveness
 
     def _release(self) -> None:
         """Remove the namespace's files and directory, then release the claim.
@@ -699,15 +908,28 @@ class LocalDiscovery(Discovery):
         hand, frees the namespace for a successor while this claim lives;
         without that, this owner's ordinary exit would go on to delete
         the successor's registry.
+
+        A process that inherited this owner by forking removes nothing.
+        It drops only its own references, which leaves the parent's locks
+        held, because the descriptors it closes share the parent's open
+        file description. See **Forks** in `LocalDiscovery`.
         """
         claim, self._claim = self._claim, -1
         if claim < 0:
             return
+        liveness, self._liveness = self._liveness, -1
+        if self._fork_generation != _fork_generation or os.getpid() != self._owner_pid:
+            _close_quietly(liveness)
+            os.close(claim)
+            return
         try:
-            directory = _directory(self._namespace)
-            _unlink_quietly(directory, _STAGING, dir_fd=claim)
-            _unlink_quietly(directory, _REGISTRY, dir_fd=claim)
-            _unlink_quietly(directory, _NOTIFY, dir_fd=claim)
+            directory = _namespace_directory(self._namespace)
+            # The pointer first, so no borrower resolves this generation
+            # once it is going away; then the contents, so a borrower
+            # already bound fails at its next operation; then the
+            # directory itself.
+            _unlink_quietly(directory, _CURRENT, dir_fd=claim)
+            _purge(claim)
             # The name is all `rmdir` has, so it is removed only while the
             # path still resolves to the claimed directory.
             try:
@@ -719,6 +941,7 @@ class LocalDiscovery(Discovery):
             if claimed:
                 _rmdir_quietly(directory)
         finally:
+            _close_quietly(liveness)
             os.close(claim)
 
     class Publisher:
@@ -727,8 +950,9 @@ class LocalDiscovery(Discovery):
         Publishes worker discovery events (see `~wool.DiscoveryEvent`) to
         a namespace's registry, where subscribers discover them.
         Publishers in different processes write to one namespace under a
-        cross-process file lock. A publisher borrows the registry; see
-        `LocalDiscovery` for the borrowing and orphaning contract.
+        cross-process file lock. A publisher borrows the namespace, and
+        its binding ends with the owner it bound; see `LocalDiscovery`
+        for the ownership contract.
 
         :param namespace:
             The namespace identifier for the registry to borrow. See
@@ -751,10 +975,9 @@ class LocalDiscovery(Discovery):
             length prefix, or if ``lock_timeout`` is negative.
         """
 
+        _binding: _Binding | None
         _block_pool: ResourcePool[_File]
-        _block_size: int
         _blocks: dict[str, AsyncExitStack]
-        _cleanups: dict[str, Callable]
         _lock_timeout: float | None
         _namespace: Final[str]
 
@@ -767,17 +990,14 @@ class LocalDiscovery(Discovery):
             self,
             namespace: str,
             *,
-            block_size: int = 1024,
             lock_timeout: float | None = DEFAULT_LOCK_TIMEOUT,
         ):
             _validate_namespace(namespace)
-            _validate_block_size(block_size)
             if lock_timeout is not None and lock_timeout < 0:
                 raise ValueError("Lock timeout must be non-negative")
             self._namespace = namespace
-            self._block_size = block_size
             self._lock_timeout = lock_timeout
-            self._cleanups = {}
+            self._binding = None
             # The block each published worker holds, keyed by its ref;
             # a drop exits the handle and the exit closes the rest.
             self._blocks = {}
@@ -788,21 +1008,29 @@ class LocalDiscovery(Discovery):
             )
 
         async def __aenter__(self) -> Self:
-            """Verify the namespace's registry exists, then enter the block pool.
+            """Bind the namespace's live generation, then enter the block pool.
 
-            See `LocalDiscovery` for the borrowing contract.
+            See `LocalDiscovery` for the borrowing contract and
+            `_Binding` for what binding proves.
 
             :returns:
                 This instance.
             :raises DiscoveryNamespaceNotFound:
-                If the namespace has no registry.
+                If the namespace has no live owner; see
+                `DiscoveryNamespaceNotFound`.
             """
-            # Probe first, so a missing registry leaves no pool entered.
-            # The handle is not retained: each publish opens its own, so
-            # the descriptor it locks is the descriptor it writes.
-            with closing(_open_registry(self._namespace)):
-                pass
-            await self._block_pool.__aenter__()
+            # Bound before the pool is entered, so a namespace with no
+            # live owner leaves no pool entered. The binding pins the
+            # generation, so every later publish reaches the owner this
+            # publisher bound and a successor's registry is unreachable
+            # rather than merely guarded against; see `_Binding`.
+            self._binding = _Binding.bind(self._namespace)
+            try:
+                await self._block_pool.__aenter__()
+            except BaseException:
+                self._binding.close()
+                self._binding = None
+                raise
             return self
 
         async def __aexit__(self, *args):
@@ -812,6 +1040,11 @@ class LocalDiscovery(Discovery):
             later block's failure is discarded, so one bad handle cannot
             hide the others or stop them being released. The block pool
             is exited regardless, and its own failure supersedes.
+
+            Nothing is unlinked here. The blocks belong to the
+            namespace's owner, which frees whatever this publisher did
+            not drop, so exiting after the owner has gone is silent
+            rather than a failure to remove what is already removed.
 
             :param args:
                 The exception info the block is exiting with, forwarded
@@ -828,6 +1061,9 @@ class LocalDiscovery(Discovery):
                 if failure is not None:
                     raise failure
             finally:
+                if self._binding is not None:
+                    self._binding.close()
+                    self._binding = None
                 await self._block_pool.__aexit__(*args)
 
         @property
@@ -887,14 +1123,25 @@ class LocalDiscovery(Discovery):
                 If the cross-process file lock is not acquired within this
                 publisher's ``lock_timeout``.
             :raises DiscoveryNamespaceNotFound:
-                If the namespace has no registry; see `LocalDiscovery`.
+                If the namespace has no live owner; see
+                `DiscoveryNamespaceNotFound`.
+            :raises RuntimeError:
+                If this publisher's context is not entered, or was
+                already exited.
             """
-            with closing(_open_registry(self._namespace)) as registry:
+            binding = self._bound
+            registry = _open_registry(self._namespace, binding.generation)
+            with closing(registry):
                 async with _lock(
                     registry, namespace=self._namespace, timeout=self._lock_timeout
                 ):
-                    if _read_capacity(registry) is None:  # pragma: no cover
-                        raise RuntimeError("Discovery registry header is not stamped")
+                    # Checked under the lock, so a write never lands in a
+                    # registry whose owner is gone. Opening the registry
+                    # already catches an owner that exited and reclaimed
+                    # it; this catches one killed with no successor,
+                    # which leaves the file in place and readable.
+                    if not binding.alive():
+                        raise DiscoveryNamespaceNotFound(self._namespace)
                     match type:
                         case "worker-added":
                             await self._add(metadata, registry)
@@ -907,7 +1154,32 @@ class LocalDiscovery(Discovery):
                                 f"Unexpected discovery event type: {type}"
                             )
 
-                    _notify(self._namespace)
+                    _notify(binding.generation)
+
+        @property
+        def _bound(self) -> _Binding:
+            """The binding this publisher made when it was entered.
+
+            :returns:
+                The binding on the generation this publisher borrows.
+            :raises RuntimeError:
+                If this publisher's context is not entered.
+            """
+            binding = self._binding
+            if binding is None:
+                raise RuntimeError(
+                    "Publisher is not entered - use it as an async context manager"
+                )
+            return binding
+
+        @property
+        def _generation(self) -> Path:
+            """The generation this publisher bound.
+
+            :returns:
+                The bound generation's directory.
+            """
+            return self._bound.generation
 
         async def _add(self, metadata: WorkerMetadata, registry: _File):
             """Register a worker, or refresh one already registered.
@@ -949,7 +1221,7 @@ class LocalDiscovery(Discovery):
 
             if match_offset is not None:
                 try:
-                    with closing(_block(self._namespace, ref)) as block_file:
+                    with closing(_block(self._generation, ref)) as block_file:
                         _write_block(block_file, serialized)
                     return
                 except FileNotFoundError:
@@ -966,7 +1238,7 @@ class LocalDiscovery(Discovery):
                         await vanished.aclose()
 
             if free_offset is None:
-                raise DiscoveryCapacityExhausted(_read_capacity(registry))
+                raise DiscoveryCapacityExhausted(self._bound.header.capacity)
 
             block = AsyncExitStack()
             try:
@@ -1013,6 +1285,12 @@ class LocalDiscovery(Discovery):
             worker first leaves nothing to match and the block is this
             publisher's to release either way.
 
+            The block is removed here rather than by the pool's
+            finalizer, so the slot and the block it names are freed in
+            one critical section under the registry lock this already
+            holds. Removing it outside that lock is what let one
+            publisher's teardown unlink a block another was writing.
+
             :param metadata:
                 The worker to unpublish from the namespace's registry.
             """
@@ -1026,6 +1304,7 @@ class LocalDiscovery(Discovery):
             block = self._blocks.pop(str(target_ref), None)
             if block is not None:
                 await block.aclose()
+            _unlink_quietly(self._generation / _BLOCKS, str(target_ref))
 
         async def _update(self, metadata: WorkerMetadata, registry: _File):
             """Update a registered worker's metadata block.
@@ -1052,7 +1331,7 @@ class LocalDiscovery(Discovery):
             for _, slot in _iter_slots(registry):
                 if slot == target_ref.bytes:
                     try:
-                        with closing(_block(self._namespace, target_ref)) as block_file:
+                        with closing(_block(self._generation, target_ref)) as block_file:
                             _write_block(block_file, serialized)
                     except FileNotFoundError as error:
                         raise DiscoveryWorkerNotFound(metadata.uid) from error
@@ -1061,42 +1340,36 @@ class LocalDiscovery(Discovery):
             raise DiscoveryWorkerNotFound(metadata.uid)
 
         def _block_factory(self, name: str) -> _File:
-            """Create a worker's metadata block in the namespace's directory.
+            """Create a worker's metadata block in the generation's directory.
 
-            Registers an atexit handler that removes the block, so a
-            publisher that never exits leaves no block behind.
+            The block belongs to the namespace's owner, not to this
+            publisher: it is created under the generation this publisher
+            bound and is reclaimed when that owner exits. Nothing is
+            armed against this process's own exit, because a publisher
+            that never exits leaves nothing the owner does not free.
 
             :param name:
                 The block's file name, i.e., the worker reference.
             :returns:
                 The new block's handle.
             """
-            path = _directory(self._namespace) / name
-            block = _File.create(path, self._block_size)
-
-            def cleanup():  # pragma: no cover
-                _unlink_quietly(path.parent, path.name)
-                _rmdir_quietly(path.parent)
-
-            self._cleanups[name] = atexit.register(cleanup)
-            return block
+            bound = self._bound
+            return _File.create(
+                bound.generation / _BLOCKS / name, bound.header.block_size
+            )
 
         def _block_finalizer(self, block: _File):
-            """Remove a metadata block released from the pool.
+            """Release a metadata block's handle without removing it.
 
-            Unregisters the atexit handler before removing the block, so a
-            failed removal cannot leave the handler armed to fire again at
-            interpreter shutdown. The removal goes through
-            `_unlink_quietly`; see it for the failure semantics. The
-            namespace's directory is then removed if nothing else is left
-            in it, which reclaims it after an owner that exited first.
+            A block is the owner's artifact, so releasing a handle on one
+            never unlinks it: the slot and the block are removed together
+            by `_drop`, under the registry lock that serializes them, and
+            anything a publisher does not drop is freed when the owner
+            exits. See `LocalDiscovery` for the ownership contract.
 
             :param block:
                 The block to finalize.
             """
-            atexit.unregister(self._cleanups.pop(block.path.name))
-            _unlink_quietly(block.path.parent, block.path.name)
-            _rmdir_quietly(block.path.parent)
             block.close()
 
     class Subscriber(
@@ -1112,17 +1385,19 @@ class LocalDiscovery(Discovery):
         Yields worker discovery events (see `~wool.DiscoveryEvent`) from a
         namespace's registry as workers are added, updated, or dropped,
         rescanning the registry whenever a publisher writes to it. A
-        subscriber borrows the registry; see `LocalDiscovery` for the
-        borrowing and orphaning contract.
+        subscriber borrows the namespace, and its subscription ends with
+        the owner it bound; see `LocalDiscovery` for the ownership
+        contract.
 
         Constructions sharing a ``namespace`` and ``poll_interval``
         within one `contextvars.Context` are served from one
         subscription; see `SubscriberMeta`. Only the iteration that
         starts a subscription binds, so only that iteration raises
-        `DiscoveryNamespaceNotFound`. An iteration that joins a live
-        subscription over an orphaned registry keeps reading it and never
-        observes a successor owner, and an iteration that joins a failing
-        bind ends without events.
+        `DiscoveryNamespaceNotFound` at the bind. A subscription whose
+        owner then goes away fails for the iteration pulling it; every
+        other iteration sharing it currently ends without events instead
+        of raising, and an iteration that joins a failing bind ends
+        without events too.
 
         :param namespace:
             The namespace identifier for the registry to borrow. See
@@ -1181,59 +1456,122 @@ class LocalDiscovery(Discovery):
             notification = asyncio.Event()
             loop = asyncio.get_running_loop()
 
-            # Bind first, so a bind that raises starts no observer.
-            with closing(_open_registry(self._namespace)) as registry:
-                watchdog = _directory(self._namespace) / _NOTIFY
+            # Every resource this iteration takes is held in a local and
+            # released by this stack, so concurrent iterations of one
+            # subscriber never share a descriptor or an observer; see
+            # `~wool.DiscoverySubscriberLike`.
+            with ExitStack() as resources:
+                # The generation is resolved and pinned once, so this
+                # subscription follows one owner's incarnation and ends
+                # with it rather than drifting onto a successor's
+                # registry. Bound first, so a bind that raises starts no
+                # observer.
+                binding = resources.enter_context(
+                    closing(_Binding.bind(self._namespace))
+                )
+                generation = binding.generation
+                registry = resources.enter_context(
+                    closing(_open_registry(self._namespace, generation))
+                )
+                watchdog = generation / _NOTIFY
                 handler = _Watchdog(notification, watchdog, loop)
                 observer = Observer()
                 observer.schedule(handler, path=str(watchdog.parent), recursive=False)
                 try:
                     observer.start()
-                except FileNotFoundError as error:
+                except OSError as error:
                     # The owner exited between the bind and the watch.
                     raise DiscoveryNamespaceNotFound(self._namespace) from error
-                try:
-                    while True:
-                        # Cleared before the read, so a notification
-                        # arriving at any point during this scan is
-                        # preserved and wakes the next one.
-                        notification.clear()
-                        discovered_workers: dict[str, WorkerMetadata] = {}
-                        for _, slot in _iter_slots(registry):
-                            if slot == _NULL_REF:
-                                continue
-                            try:
-                                ref = _WorkerReference.from_bytes(slot)
-                                metadata = self._deserialize_metadata(ref)
-                            except Exception:
-                                self._carry_forward(
-                                    slot, cached_workers, discovered_workers, carried
-                                )
-                                continue
-                            uid = str(metadata.uid)
-                            carried.pop(uid, None)
-                            discovered_workers[uid] = metadata
-                        carried = {
-                            uid: scans
-                            for uid, scans in carried.items()
-                            if uid in discovered_workers
-                        }
-
-                        for event in self._diff(cached_workers, discovered_workers):
-                            yield event
+                # Registered the instant the thread exists, so every
+                # later failure retires it rather than stranding it.
+                resources.callback(observer.join)
+                resources.callback(observer.stop)
+                while True:
+                    # Cleared before the read, so a notification arriving
+                    # at any point during this scan is preserved and
+                    # wakes the next one.
+                    notification.clear()
+                    # Checked before every read, so a borrower that
+                    # outlived its owner fails here rather than serving
+                    # the snapshot it last saw. `current` catches a
+                    # reclaimed or superseded generation; the liveness
+                    # probe catches an owner killed with no successor,
+                    # which leaves the file in place.
+                    if not registry.current() or not binding.alive():
+                        raise DiscoveryNamespaceNotFound(self._namespace)
+                    discovered_workers: dict[str, WorkerMetadata] = {}
+                    for _, slot in _iter_slots(registry):
+                        if slot == _NULL_REF:
+                            continue
                         try:
-                            await asyncio.wait_for(
-                                notification.wait(),
-                                timeout=self._poll_interval,
+                            ref = _WorkerReference.from_bytes(slot)
+                            metadata = self._deserialize_metadata(generation, ref)
+                        except Exception:
+                            self._carry_forward(
+                                slot, cached_workers, discovered_workers, carried
                             )
-                        except asyncio.TimeoutError:
-                            pass
-                finally:
-                    observer.stop()
-                    observer.join()
+                            continue
+                        uid = str(metadata.uid)
+                        carried.pop(uid, None)
+                        discovered_workers[uid] = metadata
+                    carried = {
+                        uid: scans
+                        for uid, scans in carried.items()
+                        if uid in discovered_workers
+                    }
 
-        async def _shutdown(self) -> None:
-            """Clean up shared subscription state for this subscriber."""
+                    for event in self._diff(cached_workers, discovered_workers):
+                        yield event
+                    await self._park(binding, registry, notification, loop)
+
+        async def _park(
+            self,
+            binding: _Binding,
+            registry: _File,
+            notification: asyncio.Event,
+            loop: asyncio.AbstractEventLoop,
+        ) -> None:
+            """Wait for the next rescan, re-checking the owner while waiting.
+
+            Returns when a publisher writes or the poll interval
+            elapses. Waking to check the owner is not waking to rescan:
+            the check is two non-blocking locks and a `os.readlink`,
+            where a rescan reads every registered worker's block and
+            emits an event for each, so a subscription with no poll
+            interval stays silent over an idle namespace however long
+            it lives.
+
+            :param binding:
+                The generation binding to probe.
+            :param registry:
+                The registry handle to test for supersession.
+            :param notification:
+                The event a publisher's write sets.
+            :param loop:
+                The running loop, for its clock.
+            :raises DiscoveryNamespaceNotFound:
+                If the owner this subscription bound is gone.
+            """
+            deadline = (
+                None
+                if self._poll_interval is None
+                else loop.time() + self._poll_interval
+            )
+            while True:
+                timeout = _LIVENESS_INTERVAL
+                if deadline is not None:
+                    timeout = min(timeout, max(0.0, deadline - loop.time()))
+                try:
+                    await asyncio.wait_for(notification.wait(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    if deadline is not None and loop.time() >= deadline:
+                        return
+                    # See the same pair at the top of the scan loop for
+                    # what each of the two checks catches.
+                    if not registry.current() or not binding.alive():
+                        raise DiscoveryNamespaceNotFound(self._namespace)
+                else:
+                    return
 
         def _carry_forward(
             self,
@@ -1292,9 +1630,12 @@ class LocalDiscovery(Discovery):
                 )
             discovered_workers[uid] = cached
 
-        def _deserialize_metadata(self, ref: _WorkerReference):
+        def _deserialize_metadata(self, generation: Path, ref: _WorkerReference):
             """Load and deserialize a worker's metadata from its block.
 
+            :param generation:
+                The generation whose blocks to read, held by the calling
+                iteration rather than by this subscriber.
             :param ref:
                 The reference identifying the worker's metadata block.
             :returns:
@@ -1302,7 +1643,7 @@ class LocalDiscovery(Discovery):
             :raises FileNotFoundError:
                 If the block does not exist.
             """
-            with closing(_block(self._namespace, ref)) as block_file:
+            with closing(_block(generation, ref, write=False)) as block_file:
                 protobuf = wire.WorkerMetadata.FromString(_read_block(block_file))
                 return WorkerMetadata.from_protobuf(protobuf)
 
@@ -1380,11 +1721,11 @@ def _same_file(fd: int, path: Path) -> bool:
 def _validate_namespace(namespace: str) -> None:
     """Reject a namespace that would not name one directory under `_root`.
 
-    `_directory` interpolates the namespace into a single path component,
-    so a namespace carrying a separator or a relative-path element would
-    claim, write and unlink outside this module's root. The domain is one
-    non-empty path component that renders within the filesystem's limit
-    on a name.
+    `_namespace_directory` interpolates the namespace into a single path
+    component, so a namespace carrying a separator or a relative-path
+    element would claim, write and unlink outside this module's root. The
+    domain is one non-empty path component that renders within the
+    filesystem's limit on a name.
 
     :param namespace:
         The namespace to check.
@@ -1395,11 +1736,8 @@ def _validate_namespace(namespace: str) -> None:
     """
     if not namespace:
         raise ValueError("Expected a non-empty namespace")
-    for separator in (os.sep, os.altsep, "/"):
-        if separator and separator in namespace:
-            raise ValueError(
-                f"Expected a namespace without {separator!r}, got {namespace!r}"
-            )
+    if "/" in namespace:
+        raise ValueError(f"Expected a namespace without '/', got {namespace!r}")
     if "\x00" in namespace:
         raise ValueError(f"Expected a namespace without a NUL, got {namespace!r}")
     if namespace in (os.curdir, os.pardir):
@@ -1407,7 +1745,7 @@ def _validate_namespace(namespace: str) -> None:
             f"Expected a namespace that is not a relative path element, "
             f"got {namespace!r}"
         )
-    rendered = len(f"wool-{namespace}".encode())
+    rendered = len(namespace.encode())
     if rendered > _NAME_MAX:
         raise ValueError(
             f"Expected a namespace rendering within {_NAME_MAX} bytes, "
@@ -1439,28 +1777,32 @@ def _validate_block_size(block_size: int) -> None:
         )
 
 
-def _read_capacity(registry: _File) -> int | None:
-    """Return the owner-stamped capacity, or ``None`` when unstamped.
+def _read_header(registry: _File) -> _Header:
+    """Return the sizes the owner stamped into a registry's header.
 
-    The owner writes `_HEADER_MAGIC` and the capacity into the registry's
-    header before the registry becomes visible. A file this module did not
-    create reads a mismatched magic and is reported as unstamped
-    (``None``), so a zero-filled header is never trusted. A subscriber
-    yields no workers from it; a publisher raises `RuntimeError` (see
-    `LocalDiscovery.Publisher.publish`).
+    The owner writes `_HEADER_MAGIC` and both sizes into the header of a
+    staging file, renames it into place, and only then publishes the
+    pointer, so a borrower resolves a fully stamped registry or none at
+    all. A file this module did not create therefore cannot be reached
+    through the pointer; the one way to meet an unstamped header is to
+    plant a file under a world-writable root, which `_open_registry`
+    reports as a namespace with nothing to borrow.
 
     :param registry:
         The open registry.
     :returns:
-        The stamped capacity, or ``None`` when the header magic is absent.
+        The stamped capacity and block size.
+    :raises ValueError:
+        If the header is short or does not carry `_HEADER_MAGIC`.
     """
-    header = registry.read(struct.calcsize("<4sI"), 0)
-    if len(header) < struct.calcsize("<4sI"):  # pragma: no cover
-        return None
-    magic, capacity = struct.unpack("<4sI", header)
-    if magic != _HEADER_MAGIC:  # pragma: no cover
-        return None
-    return capacity
+    size = struct.calcsize(_HEADER_FORMAT)
+    header = registry.read(size, 0)
+    if len(header) < size:
+        raise ValueError(f"Discovery registry header is short: {len(header)} of {size}")
+    magic, capacity, block_size = struct.unpack(_HEADER_FORMAT, header)
+    if magic != _HEADER_MAGIC:
+        raise ValueError(f"Expected discovery registry magic, got {magic!r}")
+    return _Header(capacity, block_size)
 
 
 def _iter_slots(registry: _File) -> Iterator[tuple[int, bytes]]:
@@ -1481,9 +1823,7 @@ def _iter_slots(registry: _File) -> Iterator[tuple[int, bytes]]:
     :yields:
         ``(offset, ref_bytes)`` for each 16-byte slot, in order.
     """
-    capacity = _read_capacity(registry)
-    if capacity is None:  # pragma: no cover
-        return
+    capacity = _read_header(registry).capacity
     slots = registry.read(capacity * _REF_WIDTH, _HEADER_SIZE)
     for index in range(capacity):
         start = index * _REF_WIDTH
@@ -1610,6 +1950,23 @@ def _rmdir_quietly(directory: Path) -> None:
             )
 
 
+def _close_quietly(fd: int) -> None:
+    """Close a descriptor if it is open, without raising.
+
+    A sentinel descriptor, i.e., one never opened or already closed,
+    passes silently, so teardown can close unconditionally.
+
+    :param fd:
+        The descriptor to close, or a negative sentinel.
+    """
+    if fd < 0:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 @cache
 def _root() -> Path:
     """Return the directory that holds every namespace's directory.
@@ -1626,50 +1983,216 @@ def _root() -> Path:
     return Path(tempfile.gettempdir()).resolve()
 
 
-def _directory(namespace: str) -> Path:
-    """Return the path of a namespace's directory, without creating it.
+def _namespace_directory(namespace: str) -> Path:
+    """Return the path of a namespace's claim directory, without creating it.
+
+    This is the directory an owner claims, and it outlives any one
+    owner: it holds the `_CURRENT` pointer and the generation directory
+    that pointer names. See `LocalDiscovery` for the layout.
 
     :param namespace:
         The namespace identifying the directory.
     :returns:
-        The path of the namespace's directory.
+        The path of the namespace's claim directory.
     """
-    return _root() / f"wool-{namespace}"
+    return _root() / _ROOT_DIRNAME / namespace
 
 
-def _block(namespace: str, ref: _WorkerReference) -> _File:
-    """Open an existing worker metadata block.
+def _resolve_generation(namespace: str) -> Path:
+    """Return the live generation directory a borrower should bind.
+
+    Reads the `_CURRENT` pointer an owner published, so a borrower binds
+    the generation that was live when it bound and never drifts onto a
+    successor's.
 
     :param namespace:
-        The namespace whose directory holds the block.
+        The namespace whose live generation to resolve.
+    :returns:
+        The path of the live generation's directory.
+    :raises DiscoveryNamespaceNotFound:
+        If the namespace has no owner, i.e., no pointer or no target.
+    """
+    directory = _namespace_directory(namespace)
+    try:
+        generation = os.readlink(directory / _CURRENT)
+    except OSError as error:
+        raise DiscoveryNamespaceNotFound(namespace) from error
+    resolved = directory / generation
+    if not resolved.is_dir():
+        raise DiscoveryNamespaceNotFound(namespace)
+    return resolved
+
+
+def _block(generation: Path, ref: _WorkerReference, *, write: bool = True) -> _File:
+    """Open an existing worker metadata block.
+
+    :param generation:
+        The generation directory whose blocks to look in.
     :param ref:
         The reference identifying the worker's block.
+    :param write:
+        Whether the handle may write; see `_File.open`. A scan passes
+        ``False``, which is the difference that matters, since it opens
+        one block per registered worker per pass.
     :returns:
         A handle on the block.
     :raises FileNotFoundError:
         If the block does not exist.
     """
-    return _File.open(_directory(namespace) / str(ref))
+    return _File.open(generation / _BLOCKS / str(ref), write=write)
 
 
-def _open_registry(namespace: str) -> _File:
-    """Open the namespace's registry for a borrower's bind.
+def _open_registry(namespace: str, generation: Path) -> _File:
+    """Open a generation's registry for a borrower's bind.
 
     Every borrower binds through here. It never creates a registry or
-    the namespace's directory, and reports a missing registry as
-    `DiscoveryNamespaceNotFound`.
+    any directory, and reports a missing registry as
+    `DiscoveryNamespaceNotFound` — which is what a borrower sees once
+    its owner has exited and reclaimed the generation.
 
     :param namespace:
-        The namespace whose registry to open.
+        The namespace the generation belongs to, for the error.
+    :param generation:
+        The generation directory whose registry to open.
     :returns:
         The open registry.
     :raises DiscoveryNamespaceNotFound:
-        If the namespace has no registry.
+        If the generation has no registry.
     """
     try:
-        return _File.open(_directory(namespace) / _REGISTRY)
+        return _File.open(generation / _REGISTRY)
     except FileNotFoundError as error:
         raise DiscoveryNamespaceNotFound(namespace) from error
+
+
+def _owner_alive(generation_fd: int) -> bool:
+    """Report whether the owner that staged a generation still holds it.
+
+    An owner holds an exclusive lock on its generation's directory for
+    that generation's whole life, so a shared lock that cannot be taken
+    proves the owner's process is alive, and one that can proves the
+    kernel dropped the owner's lock — which it does however the owner
+    died, signals included.
+
+    Probed shared, so concurrent borrowers never exclude each other and
+    mistake a peer's probe for a live owner. Probed on the generation
+    rather than the namespace, so it can never make a claim fail and
+    report a live namespace as in use.
+
+    Only contention answers ``True``. A descriptor this process no
+    longer holds, or never held, answers ``False``: it proves nothing
+    about the owner, and a borrower told its owner is alive on that
+    evidence serves the snapshot it last read forever. Anything else is
+    a question the probe cannot answer and is raised rather than
+    guessed, so a filesystem without ``flock`` fails loudly instead of
+    reporting every dead owner as alive.
+
+    :param generation_fd:
+        A descriptor on the generation's directory, held since the bind,
+        or a negative sentinel once the borrower has released it. Pinned
+        rather than reopened per call because the open dominates the
+        cost of the probe by an order of magnitude.
+    :returns:
+        True while the owner's process holds the generation.
+    :raises OSError:
+        If the lock can be neither taken nor refused.
+    """
+    if generation_fd < 0:
+        return False
+    try:
+        fcntl.flock(generation_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError as error:
+        if error.errno == errno.EBADF:
+            return False
+        raise
+    else:
+        fcntl.flock(generation_fd, fcntl.LOCK_UN)
+        return False
+
+
+def _purge(dir_fd: int) -> None:
+    """Remove every entry beneath the directory a descriptor holds open.
+
+    Resolves nothing: every operation is relative to a descriptor and
+    descends only through `os.O_NOFOLLOW`, so a symlink planted in a
+    world-writable root — ``/dev/shm`` is mode 1777 and shared by every
+    user on the host — cannot redirect a removal outside the tree. The
+    directory itself is left in place for the caller to remove, which is
+    what lets an owner purge the generation it is claiming without
+    dropping the claim.
+
+    Never raises: this runs on teardown paths that never raise. An entry
+    another process removed first passes silently, and any other failure
+    surfaces as a `ResourceWarning`; see `_unlink_quietly`. What is left
+    behind is a leak the caller cannot act on but an operator can, and a
+    whole generation is the larger of the two leaks this module can
+    produce.
+
+    :param dir_fd:
+        A descriptor on the directory to empty.
+    """
+    try:
+        names = os.listdir(dir_fd)
+    except OSError as error:
+        warnings.warn(
+            f"failed to list a directory to purge: {error}",
+            ResourceWarning,
+            stacklevel=2,
+        )
+        return
+    for name in names:
+        # Directory-ness is decided up front rather than inferred from
+        # the errno a failed unlink reports: `PermissionError` is `EPERM`
+        # or `EACCES`, and the sticky bit on a mode-1777 root yields
+        # `EPERM` for another user's plain file too.
+        try:
+            entry = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            warnings.warn(
+                f"failed to remove {name!r}: {error}",
+                ResourceWarning,
+                stacklevel=2,
+            )
+            continue
+        if not stat.S_ISDIR(entry.st_mode):
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                warnings.warn(
+                    f"failed to remove {name!r}: {error}",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
+            continue
+        try:
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+        except OSError:
+            # Replaced by a symlink or removed since it was listed.
+            continue
+        try:
+            _purge(child)
+        finally:
+            os.close(child)
+        try:
+            os.rmdir(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            warnings.warn(
+                f"failed to remove {name!r}: {error}",
+                ResourceWarning,
+                stacklevel=2,
+            )
 
 
 @asynccontextmanager
@@ -1681,11 +2204,11 @@ async def _lock(
 ):
     """Acquire an exclusive lock on an open registry.
 
-    Uses file locking (via portalocker) on the registry file itself to
-    synchronize writes across unrelated processes publishing to the same
-    registry, without blocking the event loop while waiting for
-    acquisition. The lock and the data it guards therefore share an
-    inode; see `LocalDiscovery`'s implementation notes.
+    Locks the registry file itself to synchronize writes across
+    unrelated processes publishing to the same registry, without
+    blocking the event loop while waiting for acquisition. The lock and
+    the data it guards therefore share an inode; see `LocalDiscovery`'s
+    implementation notes.
 
     ``timeout`` bounds **acquisition only, never the held section**. Once the
     lock is held the ``with`` body runs to completion regardless of how long
@@ -1703,7 +2226,7 @@ async def _lock(
 
     .. rubric:: Implementation notes
 
-    Acquisition uses non-blocking ``portalocker`` attempts, retrying every
+    Acquisition uses non-blocking `fcntl.flock` attempts, retrying every
     1ms (``await asyncio.sleep(0.001)``) until the lock is acquired or
     ``timeout`` elapses. The holder is another open file description,
     which may belong to another process or to another publish on this
@@ -1719,9 +2242,9 @@ async def _lock(
     deadline = None if timeout is None else loop.time() + timeout
     while True:
         try:
-            portalocker.lock(registry.file, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            fcntl.flock(registry.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except portalocker.LockException:
+        except BlockingIOError:
             if deadline is not None and loop.time() >= deadline:
                 raise TimeoutError(
                     f"Timed out after {timeout}s waiting to acquire the "
@@ -1732,20 +2255,20 @@ async def _lock(
     try:
         yield
     finally:
-        portalocker.unlock(registry.file)
+        fcntl.flock(registry.file.fileno(), fcntl.LOCK_UN)
 
 
-def _notify(namespace: str) -> None:
-    """Wake the namespace's subscribers by touching its notification file.
+def _notify(generation: Path) -> None:
+    """Wake a generation's subscribers by touching its notification file.
 
-    A namespace whose owner has exited has no notification file, and no
+    A generation whose owner has exited has no notification file, and no
     subscriber can start watching it, so a missing file passes silently
     rather than being recreated.
 
-    :param namespace:
-        The namespace whose subscribers to wake.
+    :param generation:
+        The generation directory whose subscribers to wake.
     """
     try:
-        os.utime(_directory(namespace) / _NOTIFY)
+        os.utime(generation / _NOTIFY)
     except FileNotFoundError:
         pass
