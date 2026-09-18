@@ -6907,10 +6907,10 @@ class TestLocalDiscoverySubscriber:
         )
 
     @pytest.mark.asyncio
-    async def test___aiter___should_raise_only_on_the_iteration_that_binds(
+    async def test___aiter___should_raise_on_every_iteration_that_shares_a_bind(
         self, namespace
     ):
-        """Test only the binding iteration of an unowned namespace raises.
+        """Test every iteration sharing an unowned namespace raises.
 
         Given:
             A subscriber for a namespace no owner holds, iterated by
@@ -6918,8 +6918,10 @@ class TestLocalDiscoverySubscriber:
         When:
             All of the iterations are driven to completion.
         Then:
-            It should raise DiscoveryNamespaceNotFound on the iteration
-            that performs the bind and end the others without events.
+            It should raise DiscoveryNamespaceNotFound on every one of
+            them, not only the iteration that performed the bind — a
+            shared subscription that fails fails for everyone reading
+            it, rather than ending the rest without events.
         """
 
         # Arrange
@@ -6941,8 +6943,7 @@ class TestLocalDiscoverySubscriber:
         )
 
         # Assert
-        assert outcomes.count("raised") == 1
-        assert outcomes.count("ended") == 2
+        assert outcomes == ["raised", "raised", "raised"]
 
 
 def _enter_lifecycle_forest(namespace, forest, owned=False):
