@@ -62,6 +62,7 @@ from wool.runtime.worker.connection import channel_pool_hold
 from wool.runtime.worker.exceptions import UnparsableVersionWarning
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.afilter import afilter
+from wool.utilities.failure import FailureReport
 from wool.utilities.noreentry import noreentry
 from wool.utilities.throttle import Throttle
 
@@ -414,9 +415,27 @@ class WorkerProxy:
         subscriber that iterates without error.
     :raises ~wool.DiscoveryNamespaceNotFound:
         If the discovery subscriber binds a `~wool.LocalDiscovery`
-        namespace that has no registry. The error surfaces where the
-        quorum wait would otherwise raise `asyncio.TimeoutError`, or from
-        `stop` when no quorum is set.
+        namespace with no live owner, or its owner goes away while the
+        subscription is running. The subscription is consumed by a
+        detached task, so the error is held on that task and raised by
+        the next caller to need the membership: from the quorum wait in
+        place of `asyncio.TimeoutError`, from `dispatch`, and from
+        `stop` when neither has. Every one of them receives the same
+        instance, so a caller must not attach state to it or read its
+        traceback as the record of one report.
+
+        A positive ``quorum`` is what makes the report prompt: it is
+        the only wait the cause can arrive in. With ``quorum`` of
+        ``None`` or ``0`` there is no such wait, so a dispatch issued
+        before the subscription has failed still reports
+        `NoWorkersAvailable`, and the cause reaches the dispatch after
+        it, or teardown.
+    :raises BaseException:
+        Whatever else killed the subscription, by the same route. The
+        held failure is whatever the subscriber raised, and this proxy
+        accepts any `~wool.DiscoverySubscriberLike`, so a backend that
+        fails with something of its own — an `OSError` out of a socket,
+        say — surfaces that rather than a discovery error.
 
     .. caution::
 
@@ -725,6 +744,12 @@ class WorkerProxy:
                     "pool_uri, discovery_event_stream, or workers"
                 )
         self._sentinel_task: asyncio.Task[None] | None = None
+        #: What this proxy has already reported about its sentinel's
+        #: death, and the chaining state a re-raise must not accumulate.
+        #: Holding the instance is also what marks it reported, so
+        #: teardown can tell a failure that reached a caller from one
+        #: that did not; see `FailureReport` and `stop`.
+        self._sentinel_report: FailureReport | None = None
         self._loadbalancer_context: LoadBalancerContext | None = None
         self._handshake_throttle: _HandshakeWarningThrottle | None = None
         self._workers_changed: asyncio.Event | None = None
@@ -936,9 +961,13 @@ class WorkerProxy:
         :raises asyncio.TimeoutError:
             If the quorum wait does not complete within
             ``quorum_timeout``.
+        :raises BaseException:
+            Whatever killed the discovery subscription, if the quorum
+            wait is what discovers it; see `WorkerProxy`.
         :raises ~wool.DiscoveryNamespaceNotFound:
-            In place of the quorum wait's `asyncio.TimeoutError`; see
-            `WorkerProxy`.
+            In place of the quorum wait's `asyncio.TimeoutError`, and
+            without waiting it out — the sentinel's death is why the
+            quorum can never arrive. See `WorkerProxy`.
 
         .. rubric:: Implementation notes
 
@@ -988,7 +1017,10 @@ class WorkerProxy:
             self._handshake_throttle = _HandshakeWarningThrottle()
             self._workers_changed = asyncio.Event()
             self._sentinel_task = asyncio.create_task(self._worker_sentinel())
-            stack.push_async_callback(self._cancel_sentinel)
+            # Pushed as an exit rather than a callback, so teardown can
+            # see whether an exception is already being reported and
+            # decline to displace it; see `_cancel_sentinel`.
+            stack.push_async_exit(self._cancel_sentinel)
 
             if self._quorum:
                 await asyncio.wait_for(self._await_workers(), self._quorum_timeout)
@@ -1066,8 +1098,11 @@ class WorkerProxy:
             in which case nothing is unwound and the proxy stays
             started.
         :raises ~wool.DiscoveryNamespaceNotFound:
-            If the sentinel's discovery subscriber raised it; see
-            `WorkerProxy`.
+            If the sentinel's discovery subscriber raised it and nothing
+            else is reporting it: no quorum wait, no dispatch, and no
+            exception already unwinding this context. One that reached a
+            caller is not raised again, and one that would displace an
+            exception in flight is logged instead. See `WorkerProxy`.
         :raises BaseException:
             An uncontained failure from retiring the loop's channels when
             this was the last hold — see
@@ -1094,10 +1129,19 @@ class WorkerProxy:
         re-check quorum; the load balancer surfaces "no workers
         available" directly if the worker set later drains.
 
-        A failed first dispatch (e.g., quorum timeout) leaves the
-        proxy un-started: the next dispatch re-runs ``start()`` and
-        retries, re-paying the quorum wait.  This lets a pool recover
-        once a worker is admitted, without constructing a new proxy.
+        A first dispatch that fails inside its own start — a quorum
+        timeout, or the subscription failing under the quorum wait —
+        leaves the proxy un-started: the next dispatch re-runs
+        ``start()`` and retries, re-paying the quorum wait. This lets a
+        pool recover once a worker is admitted, without constructing a
+        new proxy.
+
+        A subscription that fails *after* the proxy is started does not
+        unwind it. The proxy stays started, still holding the balancer
+        and its channels, and every later dispatch reports the same
+        failure, so retrying is what does not work: recover by stopping
+        the proxy and starting another, or by leaving and re-entering
+        the pool context.
 
         :param task:
             The `Task` to dispatch.
@@ -1111,7 +1155,18 @@ class WorkerProxy:
             explicit `start` raises, while one concurrent with another
             lazy dispatch's start waits for it.
         :raises NoWorkersAvailable:
-            If every candidate the balancer yields fails to dispatch.
+            If every candidate the balancer yields fails to dispatch, or
+            if the subscription has not yet failed on a proxy configured
+            with no quorum; see `WorkerProxy`.
+        :raises BaseException:
+            Whatever killed the discovery subscription, if it was not a
+            discovery error; see `WorkerProxy`.
+        :raises ~wool.DiscoveryNamespaceNotFound:
+            If the discovery subscription this proxy's membership comes
+            from has failed, checked before the balancer sees the task.
+            Reporting no workers would name the consequence of a lost
+            namespace and leave its cause to be guessed. See
+            `WorkerProxy`.
         :raises asyncio.TimeoutError:
             If the quorum wait fires during a lazy first dispatch. An
             exceeded per-attempt ``timeout`` does not surface here; the
@@ -1130,6 +1185,17 @@ class WorkerProxy:
                     await self.start()
                 elif self._state is not _Lifecycle.STARTED:
                     raise RuntimeError(self._state.value)
+
+        # Raised before either balancer sees the task, because a proxy
+        # whose sentinel died has no membership anyone can trust: the
+        # balancer would report the workers it happens to still hold, or
+        # none, and a caller would be told there are no workers rather
+        # than why. This is the one point both balancer kinds pass
+        # through — the dispatching kind is handed the context whole and
+        # picks a worker out of this proxy's sight.
+        failure = self._sentinel_failure
+        if failure is not None:
+            self._report_sentinel_failure(failure)
 
         assert self._loadbalancer_context is not None
         # Balancer kind was resolved in start(); branch on the cached flag
@@ -1382,6 +1448,50 @@ class WorkerProxy:
             )
         return None
 
+    @property
+    def _sentinel_failure(self) -> BaseException | None:
+        """What killed the sentinel, or ``None`` while it can still run.
+
+        Read from the task rather than cached from a done callback. A
+        callback runs a `asyncio.loop.call_soon` after the task settles,
+        which is a window in which the task holds the answer and a cache
+        does not, and a dispatch landing in it would report
+        `NoWorkersAvailable` for a proxy that already knew better.
+
+        A sentinel that ended by cancellation has no failure.
+        Cancellation is intent rather than fault — the same rule
+        `~wool.utilities.fanout.Fanout` applies to a consumer whose pull
+        is cancelled — and teardown is where the sentinel's cancellation
+        comes from.
+
+        :returns:
+            The sentinel's exception, or ``None``.
+        """
+        task = self._sentinel_task
+        if task is None or not task.done() or task.cancelled():
+            return None
+        return task.exception()
+
+    def _report_sentinel_failure(self, failure: BaseException) -> NoReturn:
+        """Raise the sentinel's failure, recording that it was reported.
+
+        The one door every report goes through, so that what a raise
+        accumulates is put back exactly once per report and teardown can
+        tell a failure that reached a caller from one that did not; see
+        `FailureReport`.
+
+        :param failure:
+            What the sentinel died of, from `_sentinel_failure`.
+        :raises BaseException:
+            ``failure``, always.
+        """
+        report = self._sentinel_report
+        if report is None or report.failure is not failure:
+            # One start owns one sentinel and so one failure; rebuilding
+            # on a mismatch keeps that local rather than assumed.
+            report = self._sentinel_report = FailureReport(failure)
+        report.raise_failure()
+
     async def _await_workers(self):
         """Block until at least ``quorum`` workers are admitted.
 
@@ -1391,10 +1501,21 @@ class WorkerProxy:
         to gate this call on ``self._quorum`` being a positive
         integer; calling with ``quorum`` of ``None`` or ``0`` will
         loop forever.
+
+        A sentinel that died is what the quorum will never arrive
+        because of, so its failure is raised here rather than waited
+        out: the wait is bounded by ``quorum_timeout``, and reporting
+        that timeout would name the symptom and discard the cause.
+
+        :raises BaseException:
+            Whatever killed the sentinel, if anything did.
         """
         assert self._quorum is not None and self._quorum > 0
         assert self._workers_changed is not None
         while True:
+            failure = self._sentinel_failure
+            if failure is not None:
+                self._report_sentinel_failure(failure)
             if (
                 self._loadbalancer_context
                 and len(self._loadbalancer_context.workers) >= self._quorum
@@ -1403,15 +1524,71 @@ class WorkerProxy:
             await self._workers_changed.wait()
             self._workers_changed.clear()
 
-    async def _cancel_sentinel(self) -> None:
-        """Cancel the worker sentinel task, if any, and await its exit."""
-        if self._sentinel_task:
-            self._sentinel_task.cancel()
-            try:
-                await self._sentinel_task
-            except asyncio.CancelledError:
-                pass
-            self._sentinel_task = None
+    async def _cancel_sentinel(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        """Retire the sentinel, reporting a death nothing else reported.
+
+        The task reference is dropped first and on every path, including
+        the one that raises. A proxy that kept it would keep the dead
+        task, its traceback, and through that the subscription's frame,
+        its observer and its cached membership, for as long as the proxy
+        itself lived.
+
+        A failure that already reached a caller is not raised again. The
+        quorum wait and `dispatch` report the cause where the caller
+        asked for the membership; teardown exists to report it when
+        neither ran, which is the proxy configured with no quorum that
+        never dispatched. Raising it twice would replace whatever the
+        caller's own block was failing with — that exception surviving
+        only as a ``__context__`` — for nothing they had not been told.
+
+        For the same reason it never displaces an exception the unwind
+        already carries. An unreported failure arriving while something
+        else is being reported is logged rather than raised, so the
+        caller keeps the exception that reached them first and the cause
+        is still recorded.
+
+        A sentinel that ended by cancellation reports nothing; see
+        `_sentinel_failure`.
+
+        :param exc_type:
+            Type of the exception unwinding the start stack, if any.
+        :param exc:
+            The exception unwinding the start stack, if any.
+        :param exc_tb:
+            Traceback of the exception unwinding the start stack.
+        :returns:
+            ``False`` — the caller's own exception is never suppressed.
+        :raises BaseException:
+            The sentinel's failure, when nothing else is reporting one.
+        """
+        task, self._sentinel_task = self._sentinel_task, None
+        if task is None:
+            return False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return False
+        except BaseException as failure:
+            report = self._sentinel_report
+            if report is not None and report.failure is failure:
+                return False
+            if exc is not None:
+                _logger.warning(
+                    "Discovery sentinel of proxy %s died; reporting %s, "
+                    "which reached the caller first",
+                    self._id,
+                    type(exc).__name__,
+                    exc_info=failure,
+                )
+                return False
+            self._report_sentinel_failure(failure)
+        return False
 
     async def _unwind(
         self,
@@ -1456,6 +1633,13 @@ class WorkerProxy:
         self._handshake_throttle = None
         self._loadbalancer_service = None
         self._workers_changed = None
+        # Cleared last, after `_cancel_sentinel` has had its chance to
+        # report: this unwinds after it does, a proxy reset to NEW can be
+        # started again, and what was reported belongs to the run that is
+        # ending. The task goes with it, since holding a finished one
+        # pins its traceback and everything that traceback reaches.
+        self._sentinel_task = None
+        self._sentinel_report = None
 
     async def _evict(
         self,
@@ -1508,6 +1692,27 @@ class WorkerProxy:
             )
 
     async def _worker_sentinel(self):
+        """Run the reconcile loop, waking the quorum wait when it ends.
+
+        The wake is the load-bearing half of the sentinel's ending.
+        Every other setter of that event is on a path this task owns, so
+        a caller parked in `_await_workers` would otherwise wait out the
+        whole quorum timeout for an event nothing could set, and report
+        that timeout instead of what happened.
+
+        Set here rather than from a done callback on the task: a
+        callback is a `asyncio.loop.call_soon` later, which is a window
+        in which the task holds the failure and the proxy does not, and
+        it would make the task hold the proxy that holds the task. The
+        event says only that something ended; the task carries what.
+        """
+        try:
+            await self._reconcile_workers()
+        finally:
+            if self._workers_changed is not None:
+                self._workers_changed.set()
+
+    async def _reconcile_workers(self):
         """Reconcile discovery events against the load-balancer context.
 
         The single admission gate for every discovery subscriber.

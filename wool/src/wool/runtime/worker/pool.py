@@ -265,8 +265,14 @@ class WorkerPool:
         — raised by the underlying `WorkerProxy` at context entry
         (``lazy=False``) or first dispatch (``lazy=True``).
     :raises ~wool.DiscoveryNamespaceNotFound:
-        If ``discovery`` borrows a `~wool.LocalDiscovery` namespace that
-        has no registry; see `WorkerProxy`.
+        If ``discovery`` borrows a `~wool.LocalDiscovery` namespace with
+        no live owner, or its owner goes away while the pool is running.
+        At context entry, at dispatch, or at teardown — whichever needs
+        the membership first, and at teardown only when neither of the
+        others reported it and the body is not already failing. A pool
+        whose namespace lost its owner does not recover by retrying a
+        dispatch; leave the context and enter a new pool. See
+        `WorkerProxy`.
     :raises ~wool.DiscoveryCapacityExhausted:
         At context entry, if publishing a spawned worker finds no free
         slot. Only reachable when the caller supplies ``discovery``: a
@@ -274,13 +280,16 @@ class WorkerPool:
         will spawn.
     :raises ~wool.DiscoveryBlockExhausted:
         At context entry, if a spawned worker's serialized metadata
-        exceeds its block. Only reachable when the caller supplies
-        ``discovery``, since the block size is the backend's to
-        configure.
+        exceeds its block. A pool that owns its registry stamps the
+        backend's default block size rather than sizing it, and
+        ``tags`` reaches that metadata, so enough of them — or long
+        enough ones — exhaust a block on any pool. Supply ``discovery``
+        with a larger ``block_size`` to raise the ceiling.
     :raises TimeoutError:
-        At context entry or teardown, if a discovery publish does not
-        acquire the backend's cross-process lock in time — for
-        `~wool.LocalDiscovery`, within its ``lock_timeout``.
+        At context entry, if a discovery publish does not acquire the
+        backend's cross-process lock in time — for
+        `~wool.LocalDiscovery`, within its ``lock_timeout``. Teardown
+        announcements cannot raise it; see ``shutdown_timeout``.
     :raises ExceptionGroup:
         At context entry, wrapping any of the above raised while workers
         start concurrently. The failures of a concurrent start arrive

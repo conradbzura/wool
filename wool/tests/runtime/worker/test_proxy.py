@@ -820,6 +820,53 @@ def _held_channel(handle, task):
         handle.run(stack.aclose())
 
 
+def _failing_discovery(namespace: str, *, died: asyncio.Event | None = None):
+    """Return a discovery subscriber whose stream raises straight away.
+
+    Setting ``died`` lets a caller wait for the source to have failed
+    without reaching into the proxy for the task carrying it.
+    """
+
+    class _FailingDiscovery:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            await asyncio.sleep(0)
+            try:
+                raise DiscoveryNamespaceNotFound(namespace)
+            finally:
+                if died is not None:
+                    died.set()
+            yield  # pragma: no cover — makes this an async generator
+
+    return _FailingDiscovery()
+
+
+async def _reported_failure(proxy, task, *, timeout: float = 5.0) -> int:
+    """Dispatch until the proxy reports its sentinel's failure.
+
+    Returns the depth of the traceback the caller received. Retrying is
+    what synchronises on a sentinel that has not died yet: with no
+    quorum there is no wait for the cause to arrive in, which is the
+    configuration dependence `WorkerProxy` documents.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            await proxy.dispatch(task)
+        except DiscoveryNamespaceNotFound as error:
+            frames, traceback = 0, error.__traceback__
+            while traceback is not None:
+                frames, traceback = frames + 1, traceback.tb_next
+            return frames
+        except NoWorkersAvailable:
+            if loop.time() >= deadline:
+                raise AssertionError("sentinel never reported its failure")
+            await asyncio.sleep(0.01)
+
+
 class TestWorkerProxy:
     """Comprehensive test suite for WorkerProxy."""
 
@@ -6950,6 +6997,174 @@ class TestWorkerProxy:
                         await asyncio.sleep(0.01)
 
         assert excinfo.value.namespace == namespace
+
+    @pytest.mark.asyncio
+    async def test___aenter___should_raise_the_bind_failure_without_awaiting_quorum(
+        self,
+    ):
+        """Test a failed bind ends the quorum wait rather than timing out.
+
+        Given:
+            A namespace no LocalDiscovery has entered, and a non-lazy
+            WorkerProxy on it whose quorum can never be met, configured
+            with a quorum timeout far longer than the bind takes to fail
+        When:
+            The proxy is entered
+        Then:
+            It should raise DiscoveryNamespaceNotFound well inside that
+            timeout — the sentinel's death is why the quorum will never
+            arrive, so waiting the timeout out would report the symptom
+            and discard the cause.
+        """
+        # Arrange
+        namespace = f"proxy-quorum-{uuid.uuid4().hex[:12]}"
+        timeout = 30.0
+        proxy = WorkerProxy(namespace, lazy=False, quorum=1, quorum_timeout=timeout)
+        loop = asyncio.get_running_loop()
+
+        # Act
+        started = loop.time()
+        with pytest.raises(DiscoveryNamespaceNotFound) as excinfo:
+            async with proxy:
+                pass  # pragma: no cover — entry raises
+        elapsed = loop.time() - started
+
+        # Assert
+        assert excinfo.value.namespace == namespace
+        # The oracle for this test: passing by waiting out the timeout
+        # is the behaviour it exists to rule out.
+        assert elapsed < timeout / 2, elapsed
+
+    @pytest.mark.asyncio
+    async def test_dispatch_should_raise_the_sentinel_failure_when_it_died(
+        self, mock_proxy_session, mock_wool_task
+    ):
+        """Test dispatch reports why the sentinel died, not its symptom.
+
+        Given:
+            A started proxy whose discovery subscription has since
+            raised, leaving it with no membership it can trust
+        When:
+            A task is dispatched
+        Then:
+            It should raise that failure rather than
+            NoWorkersAvailable, which would name the consequence and
+            leave the caller to guess the cause.
+        """
+
+        # Arrange
+        class _FailingDiscovery:
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                await asyncio.sleep(0)
+                raise DiscoveryNamespaceNotFound("gone")
+                yield  # pragma: no cover — makes this an async generator
+
+        proxy = WorkerProxy(discovery=_FailingDiscovery(), lazy=False, quorum=0)
+        await proxy.start()
+        try:
+            sentinel = proxy._sentinel_task
+            assert sentinel is not None
+            async with asyncio.timeout(5):
+                while not sentinel.done():
+                    await asyncio.sleep(0.01)
+
+            # Act & assert
+            with pytest.raises(DiscoveryNamespaceNotFound) as excinfo:
+                await proxy.dispatch(mock_wool_task)
+            assert excinfo.value.namespace == "gone"
+        finally:
+            # Teardown does not report it again; see the dedicated test.
+            await proxy.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_should_not_report_a_failure_a_dispatch_already_did(
+        self, mock_proxy_session, mock_wool_task
+    ):
+        """Test teardown stays quiet once a caller has been told.
+
+        Given:
+            A started proxy whose subscription has raised, and a
+            dispatch that has already reported that failure
+        When:
+            The proxy is stopped
+        Then:
+            It should return cleanly, the caller having already been
+            given the cause once.
+        """
+        # Arrange
+        proxy = WorkerProxy(
+            discovery=_failing_discovery("reported-once"), lazy=False, quorum=0
+        )
+        await proxy.start()
+        await _reported_failure(proxy, mock_wool_task)
+
+        # Act & assert — no exception
+        await proxy.stop()
+
+    @pytest.mark.asyncio
+    async def test___aexit___should_preserve_a_body_failure_over_the_sentinels(
+        self, mock_proxy_session
+    ):
+        """Test teardown does not displace the caller's own exception.
+
+        Given:
+            A started proxy whose subscription has raised without any
+            caller having been told
+        When:
+            The proxy's context exits carrying an unrelated exception
+            raised by the body
+        Then:
+            It should let the body's exception reach the caller, a
+            teardown report being worth less than the failure the
+            caller is already handling.
+        """
+        # Arrange
+        died = asyncio.Event()
+
+        # Act & assert
+        with pytest.raises(ValueError, match="from the body"):
+            async with WorkerProxy(
+                discovery=_failing_discovery("unreported", died=died),
+                lazy=False,
+                quorum=0,
+            ):
+                await asyncio.wait_for(died.wait(), timeout=5)
+                raise ValueError("from the body")
+
+    @pytest.mark.asyncio
+    async def test_dispatch_should_not_grow_the_failure_it_reports(
+        self, mock_proxy_session, mock_wool_task
+    ):
+        """Test repeated reports do not accumulate on the held failure.
+
+        Given:
+            A started proxy whose subscription has raised
+        When:
+            Many dispatches each report that failure
+        Then:
+            It should hand every caller a traceback of the same depth,
+            rather than one that grows with each report and pins a
+            frame from every dispatch that ever received it.
+        """
+        # Arrange
+        proxy = WorkerProxy(
+            discovery=_failing_discovery("bounded"), lazy=False, quorum=0
+        )
+        await proxy.start()
+        first = await _reported_failure(proxy, mock_wool_task)
+
+        try:
+            # Act
+            for _ in range(20):
+                last = await _reported_failure(proxy, mock_wool_task)
+
+            # Assert
+            assert last == first
+        finally:
+            await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_workers_property_returns_workers_list(
