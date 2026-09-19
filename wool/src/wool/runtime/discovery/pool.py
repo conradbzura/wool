@@ -200,9 +200,17 @@ class SubscriberMeta(type):
 
 
 async def _pool_finalizer(subscriber: Any) -> None:
-    """Resource pool finalizer — clean up fanout and subscriber."""
+    """Resource pool finalizer — clean up fanout and subscriber.
+
+    Each step runs even if the one before it raised, so a subscriber is
+    never left un-retired because closing its fanout failed. The first
+    failure is the one that reaches the pool, which logs it against the
+    resource being retired.
+    """
     fanout = _SharedSubscription._fanouts.pop(subscriber, None)
-    if fanout is not None:
-        await fanout.cleanup()
-    if hasattr(subscriber, "_shutdown"):
-        await subscriber._shutdown()
+    try:
+        if fanout is not None:
+            await fanout.cleanup()
+    finally:
+        if hasattr(subscriber, "_shutdown"):
+            await subscriber._shutdown()

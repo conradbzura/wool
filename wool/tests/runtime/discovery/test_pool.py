@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 import uuid
 
@@ -621,6 +622,59 @@ class TestSharedSubscription:
 
         # Assert — B receives nothing (worker was removed).
         assert collected_b == []
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_survive_a_peer_iterations_cancellation(self):
+        """Test cancelling one iteration leaves its peers subscribed.
+
+        Given:
+            Two iterations of one shared subscription over a source that
+            suspends before its first event, the first parked on a pull
+        When:
+            That first iteration is cancelled and the source then yields
+        Then:
+            It should deliver the event to the second iteration, one
+            consumer's teardown not being the end of a feed its peers
+            still hold.
+        """
+        # Arrange
+        release = asyncio.Event()
+
+        class _Suspending(
+            metaclass=SubscriberMeta,
+            key=lambda cls, tag: (cls, tag),
+        ):
+            def __init__(self, tag: str) -> None:
+                self.tag = tag
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                await release.wait()
+                while True:
+                    yield _make_event()
+
+        shared = _Suspending("cancelled-peer-key")
+        first = aiter(shared)
+        second = aiter(shared)
+        parked = asyncio.ensure_future(anext(first))
+        waiting = asyncio.ensure_future(anext(second))
+        # Both iterations are on the shared source before either is
+        # cancelled, so the survivor is a genuine peer.
+        await asyncio.sleep(0.05)
+        assert not parked.done()
+        assert not waiting.done()
+
+        # Act
+        parked.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await parked
+        release.set()
+
+        # Assert
+        event = await asyncio.wait_for(waiting, timeout=2)
+        assert event.type == "worker-added"
 
     @pytest.mark.asyncio
     async def test___aiter___should_raise_stop_async_iteration_when_pool_cleared(
