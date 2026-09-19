@@ -8,6 +8,7 @@ admits workers into, and the load-balanced routing between a
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 import warnings
@@ -120,17 +121,21 @@ class ReducibleAsyncIterator(Generic[T]):
 
     def __init__(self, items: Sequence[T]):
         self._items = items
-        self._index = 0
 
     def __aiter__(self) -> AsyncIterator[T]:
-        return self
+        return self._stream()
 
-    async def __anext__(self) -> T:
-        if self._index >= len(self._items):
-            raise StopAsyncIteration
-        item = self._items[self._index]
-        self._index += 1
-        return item
+    async def _stream(self) -> AsyncIterator[T]:
+        """Yield each item, starting from the first on every iteration.
+
+        A fresh stream per call rather than ``self`` over a consumed
+        index: `~wool.DiscoverySubscriberLike` requires iterations to be
+        independent, and a proxy reset to ``NEW`` re-iterates whatever
+        it was given, which a one-shot iterator would answer with
+        nothing while the quorum wait ran out.
+        """
+        for item in self._items:
+            yield item
 
     def __reduce__(self) -> tuple:
         """Return constructor args for unpickling."""
@@ -716,8 +721,16 @@ class WorkerProxy:
                             "subscriber itself, got: "
                             f"{type(discovery)}"
                         )
+                    if inspect.isasyncgen(discovery):
+                        raise TypeError(
+                            "'discovery' takes a subscriber, not the async "
+                            "generator one returns; a generator is neither "
+                            "picklable nor independently iterable, got: "
+                            f"{type(discovery)}"
+                        )
                     raise TypeError(
-                        f"Expected {DiscoverySubscriberLike.__name__}, got: "
+                        f"Expected an object with __aiter__ per "
+                        f"{DiscoverySubscriberLike.__name__}, got: "
                         f"{type(discovery)}"
                     )
                 self._discovery = discovery

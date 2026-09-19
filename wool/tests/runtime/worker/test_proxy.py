@@ -1075,7 +1075,7 @@ class TestWorkerProxy:
         invalid_discovery = object()
 
         # Act & assert
-        with pytest.raises(TypeError, match="Expected DiscoverySubscriberLike"):
+        with pytest.raises(TypeError, match="Expected an object with __aiter__"):
             WorkerProxy(discovery=invalid_discovery)  # pyright: ignore[reportArgumentType]
 
     def test___init___with_sync_cm_loadbalancer_warns(self, mock_discovery_service):
