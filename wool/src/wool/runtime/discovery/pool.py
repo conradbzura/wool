@@ -13,7 +13,16 @@ from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.fanout import Fanout
 
 _subscriber_factories: dict[Any, Callable[[Any], Any]] = {}
-"""Per-key factory registry populated by `SubscriberMeta`."""
+"""Per-key factory registry populated by `SubscriberMeta`.
+
+Entries are never removed, because a `_SharedSubscription` outlives the
+pooled subscriber it iterates and may be iterated again afterwards,
+which rebuilds that subscriber through this registry. Dropping an entry
+when its subscriber is retired therefore breaks re-iteration rather than
+reclaiming anything safely. A caller that mints a fresh key per lifecycle
+— as `~wool.runtime.worker.pool.WorkerPool` does — leaves one closure
+per lifecycle behind; see #353's review backlog.
+"""
 
 
 def _pool_factory(key: Any) -> Any:
