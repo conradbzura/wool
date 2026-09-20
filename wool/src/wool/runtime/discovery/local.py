@@ -1167,8 +1167,9 @@ class LocalDiscovery(Discovery):
             :param metadata:
                 Worker metadata to publish.
             :raises RuntimeError:
-                If an unexpected event type is provided, or the registry's
-                header is not stamped.
+                If an unexpected event type is provided, or this
+                publisher's context is not entered or was already
+                exited.
             :raises DiscoveryCapacityExhausted:
                 For ``worker-added``, if the registry is already at
                 capacity and the worker is not already registered.
@@ -1187,11 +1188,17 @@ class LocalDiscovery(Discovery):
             :raises DiscoveryNamespaceNotFound:
                 If the namespace has no live owner; see
                 `DiscoveryNamespaceNotFound`.
-            :raises RuntimeError:
-                If this publisher's context is not entered, or was
-                already exited.
             """
             binding = self._bound
+            # Encoded before the lock is taken. It depends only on the
+            # metadata, so encoding under the lock would make every
+            # other publisher on the namespace wait behind this one's
+            # protobuf work for nothing.
+            serialized = (
+                b""
+                if type == "worker-dropped"
+                else metadata.to_protobuf().SerializeToString()
+            )
             registry = _open_registry(self._namespace, binding.generation)
             with closing(registry):
                 async with _lock(
@@ -1204,17 +1211,18 @@ class LocalDiscovery(Discovery):
                         raise DiscoveryNamespaceNotFound(self._namespace)
                     match type:
                         case "worker-added":
-                            await self._add(metadata, registry)
+                            await self._add(metadata, serialized, registry)
                         case "worker-dropped":
                             await self._drop(metadata, registry)
                         case "worker-updated":
-                            await self._update(metadata, registry)
+                            await self._update(metadata, serialized, registry)
                         case _:
                             raise RuntimeError(
                                 f"Unexpected discovery event type: {type}"
                             )
-
-                    _notify(binding.generation)
+                # Woken after the lock is released, so a subscriber this
+                # wakes never contends with the publisher that woke it.
+                _notify(binding.generation)
 
         @property
         def _bound(self) -> _Binding:
@@ -1241,7 +1249,9 @@ class LocalDiscovery(Discovery):
             """
             return self._bound.generation
 
-        async def _add(self, metadata: WorkerMetadata, registry: _File):
+        async def _add(
+            self, metadata: WorkerMetadata, serialized: bytes, registry: _File
+        ):
             """Register a worker, or refresh one already registered.
 
             See `publish` for the re-add contract. The refresh opens the
@@ -1268,7 +1278,6 @@ class LocalDiscovery(Discovery):
                 registered.
             """
             ref = _WorkerReference(metadata.uid)
-            serialized = metadata.to_protobuf().SerializeToString()
 
             free_offset = None
             match_offset = None
@@ -1366,7 +1375,9 @@ class LocalDiscovery(Discovery):
                 await block.aclose()
             _unlink_quietly(self._generation / _BLOCKS, str(target_ref))
 
-        async def _update(self, metadata: WorkerMetadata, registry: _File):
+        async def _update(
+            self, metadata: WorkerMetadata, serialized: bytes, registry: _File
+        ):
             """Update a registered worker's metadata block.
 
             Opens the worker's block by name — holding no pool reference,
@@ -1386,7 +1397,6 @@ class LocalDiscovery(Discovery):
                 names a block that has since been reclaimed.
             """
             target_ref = _WorkerReference(metadata.uid)
-            serialized = metadata.to_protobuf().SerializeToString()
 
             for _, slot in _iter_slots(registry):
                 if slot == target_ref.bytes:

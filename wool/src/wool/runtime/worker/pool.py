@@ -783,10 +783,6 @@ class WorkerPool:
 
                 @asynccontextmanager
                 async def create_proxy():
-                    # The pool owns this registry and publishes exactly
-                    # the workers it spawns into it, so it sizes it to
-                    # them rather than to a default that a host with
-                    # more CPUs would exceed.
                     with LocalDiscovery(namespace, capacity=spawn) as discovery:
                         async with self._worker_context(
                             *tags,
@@ -854,10 +850,6 @@ class WorkerPool:
 
                 @asynccontextmanager
                 async def create_proxy():
-                    # The pool owns this registry and publishes exactly
-                    # the workers it spawns into it, so it sizes it to
-                    # them rather than to a default that a host with
-                    # more CPUs would exceed.
                     with LocalDiscovery(namespace, capacity=spawn) as discovery:
                         async with self._worker_context(
                             *tags,
