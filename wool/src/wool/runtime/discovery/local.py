@@ -444,10 +444,8 @@ class LocalDiscovery(Discovery):
 
     Each entry mints a *generation*, a directory holding that owner's
     artifacts, and publishes it as the namespace's live one. A claim
-    sweeps whatever a killed predecessor left before staging its own,
-    which is sound precisely because a borrower's binding ends with its
-    owner: holding the claim proves no live writer, not merely no live
-    owner. A killed owner's generation therefore survives only until
+    sweeps whatever a killed predecessor left before staging its own.
+    A killed owner's generation therefore survives only until
     something re-enters that namespace, which for the per-lifecycle
     ``pool-<uuid>`` namespaces a `~wool.runtime.worker.pool.WorkerPool`
     mints is never; see the note on non-graceful exits below.
@@ -783,11 +781,9 @@ class LocalDiscovery(Discovery):
             try:
                 # See the directory re-check in the implementation notes.
                 if _same_file(claim, directory):
-                    # Holding the claim proves no live writer, now that a
-                    # borrower's binding ends with its owner, so whatever
-                    # a killed predecessor left is this owner's to sweep.
-                    # Before staging, and on every retry, so a partially
-                    # staged generation is self-cleaning.
+                    # Before staging, and on every retry; the
+                    # implementation notes carry why holding the claim
+                    # is what makes this the owner's to sweep.
                     _purge(claim)
                     self._stage(directory)
                     break
@@ -1019,22 +1015,13 @@ class LocalDiscovery(Discovery):
         :param namespace:
             The namespace identifier for the registry to borrow. See
             `LocalDiscovery` for the domain it must lie in.
-        :param block_size:
-            Size in bytes for worker metadata storage blocks. Each
-            block spends 4 bytes on a length prefix, leaving
-            ``block_size - 4`` for the serialized metadata, so it must
-            exceed 4; see `LocalDiscovery` for what that floor does and
-            does not rule out. Defaults to 1024 bytes, which
-            accommodates typical worker metadata including tags and
-            extra metadata.
         :param lock_timeout:
             Maximum seconds to wait for the cross-process file lock
             before raising `TimeoutError`. ``None`` waits forever.
             Defaults to `DEFAULT_LOCK_TIMEOUT`.
         :raises ValueError:
             If ``namespace`` is outside the domain `LocalDiscovery`
-            documents, if ``block_size`` does not exceed the 4-byte
-            length prefix, or if ``lock_timeout`` is negative.
+            documents, or if ``lock_timeout`` is negative.
         """
 
         _binding: _Binding | None
