@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import weakref
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
@@ -12,22 +14,50 @@ from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.fanout import Fanout
 
-_subscriber_factories: dict[Any, Callable[[Any], Any]] = {}
-"""Per-key factory registry populated by `SubscriberMeta`.
 
-Entries are never removed, because a `_SharedSubscription` outlives the
-pooled subscriber it iterates and may be iterated again afterwards,
-which rebuilds that subscriber through this registry. Dropping an entry
-when its subscriber is retired therefore breaks re-iteration rather than
-reclaiming anything safely. A caller that mints a fresh key per lifecycle
-— as `~wool.runtime.worker.pool.WorkerPool` does — leaves one closure
-per lifecycle behind; see #353's review backlog.
-"""
+@dataclass(frozen=True)
+class _SubscriberKey:
+    """Pair a subscriber's cache identity with how to build one.
+
+    Only ``identity`` is compared and hashed, so constructions the key
+    callable calls the same share one pooled subscriber while each
+    carries a factory able to build it. A subscription outlives the
+    subscriber it built — the pool has no TTL, so the last release
+    retires it — and rebuilds one by iterating again, which is why the
+    factory travels with the key rather than living in a registry keyed
+    alongside it: it is reachable only from the subscriptions that could
+    use it and from the entry it built, and is released with the last of
+    them.
+
+    :param identity:
+        The key callable's result, which alone decides sharing.
+    :param factory:
+        Builds the subscriber cached under ``identity``. Excluded from
+        equality and hashing.
+    """
+
+    identity: Any
+    factory: Callable[[], Any] = field(compare=False)
+
+    def __repr__(self) -> str:
+        return repr(self.identity)
 
 
 def _pool_factory(key: Any) -> Any:
-    """Dispatch to the registered factory for *key*."""
-    return _subscriber_factories[key](key)
+    """Build the subscriber *key* caches.
+
+    :param key:
+        The key the acquisition was made under.
+    :returns:
+        The subscriber its factory builds.
+    :raises TypeError:
+        If the key carries no factory. Every acquisition on this pool
+        supplies one through its key, so a key that cannot is a caller
+        reaching the pool by a route `SubscriberMeta` does not take.
+    """
+    if not isinstance(key, _SubscriberKey):
+        raise TypeError(f"Subscriber pool key carries no factory: {key!r}")
+    return key.factory()
 
 
 def install_subscriber_pool() -> ResourcePool[Any]:
@@ -76,7 +106,9 @@ class _SharedSubscription:
     so they start with a consistent view of the current state.
 
     :param key:
-        Cache key for the `ResourcePool`.
+        The `_SubscriberKey` the `ResourcePool` caches under, carrying
+        the factory that builds the subscriber and rebuilds one after a
+        retirement.
     :param reduce_info:
         ``(cls, args, kwargs)`` tuple used by `__reduce__` for
         pickle support.
@@ -128,6 +160,10 @@ class _SharedSubscription:
                 yield event
 
     def __reduce__(self) -> tuple:
+        # A two-element reduction, which is what keeps `_key` off the
+        # wire: pickle emits no `BUILD` and never consults `__dict__`,
+        # so the factory the key carries — a closure, and unpicklable —
+        # is never reached. The receiving side rebuilds both.
         cls, args, kwargs = self._reduce_info
         return _reconstruct, (cls, args, kwargs)
 
@@ -138,8 +174,9 @@ class SubscriberMeta(type):
     A subscriber class passes a ``key`` callable at class definition. The
     callable receives the constructor's ``(cls, *args, **kwargs)`` and
     returns a hashable key, which must determine every constructor
-    argument: the first construction under a key fixes the arguments of
-    the subscriber every later construction under that key shares.
+    argument: a shared subscriber is built with the arguments of
+    whichever construction the pool builds it for, so a key that leaves
+    an argument out has no stable answer for what that argument was.
 
     Constructing a subscriber class yields a
     `~wool.DiscoverySubscriberLike` that provides iteration and a
@@ -169,11 +206,12 @@ class SubscriberMeta(type):
     .. rubric:: Implementation notes
 
     Class creation injects a ``__new__`` onto the subscriber class. Each
-    construction registers a factory for its key, installs the context's
-    subscriber pool, and returns a `_SharedSubscription`. Each iteration
-    of that subscription enters the pool's resource for the key, which
-    creates the underlying subscriber on first use, and consumes it
-    through a shared `~wool.utilities.fanout.Fanout`.
+    construction installs the context's subscriber pool and returns a
+    `_SharedSubscription` whose key carries a factory of its own. Each
+    iteration of that subscription enters the pool's resource for the
+    key, which builds the underlying subscriber through that factory on
+    first use, and consumes it through a shared
+    `~wool.utilities.fanout.Fanout`.
     """
 
     def __new__(
@@ -190,17 +228,25 @@ class SubscriberMeta(type):
         original_init = cls.__init__  # type: ignore[misc]
 
         def _subscriber_new(cls_arg: type, *args: Any, **kwargs: Any) -> Any:
-            key = cls_arg._cache_key_fn(cls_arg, *args, **kwargs)  # type: ignore[attr-defined]
+            identity = cls_arg._cache_key_fn(cls_arg, *args, **kwargs)  # type: ignore[attr-defined]
+            # Hashed here so a key callable returning an unhashable
+            # value fails at the construction that supplied it. Nothing
+            # else hashes the identity until the pool acquires on it,
+            # which would report the caller's mistake from inside the
+            # first iteration.
+            hash(identity)
             install_subscriber_pool()
 
-            def factory(_: Any) -> Any:
+            # Built here because it closes over the pre-injection
+            # ``__init__``: ``cls_arg(*args, **kwargs)`` would re-enter
+            # this function and hand the pool a second subscription.
+            def factory() -> Any:
                 instance = object.__new__(cls_arg)
                 original_init(instance, *args, **kwargs)
                 return instance
 
-            _subscriber_factories.setdefault(key, factory)
             return _SharedSubscription(
-                key=key,
+                key=_SubscriberKey(identity, factory),
                 reduce_info=(cls_arg, args, kwargs),
             )
 
