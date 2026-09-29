@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import itertools
 import uuid
+import weakref
 
 import cloudpickle
 import pytest
@@ -11,7 +13,7 @@ from wool.runtime.discovery import __subscriber_pool__
 from wool.runtime.discovery.base import DiscoveryEvent
 from wool.runtime.discovery.pool import SubscriberMeta
 from wool.runtime.discovery.pool import _SharedSubscription
-from wool.runtime.discovery.pool import _subscriber_factories
+from wool.runtime.discovery.pool import _SubscriberKey
 from wool.runtime.discovery.pool import install_subscriber_pool
 from wool.runtime.worker.metadata import WorkerMetadata
 
@@ -58,8 +60,10 @@ def _setup_pool():
 def _make_shared(source, key="test-key"):
     """Create a _SharedSubscription backed by a raw source via the pool."""
     _setup_pool()
-    _subscriber_factories[key] = lambda _: source
-    return _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
+    return _SharedSubscription(
+        key=_SubscriberKey(key, lambda: source),
+        reduce_info=(type(source), (), {}),
+    )
 
 
 def _numbered_subscriber_class():
@@ -125,6 +129,60 @@ async def test_install_subscriber_pool_should_return_the_pool_subscribers_cache_
     assert installed is subscriber_pool
     assert subscriber_pool.stats.referenced_entries == 1
     await events.aclose()
+
+
+@pytest.mark.asyncio
+async def test_install_subscriber_pool_should_refuse_a_key_that_cannot_build(
+    subscriber_pool,
+):
+    """Test the pool rejects a key carrying no way to build a subscriber.
+
+    Given:
+        The installed subscriber pool, whose every acquisition is made
+        under a key that carries its own factory.
+    When:
+        A resource is acquired under a bare key that carries none.
+    Then:
+        It should refuse the acquisition, naming the key, rather than
+        failing later on an attribute the key never had.
+    """
+    # Act & assert
+    with pytest.raises(TypeError, match="carries no factory"):
+        async with subscriber_pool.get("bare-key"):
+            pass  # pragma: no cover
+
+
+class TestSubscriberKey:
+    """Tests for _SubscriberKey dataclass.
+
+    Fully qualified name: wool.runtime.discovery.pool._SubscriberKey
+    """
+
+    def test___repr___with_identity_delegation(self):
+        """Test a key reads as the identity it shares.
+
+        Given:
+            Two keys sharing an identity, each carrying a factory of its
+            own.
+        When:
+            Each is rendered the way the pool renders a key in its log
+            records.
+        Then:
+            It should read as the identity alone, so a record names the
+            subscriber it concerns rather than a function address that
+            differs between two keys the pool treats as one.
+        """
+        # Arrange
+        identity = (_StubSubscriber, "repr-key")
+        first = _SubscriberKey(identity, lambda: None)
+        second = _SubscriberKey(identity, lambda: None)
+
+        # Act
+        rendered = f"{first!r}"
+
+        # Assert
+        assert rendered == repr(identity)
+        assert rendered == f"{second!r}"
 
 
 class TestSubscriberMeta:
@@ -348,6 +406,58 @@ class TestSubscriberMeta:
         # Assert
         assert isinstance(result, _SharedSubscription)
 
+    @pytest.mark.asyncio
+    async def test___new___should_release_the_class_when_subscriptions_end(
+        self, subscriber_pool
+    ):
+        """Test constructing a subscriber pins its class no longer than it.
+
+        Given:
+            A subscriber class defined in this test over a finite
+            source, and a subscription over it iterated to exhaustion,
+            so the pool has released and finalized the subscriber it
+            built and holds nothing under its key.
+        When:
+            Every reference the test holds is dropped and a collection
+            runs.
+        Then:
+            It should leave nothing referencing the class, so a weak
+            reference to it clears — a construction outliving its
+            subscriptions pins one class per lifecycle for the life of
+            the process.
+        """
+
+        # Arrange
+        class _Ephemeral(
+            metaclass=SubscriberMeta,
+            key=lambda cls, tag: (cls, tag),
+        ):
+            def __init__(self, tag: str) -> None:
+                self.tag = tag
+
+            async def _shutdown(self) -> None:
+                pass
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                yield _make_event()
+
+        shared = _Ephemeral("ephemeral-key")
+        assert [event async for event in shared]
+        # Asserted so a lingering entry cannot be mistaken below for the
+        # retention this test is about.
+        assert subscriber_pool.stats.total_entries == 0
+        reference = weakref.ref(_Ephemeral)
+
+        # Act
+        del shared, _Ephemeral
+        gc.collect()
+
+        # Assert
+        assert reference() is None
+
 
 class TestSharedSubscription:
     """Tests for _SharedSubscription class.
@@ -409,9 +519,8 @@ class TestSharedSubscription:
                     yield e
 
         _setup_pool()
-        key = "fan-out-key"
         source = _Source()
-        _subscriber_factories[key] = lambda _: source
+        key = _SubscriberKey("fan-out-key", lambda: source)
 
         sub_a = _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
         sub_b = _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
@@ -529,9 +638,8 @@ class TestSharedSubscription:
                     yield e
 
         _setup_pool()
-        key = "replay-key"
         source = _Source()
-        _subscriber_factories[key] = lambda _: source
+        key = _SubscriberKey("replay-key", lambda: source)
 
         sub_a = _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
         sub_b = _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
@@ -605,9 +713,8 @@ class TestSharedSubscription:
                 yield drop_event
 
         _setup_pool()
-        key = "drop-key"
         source = _Source()
-        _subscriber_factories[key] = lambda _: source
+        key = _SubscriberKey("drop-key", lambda: source)
 
         sub_a = _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
         sub_b = _SharedSubscription(key=key, reduce_info=(type(source), (), {}))
@@ -791,3 +898,67 @@ class TestSharedSubscription:
         after = background.run(next_event(pool, parked))
         assert after.metadata.address == before.metadata.address
         assert pool.stats.total_entries == 0
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_rebuild_after_its_subscriber_retired(
+        self, subscriber_pool
+    ):
+        """Test a subscription outlives the subscriber it built.
+
+        Given:
+            A subscription iterated as far as its first event and then
+            closed, so the pool released its only reference and, having
+            no TTL, finalized and evicted the subscriber behind it.
+        When:
+            The same subscription is iterated a second time.
+        Then:
+            It should build a second subscriber and yield from it, since
+            a subscription holds no subscriber of its own and has to be
+            able to rebuild one for as long as it is reachable.
+        """
+        # Arrange
+        shared = _numbered_subscriber_class()("rebuild-key")
+        first = aiter(shared)
+        before = await anext(first)
+        await first.aclose()
+        assert subscriber_pool.stats.total_entries == 0
+
+        # Act
+        second = aiter(shared)
+        after = await anext(second)
+
+        # Assert
+        assert before.metadata.address == "127.0.0.1:50051"
+        assert after.metadata.address == "127.0.0.1:50052"
+        await second.aclose()
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_yield_when_a_peer_subscription_is_collected(
+        self, subscriber_pool
+    ):
+        """Test one subscription does not depend on another's lifetime.
+
+        Given:
+            Two subscriptions constructed under one key, neither
+            iterated.
+        When:
+            The first is dropped, a collection runs, and the second is
+            iterated.
+        Then:
+            It should yield, since every subscription carries what it
+            needs to build the subscriber rather than borrowing one
+            registration the first construction happened to make.
+        """
+        # Arrange
+        subscriber = _numbered_subscriber_class()
+        first = subscriber("peer-key")
+        second = subscriber("peer-key")
+
+        # Act
+        del first
+        gc.collect()
+
+        # Assert
+        iterator = aiter(second)
+        assert await anext(iterator)
+        await iterator.aclose()
