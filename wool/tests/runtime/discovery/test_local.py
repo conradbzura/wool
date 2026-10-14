@@ -3800,6 +3800,47 @@ class TestLocalDiscoveryPublisher:
                 assert sorted(publisher._blocks) == []
 
     @pytest.mark.asyncio
+    async def test_publish_should_accept_a_shrunken_retry_when_add_overflows(
+        self, namespace
+    ):
+        """Test the retry DiscoveryBlockExhausted prescribes succeeds.
+
+        Given:
+            A Publisher with a small block size and a worker whose
+            metadata exceeds the block, published once and rejected
+        When:
+            The same worker is published again with metadata that fits,
+            which is the remedy the exception documents
+        Then:
+            It should register the worker, rather than failing because
+            the rejected attempt stranded a block under its UUID.
+        """
+        # Arrange
+        uid = uuid.uuid4()
+        oversized = WorkerMetadata(
+            uid=uid,
+            address="localhost:50051",
+            pid=123,
+            version="1.0",
+            extra=MappingProxyType({"data": "x" * 20000}),
+        )
+        shrunken = WorkerMetadata(
+            uid=uid, address="localhost:50051", pid=123, version="1.0"
+        )
+
+        with LocalDiscovery(namespace, block_size=1024):
+            publisher = LocalDiscovery.Publisher(namespace)
+            async with publisher:
+                with pytest.raises(DiscoveryBlockExhausted):
+                    await publisher.publish("worker-added", oversized)
+
+                # Act
+                await publisher.publish("worker-added", shrunken)
+
+                # Assert
+                assert sorted(publisher._blocks) == [uid.hex]
+
+    @pytest.mark.asyncio
     async def test_publish_should_leave_worker_undiscoverable_when_add_overflows(
         self, namespace
     ):

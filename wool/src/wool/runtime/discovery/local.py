@@ -1297,6 +1297,7 @@ class LocalDiscovery(Discovery):
                 raise DiscoveryCapacityExhausted(self._bound.header.capacity)
 
             block = AsyncExitStack()
+            acquired = False
             try:
                 block_file = await block.enter_async_context(
                     self._block_pool.get(str(ref))
@@ -1315,6 +1316,7 @@ class LocalDiscovery(Discovery):
                     block_file = await block.enter_async_context(
                         self._block_pool.get(str(ref))
                     )
+                acquired = True
                 _write_block(block_file, serialized)
                 registry.write(ref.bytes, free_offset)
             except BaseException:
@@ -1323,6 +1325,23 @@ class LocalDiscovery(Discovery):
                 # lands on the last line of this block. `BaseException`,
                 # so a cancellation cannot strand the block and its pool
                 # reference; the bare `raise` preserves its semantics.
+                #
+                # The block is unlinked here because no other path can:
+                # `_block_finalizer` only closes the descriptor, by
+                # design, and `_drop` reaches a block through its slot,
+                # which this registration never published. Left behind,
+                # it does not merely leak — `_block_factory` creates
+                # with `O_EXCL`, so the orphan makes that worker's UUID
+                # permanently unregisterable and the retry
+                # `DiscoveryBlockExhausted` prescribes unreachable.
+                # Removed before the handle is released, so a
+                # cancellation inside `aclose` cannot strand the file,
+                # and only once the block was acquired, so a failure to
+                # acquire one cannot remove a file this call never made.
+                # The registry lock is held and the slot was never
+                # visible, so no peer can be mid-write on it.
+                if acquired:
+                    _unlink_quietly(self._generation / _BLOCKS, str(ref))
                 await block.aclose()
                 raise
             # One handle per ref — see the docstring. The new handle is
