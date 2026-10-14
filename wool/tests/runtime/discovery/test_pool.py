@@ -343,6 +343,67 @@ class TestSubscriberMeta:
         assert result_a is event_a
         assert result_b is event_b
 
+    @pytest.mark.asyncio
+    async def test___new___should_isolate_two_classes_whose_keys_omit_the_class(self):
+        """Test two subscriber classes with equal keys stay distinct.
+
+        Given:
+            Two subscriber classes whose key callables satisfy the
+            documented contract but omit the class, so both return the
+            same key for the same argument, each yielding events naming
+            which class served them.
+        When:
+            Both are constructed under that argument and iterated, with
+            both iterations held open at once.
+        Then:
+            It should serve each class from its own subscriber, since a
+            key that cannot name the class must not make two classes
+            share one backend.
+        """
+
+        # Arrange
+        def _subscriber_class(label):
+            class _Subscriber(
+                metaclass=SubscriberMeta,
+                key=lambda cls, tag: tag,
+            ):
+                def __init__(self, tag: str) -> None:
+                    self.tag = tag
+
+                async def _shutdown(self) -> None:
+                    pass
+
+                def __aiter__(self):
+                    return self._gen()
+
+                async def _gen(self):
+                    while True:
+                        yield _make_event(address=label)
+
+            return _Subscriber
+
+        first = _subscriber_class("from-first")
+        second = _subscriber_class("from-second")
+
+        # Act
+        #
+        # Both iterations are held open across the second's first pull.
+        # The pool has ``ttl=0``, so releasing the first would retire
+        # its entry and the second would miss a cache already gone —
+        # which reads as correct isolation whether or not it is.
+        first_events = aiter(first("shared-tag"))
+        second_events = aiter(second("shared-tag"))
+        from_first = await anext(first_events)
+        from_second = await anext(second_events)
+
+        # Assert
+        assert from_first.metadata.address == "from-first"
+        assert from_second.metadata.address == "from-second"
+
+        # Cleanup
+        await first_events.aclose()
+        await second_events.aclose()
+
     def test___new___with_lazy_pool_init(self):
         """Test lazy pool initialization when ContextVar is None.
 

@@ -176,7 +176,15 @@ class SubscriberMeta(type):
     returns a hashable key, which must determine every constructor
     argument: a shared subscriber is built with the arguments of
     whichever construction the pool builds it for, so a key that leaves
-    an argument out has no stable answer for what that argument was.
+    an argument out has no stable answer for what that argument was. The
+    class itself needs no such care — it is scoped in alongside the
+    returned key, so the callable covers only the arguments.
+
+    The key must also compare by value rather than by identity. One
+    whose ``__eq__`` is inherited from `object` hashes and so passes
+    every check here, and then never equals the key of a later
+    construction, which costs sharing silently rather than loudly: one
+    subscription per construction instead of one per identity.
 
     Constructing a subscriber class yields a
     `~wool.DiscoverySubscriberLike` that provides iteration and a
@@ -194,7 +202,7 @@ class SubscriberMeta(type):
 
     .. code-block:: python
 
-        class Sub(metaclass=SubscriberMeta, key=lambda cls, ns: (cls, ns)):
+        class Sub(metaclass=SubscriberMeta, key=lambda cls, ns: ns):
             if TYPE_CHECKING:
 
                 def __new__(cls, ns: str) -> DiscoverySubscriberLike: ...
@@ -228,7 +236,17 @@ class SubscriberMeta(type):
         original_init = cls.__init__  # type: ignore[misc]
 
         def _subscriber_new(cls_arg: type, *args: Any, **kwargs: Any) -> Any:
-            identity = cls_arg._cache_key_fn(cls_arg, *args, **kwargs)  # type: ignore[attr-defined]
+            # The class is part of the identity here rather than in the
+            # caller's callable. The class is not a constructor
+            # argument, so a callable that returns every argument still
+            # satisfies the contract while leaving two conforming
+            # classes to share one subscriber — and the metaclass
+            # already knows the class, so the caller should not have to
+            # remember it.
+            identity = (
+                cls_arg,
+                cls_arg._cache_key_fn(cls_arg, *args, **kwargs),  # type: ignore[attr-defined]
+            )
             # Hashed here so a key callable returning an unhashable
             # value fails at the construction that supplied it. Nothing
             # else hashes the identity until the pool acquires on it,

@@ -1472,7 +1472,6 @@ class LocalDiscovery(Discovery):
     class Subscriber(
         metaclass=SubscriberMeta,
         key=lambda cls, namespace, *, poll_interval=None: (
-            cls,
             namespace,
             poll_interval,
         ),
