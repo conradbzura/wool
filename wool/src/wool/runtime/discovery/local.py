@@ -982,7 +982,19 @@ class LocalDiscovery(Discovery):
             return
         try:
             directory = _namespace_directory(self._namespace)
-            # The pointer first, so no borrower resolves this generation
+            # The liveness lock goes first, so this owner never reports
+            # as alive after its registry has stopped existing.
+            # `publish` consults that lock as its only oracle, inside a
+            # registry lock this purge does not take, so releasing the
+            # lock last would leave a window in which a cross-process
+            # publisher is told the owner lives, writes into an
+            # unlinked inode, and reports success for a write nobody
+            # can read. The claim still excludes a successor, and
+            # generation names are fresh per entry, so nothing depends
+            # on holding this across the removal.
+            _close_quietly(liveness)
+            liveness = -1
+            # The pointer next, so no borrower resolves this generation
             # once it is going away; then the contents, so a borrower
             # already bound fails at its next operation; then the
             # directory itself.
@@ -1194,7 +1206,16 @@ class LocalDiscovery(Discovery):
                     # Under the lock, so a write never lands in a
                     # registry whose owner went away while this publish
                     # was waiting for it; see `_owner_alive`.
-                    if not binding.alive():
+                    #
+                    # Both oracles, which is the pair a subscriber
+                    # checks at the same decision point. The liveness
+                    # lock alone cannot see an owner that has already
+                    # unlinked this registry, and `current()` is what
+                    # detects an inode with no name — so asking only
+                    # one of them is how a publisher and a subscriber
+                    # come to disagree about what a missing generation
+                    # means.
+                    if not registry.current() or not binding.alive():
                         raise DiscoveryNamespaceNotFound(self._namespace)
                     match type:
                         case "worker-added":
