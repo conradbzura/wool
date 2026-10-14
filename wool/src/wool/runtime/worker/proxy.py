@@ -714,18 +714,23 @@ class WorkerProxy:
                     tag_filter, LocalDiscovery.Subscriber(pool_uri)
                 )
             case (None, discovery, None) if discovery is not None:
+                # Tested ahead of the protocol check rather than inside
+                # it: `DiscoverySubscriberLike` has `__aiter__` as its
+                # only member, and an async generator has one too, so
+                # the structural check admits the very object this
+                # rejects and can never reach a test nested under it.
+                if inspect.isasyncgen(discovery):
+                    raise TypeError(
+                        "'discovery' takes a subscriber, not the async "
+                        "generator one returns; a generator is neither "
+                        "picklable nor independently iterable, got: "
+                        f"{type(discovery)}"
+                    )
                 if not isinstance(discovery, DiscoverySubscriberLike):
                     if callable(discovery):
                         raise TypeError(
                             "'discovery' takes no callable form; pass the "
                             "subscriber itself, got: "
-                            f"{type(discovery)}"
-                        )
-                    if inspect.isasyncgen(discovery):
-                        raise TypeError(
-                            "'discovery' takes a subscriber, not the async "
-                            "generator one returns; a generator is neither "
-                            "picklable nor independently iterable, got: "
                             f"{type(discovery)}"
                         )
                     raise TypeError(
