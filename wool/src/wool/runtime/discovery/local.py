@@ -714,8 +714,7 @@ class LocalDiscovery(Discovery):
         if capacity < 1:
             raise ValueError(f"Expected capacity of at least 1, got {capacity}")
         _validate_block_size(block_size)
-        if poll_interval is not None and poll_interval <= 0:
-            raise ValueError(f"Expected positive poll interval, got {poll_interval}")
+        _validate_poll_interval(poll_interval)
         if lock_timeout is not None and lock_timeout < 0:
             raise ValueError("Lock timeout must be non-negative")
         if namespace is None:
@@ -1532,8 +1531,7 @@ class LocalDiscovery(Discovery):
         ):
             _validate_namespace(namespace)
             self._namespace = namespace
-            if poll_interval is not None and poll_interval <= 0:
-                raise ValueError(f"Expected positive poll interval, got {poll_interval}")
+            _validate_poll_interval(poll_interval)
             self._poll_interval = poll_interval
 
         def __aiter__(self) -> AsyncIterator[DiscoveryEvent]:
@@ -1876,6 +1874,23 @@ def _validate_block_size(block_size: int) -> None:
             f"Expected block size greater than the {prefix}-byte length prefix, "
             f"got {block_size}"
         )
+
+
+def _validate_poll_interval(poll_interval: float | None) -> None:
+    """Reject a poll interval no rescan could wait out.
+
+    `LocalDiscovery.Subscriber` parks for this long between fallback
+    rescans, so an interval of zero or less is a wait that cannot
+    elapse. ``None`` is not an absence here but a mode — rescan only
+    when a publisher writes — and so passes.
+
+    :param poll_interval:
+        The interval to check, or ``None`` for notification-only.
+    :raises ValueError:
+        If ``poll_interval`` is not positive.
+    """
+    if poll_interval is not None and poll_interval <= 0:
+        raise ValueError(f"Expected positive poll interval, got {poll_interval}")
 
 
 def _read_header(registry: _File) -> _Header:

@@ -636,6 +636,25 @@ class TestLocalDiscovery:
         ):
             LocalDiscovery("ns", block_size=block_size)
 
+    @pytest.mark.parametrize("poll_interval", [0, -0.1, -1])
+    def test___init___should_raise_when_poll_interval_is_not_positive(
+        self, poll_interval
+    ):
+        """Test LocalDiscovery rejects an interval that cannot elapse.
+
+        Given:
+            A poll_interval of zero or less, which no rescan could wait
+            out
+        When:
+            LocalDiscovery is instantiated
+        Then:
+            It should raise ValueError from the construction, rather
+            than from whichever subscription first tried to park on it.
+        """
+        # Act & assert
+        with pytest.raises(ValueError, match="positive poll interval"):
+            LocalDiscovery("ns", poll_interval=poll_interval)
+
     @given(block_size=st.integers())
     @settings(max_examples=50)
     @example(block_size=5)
