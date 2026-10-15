@@ -246,17 +246,6 @@ class FanoutConsumer(Generic[T]):
         self._fanout = fanout
         self._queue: asyncio.Queue[T | object] = asyncio.Queue()
 
-    def enqueue(self, item: T) -> None:
-        """Push an item directly into this consumer's queue.
-
-        Useful for injecting replay or synthetic items that bypass the
-        shared source iterator.
-
-        :param item:
-            The item to enqueue.
-        """
-        self._queue.put_nowait(item)
-
     def __aiter__(self) -> FanoutConsumer[T]:
         return self
 
