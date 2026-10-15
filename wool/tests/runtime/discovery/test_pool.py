@@ -4,6 +4,8 @@ import asyncio
 import gc
 import itertools
 import logging
+import subprocess
+import sys
 import uuid
 import weakref
 
@@ -20,6 +22,8 @@ from wool.runtime.discovery.pool import _SharedSubscription
 from wool.runtime.discovery.pool import _SubscriberKey
 from wool.runtime.discovery.pool import install_subscriber_pool
 from wool.runtime.worker.metadata import WorkerMetadata
+
+from . import _stranded_partition_probe
 
 
 class _StubSubscriber(
@@ -218,6 +222,95 @@ class TestSubscriberKey:
         assert records, caplog.records
         assert any(repr((_Failing, "repr-key")) in message for message in records)
         assert not any("function" in message for message in records)
+
+
+@pytest.mark.asyncio
+async def test_install_subscriber_pool_should_report_the_first_retirement_failure(
+    subscriber_pool, caplog
+):
+    """Test the earlier of two retirement failures is the one reported.
+
+    Given:
+        A pooled subscriber whose fanout fails to close and whose
+        shutdown then also raises, so retiring it produces two
+        failures.
+    When:
+        The subscription is iterated and the pool is then cleared.
+    Then:
+        It should report the fanout's failure, since retiring the
+        subscriber must not hide why closing its fanout did not work.
+    """
+
+    # Arrange
+    class _DoublyFailing(
+        metaclass=SubscriberMeta,
+        key=lambda cls, tag: tag,
+    ):
+        def __init__(self, tag: str) -> None:
+            self.tag = tag
+
+        async def _shutdown(self) -> None:
+            raise RuntimeError("shutdown refused")
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            try:
+                while True:
+                    yield _make_event()
+            finally:
+                raise RuntimeError("cleanup refused")
+
+    shared = _DoublyFailing("both-fail-key")
+    iterator = aiter(shared)
+    await anext(iterator)
+
+    # Act
+    #
+    # Closing the last iteration retires the entry, because the pool has
+    # no TTL, so the finalizer runs here and the pool logs what it
+    # raised against the resource it was retiring.
+    with caplog.at_level(logging.WARNING):
+        await iterator.aclose()
+
+    # Assert
+    reported = [
+        record.exc_info[1] for record in caplog.records if record.exc_info is not None
+    ]
+    assert reported, [record.getMessage() for record in caplog.records]
+    assert any("cleanup refused" in str(failure) for failure in reported), reported
+    assert not any("shutdown refused" in str(failure) for failure in reported), reported
+
+
+@pytest.mark.subprocess_probe
+def test___aiter___should_retain_no_subscriber_when_its_partition_is_discarded():
+    """Test a partition stranded by a closed loop retains no subscriber.
+
+    Given:
+        A subscription iterated on an event loop that then closes
+        without draining, stranding a referenced pool entry, which the
+        next operation from a live loop discards without running
+        finalizers.
+    When:
+        Every reference the probe holds is dropped and a collection
+        runs.
+    Then:
+        It should leave nothing referencing the subscriber, since
+        per-subscriber state reachable from a class-level mapping
+        outlives a discard and is immortal for the process.
+    """
+    # Arrange
+    probe = _stranded_partition_probe.__file__
+
+    # Act
+    result = subprocess.run(
+        [sys.executable, probe], capture_output=True, text=True, timeout=60
+    )
+
+    # Assert
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
 
 
 class TestSubscriberMeta:

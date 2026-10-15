@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import weakref
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
-from typing import ClassVar
 
 from wool.runtime.discovery import __subscriber_pool__
 from wool.runtime.discovery.base import DiscoveryEvent
@@ -43,21 +41,58 @@ class _SubscriberKey:
         return repr(self.identity)
 
 
-def _pool_factory(key: Any) -> Any:
-    """Build the subscriber *key* caches.
+@dataclass
+class _PooledSubscriber:
+    """A subscriber and the state whose life is the pool entry's.
+
+    The fanout over a subscriber and the worker map replayed to a late
+    joiner are per-subscriber state, and both are reachable only from
+    the entry that owns the subscriber. Holding them here rather than in
+    a mapping keyed on the subscriber is what makes their reclamation
+    structural: the entry is the only referrer, so whatever drops the
+    entry drops them, including the two paths `ResourcePool` documents
+    as evicting without running finalizers.
+
+    Note what that does not buy. On those two paths there is no live
+    loop, or no permitted ``await``, so the source iterator is still not
+    closed and the fanout's pull task is still not cancelled. What ends
+    is the unbounded *retention*, not the missing teardown.
+
+    :param subscriber:
+        The subscriber the key's factory built.
+    :param fanout:
+        The shared fanout every consumer of this subscriber pulls
+        through.
+    :param workers:
+        The workers the subscription currently holds, replayed to an
+        iteration that joins it late.
+    """
+
+    subscriber: Any
+    fanout: Fanout[DiscoveryEvent]
+    workers: dict[str, WorkerMetadata] = field(default_factory=dict)
+
+
+def _pool_factory(key: Any) -> _PooledSubscriber:
+    """Build the subscriber *key* caches, with its per-entry state.
 
     :param key:
         The key the acquisition was made under.
     :returns:
-        The subscriber its factory builds.
+        The subscriber its factory builds, paired with the fanout and
+        replay map that live and die with the entry holding it.
     :raises TypeError:
-        If the key carries no factory. Every acquisition on this pool
-        supplies one through its key, so a key that cannot is a caller
-        reaching the pool by a route `SubscriberMeta` does not take.
+        If the key carries no factory. `ResourcePool` types its key
+        `typing.Any` and hands the factory whatever a caller passed, so
+        this is reachable through the pool's own surface even though
+        every acquisition wool makes supplies a key through
+        `SubscriberMeta`. The annotation cannot state the requirement,
+        which is why it is checked here.
     """
     if not isinstance(key, _SubscriberKey):
         raise TypeError(f"Subscriber pool key carries no factory: {key!r}")
-    return key.factory()
+    subscriber = key.factory()
+    return _PooledSubscriber(subscriber=subscriber, fanout=Fanout(subscriber))
 
 
 def install_subscriber_pool() -> ResourcePool[Any]:
@@ -114,13 +149,6 @@ class _SharedSubscription:
         pickle support.
     """
 
-    _fanouts: ClassVar[weakref.WeakKeyDictionary[Any, Fanout[DiscoveryEvent]]] = (
-        weakref.WeakKeyDictionary()
-    )
-    _workers: ClassVar[weakref.WeakKeyDictionary[Any, dict[str, WorkerMetadata]]] = (
-        weakref.WeakKeyDictionary()
-    )
-
     def __init__(
         self,
         key: Any,
@@ -137,26 +165,27 @@ class _SharedSubscription:
         pool = __subscriber_pool__.get()
         if pool is None:
             raise RuntimeError("subscriber pool not initialised")
-        async with pool.get(self._key) as subscriber:
-            fanout = self._fanouts.get(subscriber)
-            if fanout is None:
-                fanout = Fanout(subscriber)
-                self._fanouts[subscriber] = fanout
-            consumer = fanout.consumer()
-            # Replay current workers so late joiners see existing
-            # state.
-            workers = self._workers.get(subscriber)
-            if workers:
-                for metadata in workers.values():
-                    consumer.enqueue(DiscoveryEvent("worker-added", metadata=metadata))
+        async with pool.get(self._key) as resource:
+            # Typed here rather than on the `as` target, which would
+            # parse as this block's body rather than as an annotation:
+            # the pool is parameterised `Any`, so without this every
+            # attribute below is unchecked.
+            pooled: _PooledSubscriber = resource
+            # Primed with the current workers, so an iteration joining a
+            # live subscription receives them before any source delta —
+            # a `worker-dropped` must not arrive ahead of the
+            # `worker-added` it drops.
+            consumer = pooled.fanout.consumer(
+                DiscoveryEvent("worker-added", metadata=metadata)
+                for metadata in list(pooled.workers.values())
+            )
             async for event in consumer:
                 # Track latest worker state for late-joiner replay.
                 uid = str(event.metadata.uid)
-                ws = self._workers.setdefault(subscriber, {})
                 if event.type in ("worker-added", "worker-updated"):
-                    ws[uid] = event.metadata
+                    pooled.workers[uid] = event.metadata
                 elif event.type == "worker-dropped":
-                    ws.pop(uid, None)
+                    pooled.workers.pop(uid, None)
                 yield event
 
     def __reduce__(self) -> tuple:
@@ -272,18 +301,30 @@ class SubscriberMeta(type):
         return cls  # type: ignore[return-value]
 
 
-async def _pool_finalizer(subscriber: Any) -> None:
+async def _pool_finalizer(pooled: _PooledSubscriber) -> None:
     """Resource pool finalizer — clean up fanout and subscriber.
 
     Each step runs even if the one before it raised, so a subscriber is
     never left un-retired because closing its fanout failed. The first
     failure is the one that reaches the pool, which logs it against the
-    resource being retired.
+    resource being retired; a second failure is discarded, so retiring
+    the subscriber cannot hide why closing its fanout did not work.
+
+    :param pooled:
+        The entry being retired, carrying the subscriber and the fanout
+        over it.
     """
-    fanout = _SharedSubscription._fanouts.pop(subscriber, None)
+    failure: BaseException | None = None
     try:
-        if fanout is not None:
-            await fanout.cleanup()
-    finally:
-        if hasattr(subscriber, "_shutdown"):
+        await pooled.fanout.cleanup()
+    except BaseException as error:
+        failure = error
+    subscriber = pooled.subscriber
+    if hasattr(subscriber, "_shutdown"):
+        try:
             await subscriber._shutdown()
+        except BaseException as error:
+            if failure is None:
+                failure = error
+    if failure is not None:
+        raise failure
