@@ -48,6 +48,8 @@ from wool.runtime.discovery.exceptions import DiscoveryNamespaceNotFound
 from wool.runtime.discovery.exceptions import DiscoveryWorkerNotFound
 from wool.runtime.discovery.pool import SubscriberMeta
 from wool.runtime.resourcepool import ResourcePool
+from wool.runtime.typing import Undefined
+from wool.runtime.typing import UndefinedType
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.afilter import afilter
 from wool.utilities.noreentry import noreentry
@@ -529,9 +531,13 @@ class LocalDiscovery(Discovery):
         Optional default seconds between fallback rescans, used by
         `subscriber` and as the default for `subscribe` when no explicit
         interval is provided. ``None`` is a mode rather than an absence:
-        a subscription rescans only when a publisher writes. A value set
-        here therefore cannot be overridden back to ``None`` at the call
-        site, exactly as ``filter`` cannot. Defaults to ``None``.
+        a subscription rescans only when a publisher writes. Because the
+        two are distinct, `subscribe` distinguishes a withheld interval
+        from an explicit ``None`` and a value set here does not take the
+        mode away from a call site that asks for it. ``filter`` makes no
+        such distinction, and needs none: its ``None`` means no
+        predicate, so there is nothing a caller loses by being unable to
+        restore it. Defaults to ``None``.
     :param capacity:
         Maximum number of workers registered at once. The owner stamps
         it on entry and a borrower binds at the owner's capacity, so this
@@ -876,7 +882,7 @@ class LocalDiscovery(Discovery):
         self,
         filter: PredicateFunction | None = None,
         *,
-        poll_interval: float | None = None,
+        poll_interval: float | None | UndefinedType = Undefined,
     ) -> DiscoverySubscriberLike:
         """Return a subscriber to this namespace with optional filtering.
 
@@ -886,18 +892,29 @@ class LocalDiscovery(Discovery):
             events. Falls back to the constructor's filter if not
             provided.
         :param poll_interval:
-            Optional seconds between fallback rescans. Falls back to the
-            constructor's interval if not provided; see
+            Seconds between fallback rescans. Withheld, it falls back to
+            the constructor's interval; ``None`` selects the
+            notification-only mode for this subscription, which a
+            constructor interval does not take away. See
             `LocalDiscovery.Subscriber`.
         :returns:
             A subscriber instance that receives filtered worker
             discovery events.
+        :raises ValueError:
+            If ``poll_interval`` is not positive. Construction is
+            deferred, so it surfaces from the iteration that starts the
+            subscription rather than from here; see
+            `LocalDiscovery.Subscriber`.
         """
         effective = filter if filter is not None else self._filter
+        # Resolved before the subscriber is built, never after: the
+        # sentinel would otherwise reach the cache key, where it and
+        # ``None`` hash differently, and one effective interval would
+        # key as two subscriptions.
         subscriber = self.Subscriber(
             self._namespace,
             poll_interval=(
-                poll_interval if poll_interval is not None else self._poll_interval
+                self._poll_interval if poll_interval is Undefined else poll_interval
             ),
         )
         if effective is not None:

@@ -1176,6 +1176,42 @@ class TestLocalDiscovery:
         assert all(e.metadata.address == "localhost:50051" for e in events)
 
     @pytest.mark.asyncio
+    async def test_subscribe_should_select_notification_only_when_given_none(
+        self, namespace, metadata, subscriber_pool
+    ):
+        """Test an explicit None at the call site selects the mode.
+
+        Given:
+            An owner constructed with a polling interval, and a worker
+            published so every subscription has something to yield
+        When:
+            One subscription takes the constructor's interval and
+            another passes ``poll_interval=None``
+        Then:
+            It should back them with two distinct subscriptions, since
+            ``None`` names the notification-only mode rather than the
+            absence of an argument, and a caller that set an interval
+            must still be able to ask for that mode.
+        """
+        # Arrange
+        with LocalDiscovery(namespace, poll_interval=60) as discovery:
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+                # Act
+                defaulted = aiter(discovery.subscribe())
+                overridden = aiter(discovery.subscribe(poll_interval=None))
+                try:
+                    await asyncio.wait_for(anext(defaulted), timeout=5)
+                    await asyncio.wait_for(anext(overridden), timeout=5)
+
+                    # Assert
+                    assert subscriber_pool.stats.total_entries == 2
+                finally:
+                    await defaulted.aclose()
+                    await overridden.aclose()
+
+    @pytest.mark.asyncio
     async def test_subscribe_with_custom_poll_interval(self, namespace):
         """Test subscribe(poll_interval=...) uses the specified interval.
 
