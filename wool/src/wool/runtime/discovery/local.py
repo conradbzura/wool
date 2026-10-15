@@ -19,6 +19,7 @@ from contextlib import closing
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import Callable
@@ -783,7 +784,7 @@ class LocalDiscovery(Discovery):
                     # Before staging, and on every retry; the
                     # implementation notes carry why holding the claim
                     # is what makes this the owner's to sweep.
-                    _purge(claim)
+                    _purge(directory, claim)
                     self._stage(directory)
                     break
             except (FileNotFoundError, NotADirectoryError):
@@ -998,7 +999,7 @@ class LocalDiscovery(Discovery):
             # already bound fails at its next operation; then the
             # directory itself.
             _unlink_quietly(directory, _CURRENT, dir_fd=claim)
-            _purge(claim)
+            _purge(directory, claim)
             # The name is all `rmdir` has, so it is removed only while the
             # path still resolves to the claimed directory.
             try:
@@ -2001,69 +2002,106 @@ def _read_block(block: _File) -> bytes:
     return buffer[prefix : prefix + size]
 
 
-def _unlink_quietly(directory: Path, name: str, *, dir_fd: int | None = None) -> None:
-    """Remove a file without raising, warning if it fails unexpectedly.
+def _remove_quietly(
+    remove: Callable[..., None],
+    directory: Path,
+    name: str,
+    *,
+    dir_fd: int | None = None,
+    tolerate: tuple[int, ...] = (errno.ENOENT,),
+    stacklevel: int = 2,
+) -> None:
+    """Remove one entry without raising, warning if it fails unexpectedly.
 
-    Every teardown path in this module removes files through here, so no
-    teardown can raise: an exception escaping a ``__exit__`` or an
-    `atexit` handler would replace the exception the caller was already
-    unwinding, or crash the interpreter at shutdown.
+    Every removal in this module goes through here, so no teardown can
+    raise: an exception escaping a ``__exit__`` or an `atexit` handler
+    would replace the exception the caller was already unwinding, or
+    crash the interpreter at shutdown.
 
-    A file that is already gone is the expected case and passes silently.
-    Any other failure leaves the file in place, which is a leak the caller
-    cannot act on but an operator can, so it surfaces as a
-    `ResourceWarning` rather than being swallowed.
+    The syscall and the errnos that pass silently are both arguments,
+    because the two removals this module performs tolerate different
+    things and the difference is deliberate. A file that is already gone
+    is the expected case everywhere. A *non-empty* directory is expected
+    only where an inner removal already failed and already reported
+    itself — `LocalDiscovery._release` removing the namespace after a
+    sweep — and is a leak worth naming anywhere else.
+
+    Any failure the caller does not tolerate leaves the entry in place,
+    which is a leak the caller cannot act on but an operator can, so it
+    surfaces as a `ResourceWarning` rather than being swallowed.
 
     The directory and the name are separate so that ``dir_fd`` cannot
     disagree with the path a warning names: with the two joined, a caller
     could pass one namespace's path and another's descriptor, and remove
     the second while reporting the first.
 
+    :param remove:
+        The removal to perform, `os.unlink` or `os.rmdir`.
     :param directory:
-        The directory holding the file. It is walked only when ``dir_fd``
-        is absent, and names the file in any warning either way.
+        The directory holding the entry. It is walked only when
+        ``dir_fd`` is absent, and names the entry in any warning either
+        way.
     :param name:
-        The file's name within ``directory``.
+        The entry's name within ``directory``.
     :param dir_fd:
-        A descriptor on ``directory``, which the removal resolves ``name``
-        against instead of walking the path. Pass it wherever the
-        directory may be replaced between opening it and removing from
-        it; see `LocalDiscovery._release`.
+        A descriptor on ``directory``, which the removal resolves
+        ``name`` against instead of walking the path. Pass it wherever
+        the directory may be replaced between opening it and removing
+        from it; see `LocalDiscovery._release`.
+    :param tolerate:
+        Errnos that pass silently. Defaults to a missing entry alone.
+    :param stacklevel:
+        Frames to skip when attributing the warning, so a named wrapper
+        reports against its own caller rather than against itself.
     """
     try:
         if dir_fd is None:
-            os.unlink(directory / name)
+            remove(directory / name)
         else:
-            os.unlink(name, dir_fd=dir_fd)
-    except FileNotFoundError:
-        pass
+            remove(name, dir_fd=dir_fd)
     except OSError as error:
-        warnings.warn(
-            f"failed to remove {str(directory / name)!r}: {error}",
-            ResourceWarning,
-            stacklevel=2,
-        )
+        if error.errno not in tolerate:
+            warnings.warn(
+                f"failed to remove {str(directory / name)!r}: {error}",
+                ResourceWarning,
+                stacklevel=stacklevel + 1,
+            )
+
+
+def _unlink_quietly(directory: Path, name: str, *, dir_fd: int | None = None) -> None:
+    """Remove a file without raising, warning if it fails unexpectedly.
+
+    Every teardown path in this module removes files through here or
+    through `_purge`, which shares its one implementation; see
+    `_remove_quietly`.
+
+    :param directory:
+        The directory holding the file.
+    :param name:
+        The file's name within ``directory``.
+    :param dir_fd:
+        A descriptor on ``directory`` to resolve ``name`` against.
+    """
+    _remove_quietly(os.unlink, directory, name, dir_fd=dir_fd)
 
 
 def _rmdir_quietly(directory: Path) -> None:
     """Remove a directory if it is empty, without raising.
 
-    A directory that is already gone, or that still holds files, passes
-    silently. Any other failure surfaces as a `ResourceWarning`; see
-    `_unlink_quietly`.
+    A directory that is already gone, or that still holds entries,
+    passes silently — this removes a namespace directory after a sweep,
+    so anything left in it is something the sweep already reported, and
+    warning again would name one leak twice. See `_remove_quietly`.
 
     :param directory:
         The directory to remove.
     """
-    try:
-        os.rmdir(directory)
-    except OSError as error:
-        if error.errno not in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
-            warnings.warn(
-                f"failed to remove {str(directory)!r}: {error}",
-                ResourceWarning,
-                stacklevel=2,
-            )
+    _remove_quietly(
+        os.rmdir,
+        directory.parent,
+        directory.name,
+        tolerate=(errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST),
+    )
 
 
 def _close_quietly(fd: int) -> None:
@@ -2228,87 +2266,101 @@ def _owner_alive(generation_fd: int) -> bool:
         return False
 
 
-def _purge(dir_fd: int) -> None:
+def _purge(directory: Path, dir_fd: int) -> None:
     """Remove every entry beneath the directory a descriptor holds open.
 
     Resolves nothing: every operation is relative to a descriptor and
     descends only through `os.O_NOFOLLOW`, so a symlink planted in a
     world-writable root — ``/dev/shm`` is mode 1777 and shared by every
     user on the host — cannot redirect a removal outside the tree. The
-    directory itself is left in place for the caller to remove, which is
-    what lets an owner purge the generation it is claiming without
+    path is carried alongside each descriptor for reporting only, never
+    to resolve against, so a warning can name what an operator has to
+    act on without the removal trusting the name.
+
+    The directory itself is left in place for the caller to remove, which
+    is what lets an owner purge the generation it is claiming without
     dropping the claim.
 
     Never raises: this runs on teardown paths that never raise. An entry
     another process removed first passes silently, and any other failure
-    surfaces as a `ResourceWarning`; see `_unlink_quietly`. What is left
+    surfaces as a `ResourceWarning`; see `_remove_quietly`. What is left
     behind is a leak the caller cannot act on but an operator can, and a
     whole generation is the larger of the two leaks this module can
     produce.
 
+    :param directory:
+        The directory ``dir_fd`` holds, for naming entries in warnings.
     :param dir_fd:
         A descriptor on the directory to empty.
     """
-    try:
-        names = os.listdir(dir_fd)
-    except OSError as error:
-        warnings.warn(
-            f"failed to list a directory to purge: {error}",
-            ResourceWarning,
-            stacklevel=2,
-        )
-        return
-    for name in names:
-        # Directory-ness is decided up front rather than inferred from
-        # the errno a failed unlink reports: `PermissionError` is `EPERM`
-        # or `EACCES`, and the sticky bit on a mode-1777 root yields
-        # `EPERM` for another user's plain file too.
-        try:
-            entry = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-        except FileNotFoundError:
+    # Pending operations are pushed rather than recursed, so the depth of
+    # the tree costs heap instead of interpreter frames. The same threat
+    # model that motivates `os.O_NOFOLLOW` reaches here: a co-tenant on a
+    # mode-1777 root can plant a tree thousands deep, and a
+    # `RecursionError` is not an `OSError`, so none of the guards below
+    # would have absorbed it — it would have escaped `__exit__` and the
+    # `atexit` handler, which is the one thing this promises not to do.
+    #
+    # Tagged by the operation, as `shutil.rmtree` does. The seed is a
+    # scan alone: the caller's descriptor is the caller's to close, and
+    # the directory it holds is the caller's to remove.
+    stack: list[tuple[Any, Path, int, str]] = [(os.listdir, directory, dir_fd, "")]
+    while stack:
+        operation, reported, fd, name = stack.pop()
+        if operation is os.close:
+            os.close(fd)
             continue
+        if operation is os.rmdir:
+            _remove_quietly(os.rmdir, reported, name, dir_fd=fd)
+            continue
+        try:
+            names = os.listdir(fd)
         except OSError as error:
             warnings.warn(
-                f"failed to remove {name!r}: {error}",
+                f"failed to list {str(reported)!r} to purge: {error}",
                 ResourceWarning,
                 stacklevel=2,
             )
             continue
-        if not stat.S_ISDIR(entry.st_mode):
+        for entry in names:
+            # Directory-ness is decided up front rather than inferred
+            # from the errno a failed unlink reports: `PermissionError`
+            # is `EPERM` or `EACCES`, and the sticky bit on a mode-1777
+            # root yields `EPERM` for another user's plain file too.
             try:
-                os.unlink(name, dir_fd=dir_fd)
+                status = os.stat(entry, dir_fd=fd, follow_symlinks=False)
             except FileNotFoundError:
-                pass
+                continue
             except OSError as error:
+                # Nothing was removed, so this does not go through the
+                # removal primitive and does not claim a removal failed.
                 warnings.warn(
-                    f"failed to remove {name!r}: {error}",
+                    f"failed to inspect {str(reported / entry)!r}: {error}",
                     ResourceWarning,
                     stacklevel=2,
                 )
-            continue
-        try:
-            child = os.open(
-                name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=dir_fd,
-            )
-        except OSError:
-            # Replaced by a symlink or removed since it was listed.
-            continue
-        try:
-            _purge(child)
-        finally:
-            os.close(child)
-        try:
-            os.rmdir(name, dir_fd=dir_fd)
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            warnings.warn(
-                f"failed to remove {name!r}: {error}",
-                ResourceWarning,
-                stacklevel=2,
-            )
+                continue
+            if not stat.S_ISDIR(status.st_mode):
+                _remove_quietly(os.unlink, reported, entry, dir_fd=fd)
+                continue
+            try:
+                child = os.open(
+                    entry,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=fd,
+                )
+            except OSError:
+                # Replaced by a symlink or removed since it was listed.
+                continue
+            # Pushed so they pop in this order: the child's own scan,
+            # then its descriptor's close, then the removal of the child
+            # from this directory. A directory is removed only once
+            # emptied, which is what the ordering buys — and the removal
+            # resolves against *this* descriptor rather than the child's,
+            # so closing the child first is correct rather than a hazard.
+            stack.append((os.rmdir, reported, fd, entry))
+            stack.append((os.close, reported, child, entry))
+            stack.append((os.listdir, reported / entry, child, ""))
 
 
 @asynccontextmanager

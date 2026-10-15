@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import errno
 import fcntl
+import inspect
 import os
 import pickle
 import re
@@ -427,6 +428,13 @@ def _rejected_claim_is_raised(namespace):
     except DiscoveryNamespaceInUse:
         return True
 
+
+#: How deep a tree the nested-sweep test plants, and how much stack it
+#: leaves the sweep. Deeper than the headroom, so a sweep spending a
+#: frame per level exhausts the stack; shallow enough to build in a
+#: fraction of a second, which lowering the limit is what buys.
+_NESTED_DEPTH = 80
+_NESTED_HEADROOM = 50
 
 #: Own a namespace in an independent interpreter until killed, so a test
 #: can take an owner away without any teardown of its own running — the
@@ -943,10 +951,10 @@ class TestLocalDiscovery:
         # Arrange
         owner = LocalDiscovery(namespace)
         owner.__enter__()
-        # Every removal fails, so the sweep's own report is among them.
-        # `_purge` names a bare entry where `_unlink_quietly` names a
-        # path, which is what tells the two reports apart.
-        unlink_schedule.extend(OSError(errno.EIO, "I/O error") for _ in range(8))
+        directory = namespace_directory(namespace)
+        # Three removals happen — the pointer, then the registry and
+        # notify files the sweep finds — and every one of them fails.
+        unlink_schedule.extend(OSError(errno.EIO, "I/O error") for _ in range(3))
 
         # Act
         with pytest.warns(ResourceWarning) as caught:
@@ -958,7 +966,68 @@ class TestLocalDiscovery:
             for warning in caught
             if str(warning.message).startswith("failed to remove '")
         ]
-        assert any("/" not in name for name in removed), removed
+        # Every report names a full path, so an operator can act on the
+        # message without reconstructing where the entry lived.
+        assert all(name.startswith(f"{directory}/") for name in removed), removed
+        # Non-vacuity: the sweep's own reports are the ones below the
+        # generation, which is what tells them from the pointer's.
+        assert any(Path(name).parent != directory for name in removed), removed
+
+    def test___exit___should_sweep_a_deeply_nested_namespace(self, namespace):
+        """Test a deeply nested residue does not exhaust the stack.
+
+        Given:
+            An owner whose namespace holds a directory tree deeper than
+            the interpreter's remaining stack allows a frame per level,
+            which a co-tenant can plant under a world-writable root
+        When:
+            The owner exits
+        Then:
+            It should sweep the tree and remove the namespace, a
+            teardown that raises being the one thing it documents it
+            will never do.
+        """
+        # Arrange
+        #
+        # Built descriptor-relative, holding one descriptor at a time: a
+        # joined path this deep exceeds the filesystem's limit, so
+        # `pathlib` cannot create it at all.
+        owner = LocalDiscovery(namespace)
+        owner.__enter__()
+        directory = namespace_directory(namespace)
+        descriptors = [os.open(directory, os.O_RDONLY)]
+        try:
+            for _ in range(_NESTED_DEPTH):
+                os.mkdir("d", dir_fd=descriptors[-1])
+                descriptors.append(
+                    os.open(
+                        "d",
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=descriptors[-1],
+                    )
+                )
+                if len(descriptors) > 2:
+                    os.close(descriptors.pop(-2))
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+
+        # Act
+        #
+        # The limit is lowered rather than the tree deepened, which
+        # costs a fraction of a second instead of several. Restored in a
+        # `finally`, since pytest's own assertion machinery would
+        # otherwise run under it.
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(len(inspect.stack()) + _NESTED_HEADROOM)
+        try:
+            owner.__exit__(None, None, None)
+        finally:
+            sys.setrecursionlimit(limit)
+            shutil.rmtree(directory, ignore_errors=True)
+
+        # Assert
+        assert not directory.exists()
 
     def test_subscriber_with_default_instance(self, namespace):
         """Test subscriber property returns Subscriber instance.
