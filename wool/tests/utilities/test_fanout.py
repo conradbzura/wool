@@ -318,50 +318,99 @@ class TestFanoutConsumer:
         with pytest.raises(StopAsyncIteration):
             await anext(consumer)
 
-    def test_enqueue_with_direct_item(self):
-        """Test enqueue pushes an item into the consumer's queue.
+    @pytest.mark.asyncio
+    async def test_consumer_should_yield_primed_items_when_primed(self):
+        """Test a primed consumer yields what it was primed with.
 
         Given:
-            A FanoutConsumer instance.
+            A fanout over a source that yields nothing.
         When:
-            enqueue is called with an item.
+            A consumer is created with primed items and pulled.
         Then:
-            It should be retrievable on the next pull.
+            It should yield them in order, since priming is how a
+            caller hands a joining consumer state the shared source
+            will not replay.
         """
         # Arrange
         fanout = Fanout(_Source())
-        consumer = fanout.consumer()
 
         # Act
-        consumer.enqueue("injected")
+        consumer = fanout.consumer(["first", "second"])
 
-        # Assert — item is in the queue (verified via queue size)
-        assert not consumer._queue.empty()
+        # Assert
+        assert await anext(consumer) == "first"
+        assert await anext(consumer) == "second"
 
     @pytest.mark.asyncio
-    async def test_enqueue_with_pull_after_inject(self):
-        """Test enqueued items are returned before source items.
+    async def test_consumer_should_yield_primed_items_before_source_items(self):
+        """Test priming puts items ahead of everything the source sends.
 
         Given:
-            A FanoutConsumer with an enqueued item and a source
-            that also yields items.
+            A fanout over a source that yields an item of its own.
         When:
-            anext is called.
+            A consumer is created with a primed item and pulled twice.
         Then:
-            It should return the enqueued item first.
+            It should yield the primed item first — the invariant its
+            caller depends on, since a replayed state that arrived
+            behind a source delta could contradict it.
         """
         # Arrange
         fanout = Fanout(_Source("from-source"))
-        consumer = fanout.consumer()
-        consumer.enqueue("injected")
 
         # Act
+        consumer = fanout.consumer(["injected"])
         first = await anext(consumer)
         second = await anext(consumer)
 
         # Assert
         assert first == "injected"
         assert second == "from-source"
+
+    @pytest.mark.asyncio
+    async def test_consumer_should_yield_primed_items_before_the_source_end(self):
+        """Test priming outranks how the source ended.
+
+        Given:
+            A fanout whose source has already been exhausted and
+            cleaned up, so every consumer is owed its end.
+        When:
+            A consumer is created with primed items and pulled.
+        Then:
+            It should yield them before reporting the end, since a
+            consumer joining a finished subscription is still owed the
+            state its caller replayed to it.
+        """
+        # Arrange
+        fanout = Fanout(_Source())
+        exhausted = fanout.consumer()
+        with pytest.raises(StopAsyncIteration):
+            await anext(exhausted)
+        await fanout.cleanup()
+
+        # Act
+        consumer = fanout.consumer(["late"])
+
+        # Assert
+        assert await anext(consumer) == "late"
+        with pytest.raises(StopAsyncIteration):
+            await anext(consumer)
+
+    @pytest.mark.asyncio
+    async def test___init___should_raise_when_the_source_is_not_iterable(self):
+        """Test a source that cannot be iterated is refused at construction.
+
+        Given:
+            An object that is not an async iterable.
+        When:
+            A Fanout is constructed over it.
+        Then:
+            It should raise TypeError from that construction, rather
+            than from inside the first consumer's pull several frames
+            away.
+        """
+        # Act & assert
+        with pytest.raises(TypeError, match="Expected an async iterable"):
+            Fanout(object())  # pyright: ignore[reportArgumentType]
 
     @pytest.mark.asyncio
     async def test___anext___with_late_registered_consumer(self):

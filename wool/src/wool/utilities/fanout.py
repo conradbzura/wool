@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from typing import AsyncGenerator
 from typing import AsyncIterable
 from typing import AsyncIterator
 from typing import Final
 from typing import Generic
+from typing import Iterable
 from typing import NoReturn
 from typing import TypeVar
 
@@ -44,6 +46,18 @@ class Fanout(Generic[T]):
     """
 
     def __init__(self, source: AsyncIterable[T]) -> None:
+        # Checked here so a source that cannot be iterated fails at the
+        # construction that supplied it. `aiter` is not called until the
+        # first pull, and that pull happens inside a consumer's
+        # `__anext__` under this container's lock — so the mistake would
+        # otherwise surface from an iteration several frames away, be
+        # reported to whichever consumer pulled first rather than to all
+        # of them, and leave `_closed` unset so the next consumer repeats
+        # it.
+        if not isinstance(source, AsyncIterable):
+            raise TypeError(
+                f"Expected an async iterable to multicast, got: {type(source)}"
+            )
         self._source = source
         self._lock = asyncio.Lock()
         self._iterator: AsyncIterator[T] | None = None
@@ -58,17 +72,30 @@ class Fanout(Generic[T]):
         #: depends on the order two wake-ups happened to run in.
         self._closed = False
 
-    def consumer(self) -> FanoutConsumer[T]:
-        """Create a new independent consumer.
+    def consumer(self, prime: Iterable[T] = ()) -> FanoutConsumer[T]:
+        """Create a new independent consumer, optionally primed.
 
         A consumer created after the source ended is not an error: its
-        first pull reports however the source ended, like any other.
+        first pull after any primed items reports however the source
+        ended, like any other.
 
+        :param prime:
+            Items this consumer yields before anything the shared source
+            broadcasts. Delivered in order, ahead of every source item
+            and ahead of however the source ends.
         :returns:
             A :class:`FanoutConsumer` backed by this container's shared
             source iterator.
         """
         c: FanoutConsumer[T] = FanoutConsumer(self)
+        # Primed before joining, which is what makes the ordering
+        # structural rather than a matter of the caller not suspending:
+        # a broadcast reaches only consumers already in the set, so
+        # until the line below this queue cannot have been written to by
+        # anything else, and nothing the source sends — including how it
+        # ends — can land ahead of these.
+        for item in prime:
+            c._queue.put_nowait(item)
         self._consumers.add(c)
         return c
 
@@ -100,9 +127,13 @@ class Fanout(Generic[T]):
                 # suspended inside an active pull refuses to close.
                 await asyncio.wait({pull})
             iterator, self._iterator = self._iterator, None
-            aclose = getattr(iterator, "aclose", None)
-            if aclose is not None:
-                await aclose()
+            # Narrowed to generators rather than probing for `aclose`:
+            # `AsyncIterable` guarantees `__aiter__` and nothing else, so
+            # an attribute probe made closing an unstated optional part
+            # of the contract and would await whatever a third party
+            # happened to name `aclose`.
+            if isinstance(iterator, AsyncGenerator):
+                await iterator.aclose()
         finally:
             self._wake()
 
