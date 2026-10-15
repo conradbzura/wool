@@ -5777,6 +5777,55 @@ class TestLocalDiscoveryPublisher:
                 pass
         assert excinfo.value.namespace == namespace
 
+    @pytest.mark.asyncio
+    async def test___aenter___should_leak_no_descriptors_when_the_probe_raises(
+        self, namespace, mocker
+    ):
+        """Test a bind whose liveness probe fails releases what it pinned.
+
+        Given:
+            A namespace with a live owner, and a filesystem whose shared
+            locks are unusable, so the probe that proves an owner lives
+            raises rather than answering — which the module documents as
+            reachable by design rather than guessed around.
+        When:
+            A publisher binds that namespace repeatedly.
+        Then:
+            It should hold no descriptor open per failed bind, since the
+            probe runs against a descriptor the bind pinned and every
+            retry pays for it again.
+        """
+        # Arrange
+        real_flock = fcntl.flock
+
+        def unsupported(fd, operation):
+            # Only the liveness probe takes a shared lock; the owner's
+            # claim and the registry lock are both exclusive, so this
+            # cannot disturb either.
+            if operation == fcntl.LOCK_SH | fcntl.LOCK_NB:
+                raise OSError(errno.EOPNOTSUPP, "Operation not supported")
+            return real_flock(fd, operation)
+
+        mocker.patch.object(fcntl, "flock", side_effect=unsupported)
+
+        with LocalDiscovery(namespace):
+            # Counted after the owner has entered, since entry itself
+            # pins a claim and a liveness descriptor of its own.
+            before = len(os.listdir("/dev/fd"))
+
+            # Act
+            raised = 0
+            for _ in range(20):
+                try:
+                    async with LocalDiscovery.Publisher(namespace):
+                        pass  # pragma: no cover
+                except OSError:
+                    raised += 1
+
+            # Assert
+            assert raised == 20
+            assert len(os.listdir("/dev/fd")) == before
+
 
 class TestLocalDiscoverySubscriber:
     """Tests for LocalDiscovery.Subscriber class.

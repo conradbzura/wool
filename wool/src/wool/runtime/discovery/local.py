@@ -398,9 +398,20 @@ class _Binding:
         binding = cls(generation, header, liveness)
         # Proving the owner lives is the whole of what a bind adds to
         # resolving the pointer; see `_owner_alive`.
-        if not binding.alive():
+        #
+        # Guarded because the probe does not only answer: it raises on a
+        # filesystem whose locks it can neither take nor be refused, and
+        # its release is unguarded too, so either can leave the
+        # descriptor this bind just pinned with no owner to close it.
+        # `BaseException`, so an interrupt landing inside `flock` cannot
+        # strand it either. Raising from inside the guard rather than
+        # after it is what keeps the two exits to one close.
+        try:
+            if not binding.alive():
+                raise DiscoveryNamespaceNotFound(namespace)
+        except BaseException:
             binding.close()
-            raise DiscoveryNamespaceNotFound(namespace)
+            raise
         return binding
 
     def alive(self) -> bool:
