@@ -11,9 +11,9 @@ import stat
 import struct
 import sys
 import tempfile
+import threading
 import warnings
 from contextlib import AsyncExitStack
-from contextlib import ExitStack
 from contextlib import asynccontextmanager
 from contextlib import closing
 from functools import cache
@@ -79,6 +79,14 @@ _CARRY_FORWARD_LIMIT: Final = 3
 #: arrive, and one with a long poll interval would wait that interval
 #: out. A liveness wake is not a rescan; see `LocalDiscovery.Subscriber`.
 _LIVENESS_INTERVAL: Final[float] = 5.0
+
+#: How long retiring a subscription waits for its watcher thread to
+#: exit. Bounded because nothing can interrupt a blocking join from
+#: outside: the join runs off the loop, so a sweep that retires a
+#: subscription under a deadline can cancel the await, and a thread that
+#: will not exit would then hold an executor slot indefinitely. Exceeding
+#: it is reported rather than waited out; see `_retire_observer`.
+_OBSERVER_JOIN_TIMEOUT: Final[float] = 5.0
 
 #: Bumped in the child by an `os.register_at_fork` handler, so an owner
 #: entered before a fork can tell that it is running in the fork. See
@@ -1572,7 +1580,7 @@ class LocalDiscovery(Discovery):
             # released by this stack, so concurrent iterations of one
             # subscriber never share a descriptor or an observer; see
             # `~wool.DiscoverySubscriberLike`.
-            with ExitStack() as resources:
+            async with AsyncExitStack() as resources:
                 # The generation is resolved and pinned once, so this
                 # subscription follows one owner's incarnation and ends
                 # with it rather than drifting onto a successor's
@@ -1596,12 +1604,25 @@ class LocalDiscovery(Discovery):
                     raise DiscoveryNamespaceNotFound(self._namespace) from error
                 # Registered the instant the thread exists, so every
                 # later failure retires it rather than stranding it.
-                resources.callback(observer.join)
+                # Pushed before the stop so it unwinds after it: the
+                # thread is told to finish, then waited for.
+                #
+                # The join runs off the loop; see `_retire_observer` for
+                # why, and why it is bounded. One case this does not
+                # cover: a subscription finalized by garbage collection
+                # after its loop has closed cannot run an async teardown
+                # at all, so the thread is left to the interpreter where
+                # a synchronous join would have waited for it. That
+                # needs the generator to outlive the loop, which is
+                # interpreter exit rather than ordinary operation.
+                resources.push_async_callback(
+                    lambda: asyncio.to_thread(_retire_observer, observer)
+                )
                 resources.callback(observer.stop)
                 while True:
-                    # Cleared before the read, so a notification arriving
-                    # at any point during this scan is preserved and
-                    # wakes the next one.
+                    # Cleared before the read; see `_Watchdog` for why
+                    # that ordering is what preserves a set arriving
+                    # mid-scan.
                     notification.clear()
                     # Before every read, so a borrower that outlived
                     # its owner fails here rather than serving the
@@ -2130,6 +2151,35 @@ def _close_quietly(fd: int) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def _retire_observer(observer: threading.Thread) -> None:
+    """Join a watcher's thread, reporting one that will not exit.
+
+    Run off the event loop, because a watcher's emitter threads loop on
+    a timeout of their own and joining one inline stalls every other
+    dispatch, sentinel and poller for as long as it takes to wind down.
+
+    Bounded, because a blocking join cannot be interrupted from outside.
+    A thread still alive after the bound is left to the interpreter and
+    reported as a leak, which is the one thing an operator can act on;
+    waiting longer would only move the stall from the loop to an
+    executor slot.
+
+    :param observer:
+        The watcher whose thread to retire. Already stopped by the
+        teardown step registered after this one. Typed as the thread it
+        is, since `watchdog`'s ``Observer`` is a platform-resolved alias
+        rather than a class a checker can name.
+    """
+    observer.join(_OBSERVER_JOIN_TIMEOUT)
+    if observer.is_alive():
+        warnings.warn(
+            f"watcher thread {observer.name!r} did not exit within "
+            f"{_OBSERVER_JOIN_TIMEOUT}s",
+            ResourceWarning,
+            stacklevel=2,
+        )
 
 
 @cache

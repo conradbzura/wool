@@ -11,6 +11,7 @@ import stat
 import struct
 import subprocess
 import sys
+import time
 import uuid
 import warnings
 from collections import Counter
@@ -5954,6 +5955,69 @@ class TestLocalDiscoverySubscriber:
                     pytest.fail("iteration yielded an event without a watch")
         assert excinfo.value.namespace == namespace
         assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+    @pytest.mark.asyncio
+    async def test___aiter___should_leave_the_loop_running_while_it_retires(
+        self, namespace, metadata, mocker
+    ):
+        """Test retiring a subscription does not stall the event loop.
+
+        Given:
+            A subscription over a live namespace, a watcher thread that
+            takes a known time to exit, and another task on the loop
+            making progress on a fixed interval.
+        When:
+            The subscription is closed and the watcher is retired.
+        Then:
+            It should let that other task keep progressing, since a
+            subscription now ends on its own whenever its owner goes
+            away, and retiring one must not stop every other dispatch,
+            sentinel and poller on the loop while a thread winds down.
+        """
+        # Arrange
+        #
+        # Patched before the subscription starts, because the teardown
+        # binds the method when the watcher is registered rather than
+        # when it runs. The real join still runs, so the thread is
+        # genuinely retired rather than merely waited on.
+        real_join = Observer.join
+        delay = 0.4
+
+        def slow_join(self, *args, **kwargs):
+            time.sleep(delay)
+            return real_join(self, *args, **kwargs)
+
+        mocker.patch.object(Observer, "join", slow_join)
+
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        with LocalDiscovery(namespace):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", metadata)
+
+                iterator = LocalDiscovery.Subscriber(namespace).__aiter__()
+                await asyncio.wait_for(iterator.__anext__(), timeout=5)
+
+                counter = asyncio.ensure_future(ticker())
+                try:
+                    await asyncio.sleep(0)
+                    before = ticks
+
+                    # Act
+                    await iterator.aclose()
+
+                    # Assert — a blocked loop lets no tick through at
+                    # all, so the margin against the 0.4s join is the
+                    # whole of the signal.
+                    assert ticks - before >= 10, ticks - before
+                finally:
+                    counter.cancel()
 
     def test___init___should_raise_when_capacity_is_declared(self, namespace):
         """Test a borrower is offered no capacity of its own.
