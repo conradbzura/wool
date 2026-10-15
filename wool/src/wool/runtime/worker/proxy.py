@@ -125,6 +125,10 @@ class ReducibleAsyncIterator(Generic[T]):
     def __aiter__(self) -> AsyncIterator[T]:
         return self._stream()
 
+    def __reduce__(self) -> tuple:
+        """Return constructor args for unpickling."""
+        return (self.__class__, (self._items,))
+
     async def _stream(self) -> AsyncIterator[T]:
         """Yield each item, starting from the first on every iteration.
 
@@ -136,10 +140,6 @@ class ReducibleAsyncIterator(Generic[T]):
         """
         for item in self._items:
             yield item
-
-    def __reduce__(self) -> tuple:
-        """Return constructor args for unpickling."""
-        return (self.__class__, (self._items,))
 
 
 WorkerUri: TypeAlias = str
