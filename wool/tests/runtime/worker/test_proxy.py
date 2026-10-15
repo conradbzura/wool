@@ -7130,6 +7130,73 @@ class TestWorkerProxy:
             await proxy.stop()
 
     @pytest.mark.asyncio
+    async def test_dispatch_should_serve_a_live_worker_when_the_subscription_died(
+        self, mock_proxy_session, mock_wool_task, mocker: MockerFixture
+    ):
+        """Test a dead membership feed does not fail a usable dispatch.
+
+        Given:
+            A started proxy holding one admitted worker, whose discovery
+            subscription then raises, so the membership feed is dead
+            while the worker process it already announced is not.
+        When:
+            A task is dispatched.
+        Then:
+            It should dispatch to the worker it holds, since discovery
+            is a membership feed rather than the data plane and a
+            subscription that stopped reporting does not make the
+            workers it already reported unusable.
+        """
+        # Arrange
+        #
+        # The failure is gated so the worker is admitted and the quorum
+        # satisfied first; raising straight after the yield races the
+        # start and reports the cause from there instead.
+        release, died = asyncio.Event(), asyncio.Event()
+        metadata = WorkerMetadata(
+            uid=uuid.uuid4(),
+            address="127.0.0.1:50200",
+            pid=9100,
+            version=protocol.__version__,
+        )
+
+        class _DyingDiscovery:
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                yield DiscoveryEvent("worker-added", metadata=metadata)
+                await release.wait()
+                try:
+                    raise DiscoveryNamespaceNotFound("dying-namespace")
+                finally:
+                    died.set()
+
+        streams: list = []
+        proxy, _ = await _make_proxy_with_workers(
+            connections=[_make_success_connection(mocker, streams)],
+            loadbalancer=make_delegating_balancer(),
+            mocker=mocker,
+            discovery=_DyingDiscovery(),
+            metadata_list=[metadata],
+        )
+        release.set()
+        await died.wait()
+
+        # Act
+        result_stream = await proxy.dispatch(mock_wool_task)
+        results = [item async for item in result_stream]
+
+        # Assert
+        assert results == ["ok"]
+        assert metadata in proxy.workers
+
+        # Cleanup — the cause is still owed to someone, and with no
+        # dispatch having reported it teardown is who reports it.
+        with pytest.raises(DiscoveryNamespaceNotFound):
+            await proxy.stop()
+
+    @pytest.mark.asyncio
     async def test_stop_should_not_report_a_failure_a_dispatch_already_did(
         self, mock_proxy_session, mock_wool_task
     ):
