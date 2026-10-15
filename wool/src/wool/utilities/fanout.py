@@ -238,6 +238,17 @@ class FanoutConsumer(Generic[T]):
     async iterator protocol. Each consumer maintains its own queue so
     that items are delivered independently.
 
+    That queue is unbounded, and distribution does not wait for demand:
+    a pull is started by whichever consumer wants an item, but the item
+    it produces is put into *every* consumer's queue. A consumer that
+    stops being pulled therefore accumulates at the rate its peers pull,
+    and leaves the container only when it is garbage-collected out of the
+    weak set holding it — which an iteration still referencing it
+    prevents. Bounding this is the caller's to decide, because what may
+    be discarded depends on what the items mean: see
+    `~wool.runtime.discovery.pool._SharedSubscription` for a case where
+    one kind of item cannot be dropped at all.
+
     :param fanout:
         The parent :class:`Fanout` container.
     """

@@ -98,6 +98,12 @@ _fork_generation = 0
 logger = logging.getLogger(__name__)
 
 
+# Kept with the global it mutates and the registration that arms it,
+# ahead of the classes, rather than moved into the private-function
+# block below. The registration is a bare module-level call, which the
+# member ordering has no position for and which must follow the function
+# it names; splitting the three would separate a mutator from its state
+# by the length of this module for no reader's benefit.
 def _bump_fork_generation() -> None:
     """Disown every namespace this process inherited by forking."""
     global _fork_generation
@@ -118,8 +124,12 @@ class _Watchdog(FileSystemEventHandler):
     Setting takes no lock. A scan clears the notification before it reads
     the registry, so a set arriving at any point during that scan is
     preserved and wakes the next one. Coalescing in the event itself also
-    keeps a burst of publishes from queueing one task per notification
-    behind the scan, where each would only set an event already set.
+    keeps a burst of *notifications* from queueing one task per set
+    behind the scan, where each would only set an event already set. It
+    is notifications rather than publishes because publishes on one loop
+    do not arrive together: they serialize on the registry lock, which
+    polls rather than blocks, so each wakes a scan of its own. See
+    `_lock`.
 
     :param notification:
         asyncio.Event to set when the notification file is modified.
@@ -364,6 +374,10 @@ class _Binding:
 
     :param generation:
         The generation directory this binding holds.
+    :param header:
+        The sizes read out of that generation's registry at bind time.
+        They are the owner's to fix and a borrower's only to read, which
+        is what makes them unforgeable by a borrower; see `_Header`.
     :param liveness:
         A descriptor on that directory, pinned for the binding's life.
     """
@@ -548,10 +562,9 @@ class LocalDiscovery(Discovery):
         Size in bytes for each worker's serialized data block. Each
         block spends 4 bytes on a length prefix, leaving
         ``block_size - 4`` for the serialized metadata, so it must exceed
-        4. Note that a block only a few bytes above the prefix still
-        cannot hold the smallest serialized metadata and makes every
-        publish fail; the floor rejects what is unusable by arithmetic,
-        not what is unusable in practice. Defaults to 1024.
+        4. That floor is arithmetic and not practical — see
+        `LocalDiscovery.Publisher.publish` for the size a block actually
+        has to reach. Defaults to 1024.
     :param lock_timeout:
         Maximum seconds each publisher waits for the cross-process file
         lock; see `LocalDiscovery.Publisher`. Defaults to
@@ -638,7 +651,18 @@ class LocalDiscovery(Discovery):
     to one owner while another claims its replacement. A claim that finds
     the directory replaced under it retries, and each retry follows
     another process's completed reclaim rather than contending with one,
-    so a claim resolves rather than livelocking.
+    so among cooperating processes a claim resolves rather than
+    livelocking: a legitimate claim takes one iteration.
+
+    That bound is the cooperation, not the loop. The loop has no cap and
+    no sleep, so a co-tenant that keeps replacing the directory — the
+    threat `_purge` documents, a world-writable root shared by every
+    user on the host — holds entry spinning on the caller's thread.
+    Entry is synchronous and is reached from async code, including the
+    public form that hands a `LocalDiscovery` to a `~wool.WorkerPool`,
+    where `~wool.runtime.typing.resolved` enters a synchronous context
+    manager inline; so the mitigation is a root no co-tenant shares,
+    rather than anything this loop can do about it.
 
     Having taken the claim, an owner sweeps the namespace before staging
     anything: it removes every generation and pointer it finds, through
@@ -1186,9 +1210,11 @@ class LocalDiscovery(Discovery):
             wins — consuming no additional slot, so a single
             ``worker-dropped`` always fully unregisters the worker. Live
             subscribers observe a refresh as a ``worker-updated`` event.
-            A refresh writes into the block
-            created at the worker's first registration, so ``block_size``
-            governs only blocks this publisher creates. If that block has
+            A refresh writes into the block created at the worker's
+            first registration, whose size is the one the namespace's
+            owner stamped into the generation's header — not anything
+            this publisher chose, since a publisher has no say in it. If
+            that block has
             vanished — e.g., its publisher exited without dropping the
             worker — the re-add reclaims the stale registration and
             registers the worker fresh.
@@ -1216,7 +1242,14 @@ class LocalDiscovery(Discovery):
                 For ``worker-added`` and ``worker-updated``, if the
                 serialized metadata exceeds the worker's block, which is
                 rejected before anything is written, so the prior
-                registration is left intact.
+                registration is left intact. This is the real bound on
+                `LocalDiscovery`'s ``block_size``: that parameter's own
+                floor rejects only what cannot hold the length prefix,
+                and a block above it but below the smallest serialized
+                `~wool.runtime.worker.metadata.WorkerMetadata` — 64
+                bytes, against a realistic worker's ~95 — constructs,
+                claims the namespace and then fails every publish here,
+                permanently and per worker.
             :raises TimeoutError:
                 If the cross-process file lock is not acquired within this
                 publisher's ``lock_timeout``.

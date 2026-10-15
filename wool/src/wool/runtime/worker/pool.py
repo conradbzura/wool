@@ -274,26 +274,38 @@ class WorkerPool:
         dispatch; leave the context and enter a new pool. See
         `WorkerProxy`.
     :raises ~wool.DiscoveryCapacityExhausted:
-        At context entry, if publishing a spawned worker finds no free
-        slot. Only reachable when the caller supplies ``discovery``: a
-        pool that owns its registry sizes it to the number of workers it
-        will spawn.
+        At context entry, **wrapped in an** ``ExceptionGroup`` — catch it
+        with ``except*``, since a bare ``except`` for this type never
+        matches. If publishing a spawned worker finds no free slot. Only
+        reachable when the caller supplies ``discovery``: a pool that
+        owns its registry sizes it to the number of workers it will
+        spawn.
     :raises ~wool.DiscoveryBlockExhausted:
-        At context entry, if a spawned worker's serialized metadata
+        At context entry, **wrapped in an** ``ExceptionGroup`` — catch it
+        with ``except*``. If a spawned worker's serialized metadata
         exceeds its block. A pool that owns its registry stamps the
         backend's default block size rather than sizing it, and
         ``tags`` reaches that metadata, so enough of them — or long
         enough ones — exhaust a block on any pool. Supply ``discovery``
         with a larger ``block_size`` to raise the ceiling.
     :raises TimeoutError:
-        At context entry, if a discovery publish does not acquire the
+        At context entry, **wrapped in an** ``ExceptionGroup`` — catch it
+        with ``except*``. If a discovery publish does not acquire the
         backend's cross-process lock in time — for
         `~wool.LocalDiscovery`, within its ``lock_timeout``. Teardown
         announcements cannot raise it; see ``shutdown_timeout``.
     :raises ExceptionGroup:
-        At context entry, wrapping any of the above raised while workers
-        start concurrently. The failures of a concurrent start arrive
-        together rather than one at a time.
+        At context entry, wrapping every one of the above that a worker
+        start can raise. Always, not only when several fail: workers are
+        started under one `asyncio.gather` and the group is built for a
+        single failure as readily as for many, so the three entries above
+        are reachable this way and no other.
+
+        `~wool.DiscoveryNamespaceNotFound` is the exception to that. It
+        arrives wrapped from a publish, and unwrapped from the publisher
+        bind at entry or from the subscriber bind under the quorum wait,
+        neither of which runs under the gather — so it is the one type
+        that needs both an ``except`` and an ``except*``.
 
     **Basic ephemeral pool:**
 

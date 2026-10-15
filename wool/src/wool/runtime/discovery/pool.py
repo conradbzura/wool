@@ -140,6 +140,14 @@ class _SharedSubscription:
     events for all workers the shared source has already discovered,
     so they start with a consistent view of the current state.
 
+    An iteration that stops being pulled while a peer keeps pulling
+    accumulates events without bound; see
+    `~wool.utilities.fanout.FanoutConsumer`. What that costs here is
+    specific: a dropped ``worker-dropped`` cannot be recovered by a
+    later scan, because the subscriber's own diff forgets a worker as
+    soon as it reports the drop — so a consumer that discards one keeps
+    routing to a worker that is gone, rather than merely lagging.
+
     :param key:
         The `_SubscriberKey` the `ResourcePool` caches under, carrying
         the factory that builds the subscriber and rebuilds one after a

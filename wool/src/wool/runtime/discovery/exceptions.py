@@ -7,8 +7,13 @@ Single home for the typed errors the discovery backends raise.
 Each exception passes its fields positionally to ``super().__init__``,
 so the fallback in the worker's exception serializer, which rebuilds an
 exception as ``cls(*exc.args)``, restores them (see
-`wool.runtime.worker.frame`). A keyword-only field kept out of ``args``
-fails that rebuild, so every field is positional and required.
+`wool.runtime.worker.frame`). A keyword-only field cannot survive that
+rebuild in either direction: riding ``args`` makes the call raise for
+too many positional arguments, and staying out of ``args`` either raises
+for a missing argument or — where the field has a default — succeeds
+while silently substituting it, which loses the transmitted value
+without reporting anything. Hence every field is positional and
+required.
 """
 
 from __future__ import annotations
@@ -55,8 +60,11 @@ class DiscoveryBlockExhausted(WoolError):
     The condition is permanent and per-worker: a retry with the same
     metadata fails. Shrink the metadata. A block's size is fixed at the
     worker's first registration and a re-registration writes into that
-    same block, so publishing again through a publisher configured with
-    a larger ``block_size`` does not enlarge it; see
+    same block, and the size itself is the one the namespace's owner
+    stamped — no publisher chooses it, so no publisher can enlarge it.
+    Raising the ceiling means entering the namespace as an owner with a
+    larger `LocalDiscovery` ``block_size``, which is a new generation
+    that every borrower re-binds to; see
     `LocalDiscovery.Publisher.publish`.
 
     :param size:

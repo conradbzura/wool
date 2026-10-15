@@ -1617,8 +1617,9 @@ class WorkerProxy:
         The task reference is dropped first and on every path, including
         the one that raises. A proxy that kept it would keep the dead
         task, its traceback, and through that the subscription's frame,
-        its observer and its cached membership, for as long as the proxy
-        itself lived.
+        its observer and its cached membership, for the rest of the run
+        — `_reset_state` clears what survives this, so the bound is one
+        start rather than the proxy's life.
 
         A failure that already reached a caller is not raised again. The
         quorum wait and `dispatch` report the cause where the caller
@@ -1692,6 +1693,12 @@ class WorkerProxy:
 
         Each context `start` entered receives it — see `stop` for the
         order and the state contract.
+
+        A refusal here keeps the run alive, and with it whatever the run
+        holds: the sentinel's task and any report of its failure are
+        cleared by `_reset_state`, which this unwind is what reaches. A
+        proxy refused on either ground below therefore retains them
+        until it is stopped from the loop that owns it.
 
         .. rubric:: Implementation notes
 
