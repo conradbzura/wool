@@ -1267,11 +1267,17 @@ class WorkerProxy:
             # raises this itself when its candidates run out, and the
             # dispatching kind is handed the context whole and raises it
             # out of this proxy's sight.
-            if not context.workers:
-                failure = self._sentinel_failure
-                if failure is not None:
-                    self._report_sentinel_failure(failure)
-            raise
+            if context.workers:
+                raise
+            failure = self._sentinel_failure
+            if failure is None:
+                raise
+        # Reported clear of the handler above, which is what
+        # `FailureReport` asks of a report whose chaining carries the
+        # answer. Under the `except`, the held context would be replaced
+        # by the very `NoWorkersAvailable` this proxy just judged the
+        # wrong answer, naming it the cause of what replaced it.
+        self._report_sentinel_failure(failure)
 
     @property
     def _sentinel_failure(self) -> BaseException | None:

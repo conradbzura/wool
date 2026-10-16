@@ -843,12 +843,14 @@ def _failing_discovery(namespace: str, *, died: asyncio.Event | None = None):
     return _FailingDiscovery()
 
 
-async def _reported_failure(proxy, task, *, timeout: float = 5.0) -> int:
+async def _reported_failure(
+    proxy, task, *, timeout: float = 5.0
+) -> DiscoveryNamespaceNotFound:
     """Dispatch until the proxy reports its sentinel's failure.
 
-    Returns the depth of the traceback the caller received. Retrying is
-    what synchronises on a sentinel that has not died yet: with no
-    quorum there is no wait for the cause to arrive in, which is the
+    Returns the failure the caller received. Retrying is what
+    synchronises on a sentinel that has not died yet: with no quorum
+    there is no wait for the cause to arrive in, which is the
     configuration dependence `WorkerProxy` documents.
     """
     loop = asyncio.get_running_loop()
@@ -857,14 +859,19 @@ async def _reported_failure(proxy, task, *, timeout: float = 5.0) -> int:
         try:
             await proxy.dispatch(task)
         except DiscoveryNamespaceNotFound as error:
-            frames, traceback = 0, error.__traceback__
-            while traceback is not None:
-                frames, traceback = frames + 1, traceback.tb_next
-            return frames
+            return error
         except NoWorkersAvailable:
             if loop.time() >= deadline:
                 raise AssertionError("sentinel never reported its failure")
             await asyncio.sleep(0.01)
+
+
+def _traceback_depth(error: BaseException) -> int:
+    """Count the frames the exception's traceback currently pins."""
+    frames, traceback = 0, error.__traceback__
+    while traceback is not None:
+        frames, traceback = frames + 1, traceback.tb_next
+    return frames
 
 
 class TestWorkerProxy:
@@ -7271,15 +7278,49 @@ class TestWorkerProxy:
             discovery=_failing_discovery("bounded"), lazy=False, quorum=0
         )
         await proxy.start()
-        first = await _reported_failure(proxy, mock_wool_task)
+        first = _traceback_depth(await _reported_failure(proxy, mock_wool_task))
 
         try:
             # Act
             for _ in range(20):
-                last = await _reported_failure(proxy, mock_wool_task)
+                last = _traceback_depth(await _reported_failure(proxy, mock_wool_task))
 
             # Assert
             assert last == first
+        finally:
+            await proxy.stop()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_should_not_blame_the_decline_it_replaced(
+        self, mock_proxy_session, mock_wool_task
+    ):
+        """Test a reported failure is not chained to the balancer's decline.
+
+        Given:
+            A started proxy whose subscription has raised, dispatched
+            against a balancer that declines with NoWorkersAvailable
+            because the membership is what is missing
+        When:
+            The proxy substitutes the subscription's failure for that
+            decline
+        Then:
+            It should not present the decline as the context of the
+            failure raised in its place -- the proxy judged that decline
+            the wrong answer, so naming it as the exception being
+            handled tells the caller the opposite of what was decided.
+        """
+        # Arrange
+        proxy = WorkerProxy(
+            discovery=_failing_discovery("unchained"), lazy=False, quorum=0
+        )
+        await proxy.start()
+
+        try:
+            # Act
+            reported = await _reported_failure(proxy, mock_wool_task)
+
+            # Assert
+            assert not isinstance(reported.__context__, NoWorkersAvailable)
         finally:
             await proxy.stop()
 
