@@ -677,8 +677,11 @@ class LocalDiscovery(Discovery):
     is published last, so a borrower resolves a generation only once its
     registry is stamped — it binds a complete generation or none.
 
-    Every removal resolves against a descriptor rather than a path,
-    including the named ones in teardown; `_purge` owns why.
+    The sweep and the pointer's removal resolve against a descriptor
+    rather than a path, which is what a world-writable root requires;
+    `_purge` owns why. The block removals and the namespace's own
+    `rmdir` resolve names, and are safe because the directory they name
+    is the owner's own rather than one a co-tenant can replace.
 
     An owner also holds an exclusive lock on its generation directory
     for that generation's life, and a borrower tests it as part of each
@@ -720,8 +723,9 @@ class LocalDiscovery(Discovery):
     The owner's exit removes the pointer first, so nothing new can
     resolve the generation; then the generation's contents, so a
     borrower already pinned to it fails at its next operation; then the
-    namespace directory. Every teardown path removes files through
-    `_unlink_quietly`, so `__exit__` cannot replace an exception its
+    namespace directory. Every teardown removal goes through
+    `_remove_quietly`, whether by name through `_unlink_quietly` or
+    through the sweep, so `__exit__` cannot replace an exception its
     caller is already unwinding. The shutdown fallback is an `atexit`
     handler registered on entry and unregistered on exit before the
     removal runs, so a failed removal leaves no handler armed to fire
