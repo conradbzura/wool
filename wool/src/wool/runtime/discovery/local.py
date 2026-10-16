@@ -90,27 +90,7 @@ _LIVENESS_INTERVAL: Final[float] = 5.0
 #: it is reported rather than waited out; see `_retire_observer`.
 _OBSERVER_JOIN_TIMEOUT: Final[float] = 5.0
 
-#: Bumped in the child by an `os.register_at_fork` handler, so an owner
-#: entered before a fork can tell that it is running in the fork. See
-#: `LocalDiscovery` for the ownership contract this enforces.
-_fork_generation = 0
-
 logger = logging.getLogger(__name__)
-
-
-# Kept with the global it mutates and the registration that arms it,
-# ahead of the classes, rather than moved into the private-function
-# block below. The registration is a bare module-level call, which the
-# member ordering has no position for and which must follow the function
-# it names; splitting the three would separate a mutator from its state
-# by the length of this module for no reader's benefit.
-def _bump_fork_generation() -> None:
-    """Disown every namespace this process inherited by forking."""
-    global _fork_generation
-    _fork_generation += 1
-
-
-os.register_at_fork(after_in_child=_bump_fork_generation)
 
 
 class _Watchdog(FileSystemEventHandler):
@@ -749,7 +729,6 @@ class LocalDiscovery(Discovery):
     _claim: int
     _cleanup: Callable[[], None] | None
     _filter: Final[PredicateFunction | None]
-    _fork_generation: int
     _liveness: int
     _namespace: Final[str]
     _owner_pid: int
@@ -783,10 +762,9 @@ class LocalDiscovery(Discovery):
         self._claim = -1
         self._liveness = -1
         self._cleanup = None
-        # Both are restamped by `__enter__`, which is the entry that owns
-        # the claim; an instance constructed before a fork and entered in
+        # Restamped by `__enter__`, which is the entry that owns the
+        # claim; an instance constructed before a fork and entered in
         # the child owns its own claim and must not disown it.
-        self._fork_generation = _fork_generation
         self._owner_pid = os.getpid()
 
     @noreentry
@@ -804,9 +782,8 @@ class LocalDiscovery(Discovery):
         """
         # Stamped before anything can fail, so a fork racing this entry
         # either sees an instance that was never entered — whose release
-        # is a no-op — or one stamped with the pre-fork generation, which
+        # is a no-op — or one stamped with the pre-fork pid, which
         # disowns. See **Forks** in `LocalDiscovery`.
-        self._fork_generation = _fork_generation
         self._owner_pid = os.getpid()
         directory = _namespace_directory(self._namespace)
         while True:
@@ -1040,7 +1017,7 @@ class LocalDiscovery(Discovery):
         if claim < 0:
             return
         liveness, self._liveness = self._liveness, -1
-        if self._fork_generation != _fork_generation or os.getpid() != self._owner_pid:
+        if os.getpid() != self._owner_pid:
             _close_quietly(liveness)
             os.close(claim)
             return
