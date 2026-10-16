@@ -450,11 +450,14 @@ class WorkerProxy:
         namespace with no live owner, or its owner goes away while the
         subscription is running. The subscription is consumed by a
         detached task, so the error is held on that task and raised by
-        the next caller to need the membership: from the quorum wait in
-        place of `asyncio.TimeoutError`, from `dispatch`, and from
-        `stop` when neither has. Every one of them receives the same
-        instance, so a caller must not attach state to it or read its
-        traceback as the record of one report.
+        the next caller the lost membership actually denies: from the
+        quorum wait in place of `asyncio.TimeoutError`, from a
+        `dispatch` the balancer declines with no worker left to try,
+        and from `stop` when neither has. A dispatch that the workers
+        already reported can still serve is served rather than failed;
+        see `dispatch`. Every one of them receives the same instance,
+        so a caller must not attach state to it or read its traceback
+        as the record of one report.
 
         A positive ``quorum`` is what makes the report prompt: it is
         the only wait the cause can arrive in. With ``quorum`` of
@@ -1183,10 +1186,10 @@ class WorkerProxy:
 
         A subscription that fails *after* the proxy is started does not
         unwind it. The proxy stays started, still holding the balancer
-        and its channels, and every later dispatch reports the same
-        failure, so retrying is what does not work: recover by stopping
-        the proxy and starting another, or by leaving and re-entering
-        the pool context.
+        and its channels, and every later dispatch the membership cannot
+        serve reports the same failure, so retrying is what does not
+        work: recover by stopping the proxy and starting another, or by
+        leaving and re-entering the pool context.
 
         :param task:
             The `Task` to dispatch.
@@ -1623,9 +1626,13 @@ class WorkerProxy:
         The task reference is dropped first and on every path, including
         the one that raises. A proxy that kept it would keep the dead
         task, its traceback, and through that the subscription's frame,
-        its observer and its cached membership, for the rest of the run
-        — `_reset_state` clears what survives this, so the bound is one
-        start rather than the proxy's life.
+        its observer and its cached membership, for the rest of the run.
+        What survives this is cleared by `_reset_state`, which only a
+        `stop` reaches — so on the path `dispatch` documents, where a
+        subscription fails after the start and the proxy stays started,
+        the bound is the proxy's life rather than one start. What a
+        report of that failure goes on retaining is `FailureReport`'s
+        to state.
 
         A failure that already reached a caller is not raised again. The
         quorum wait and `dispatch` report the cause where the caller
