@@ -30,10 +30,28 @@ class FailureReport:
     it. `contextlib.AsyncExitStack` compounds it from the other side,
     writing a body's exception onto whatever a teardown callback raises.
 
-    This holds that chaining state as it stood at the first report and
-    restores it before each raise. A caller's traceback is then the
-    origin plus their own call, rather than the origin plus every call
-    that came before, and identity and type are untouched.
+    This holds the failure's traceback, context and context-suppression
+    flag as they stood at the first report and restores them before each
+    raise. A caller's traceback is then the origin plus their own call,
+    rather than the origin plus every call that came before, and
+    identity and type are untouched. ``__cause__`` is not among the
+    three: an explicit cause, set by a later ``raise ... from``, is
+    permanent.
+
+    What this bounds is growth, not retention. The depth a caller
+    receives is the same at the hundredth report as at the first, which
+    is the accumulation this exists to prevent. The origin traceback
+    itself is held for the report's life, and with it every frame the
+    failure was raised through and whatever those frames' locals reach
+    — for a container that recorded a failure from its own machinery,
+    that machinery. A report is therefore sized by where its failure
+    came from, and is worth clearing once nothing is owed it.
+
+    Restoring the context cannot survive a raise the interpreter
+    restamps. CPython sets ``__context__`` at raise time, so reporting
+    from inside an active ``except`` block replaces the held context
+    with whatever is being handled there — report from outside the
+    handler wherever the chaining is part of the answer.
 
     :param failure:
         The exception to hold. Its chaining state is captured as it
