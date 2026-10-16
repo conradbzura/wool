@@ -6199,6 +6199,41 @@ class TestLocalDiscoverySubscriber:
         assert isinstance(excinfo.value.__cause__, FileNotFoundError)
 
     @pytest.mark.asyncio
+    async def test___aiter___should_propagate_a_watch_failure_the_owner_did_not_cause(
+        self, namespace, mocker
+    ):
+        """Test a watch failure unrelated to ownership reaches the caller.
+
+        Given:
+            A live owner whose namespace binds, and a filesystem
+            observer that cannot start because the platform is out of
+            watch descriptors, which says nothing about whether the
+            namespace has an owner
+        When:
+            A subscriber on that namespace is iterated
+        Then:
+            It should let the error reach the caller rather than
+            reporting a namespace that demonstrably has an owner as
+            having none -- a report whose prescribed remedy, re-binding,
+            would fail the same way forever.
+        """
+        # Arrange -- patched on watchdog's own observer, a third-party
+        # class at the filesystem-watching boundary.
+        mocker.patch.object(
+            Observer,
+            "start",
+            side_effect=OSError(errno.ENOSPC, "No space left on device"),
+        )
+
+        # Act & assert
+        with LocalDiscovery(namespace):
+            with pytest.raises(OSError) as excinfo:
+                async for _ in LocalDiscovery.Subscriber(namespace):
+                    pytest.fail("iteration yielded an event without a watch")
+        assert excinfo.value.errno == errno.ENOSPC
+        assert not isinstance(excinfo.value, DiscoveryNamespaceNotFound)
+
+    @pytest.mark.asyncio
     async def test___aiter___should_leave_the_loop_running_while_it_retires(
         self, namespace, metadata, mocker
     ):

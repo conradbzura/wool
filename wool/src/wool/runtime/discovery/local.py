@@ -1630,8 +1630,14 @@ class LocalDiscovery(Discovery):
                 observer.schedule(handler, path=str(watchdog.parent), recursive=False)
                 try:
                     observer.start()
-                except OSError as error:
-                    # The owner exited between the bind and the watch.
+                except (FileNotFoundError, NotADirectoryError) as error:
+                    # The owner exited between the bind and the watch,
+                    # taking the directory this watch names. Narrowed to
+                    # that: another OSError (e.g., ENOSPC from an
+                    # exhausted watch limit) says nothing about
+                    # ownership, and reporting one as a missing
+                    # namespace prescribes a re-bind that fails the same
+                    # way forever.
                     raise DiscoveryNamespaceNotFound(self._namespace) from error
                 # Registered the instant the thread exists, so every
                 # later failure retires it rather than stranding it.
