@@ -3248,6 +3248,13 @@ class TestLocalDiscoveryPublisher:
             with pytest.raises(DiscoveryNamespaceNotFound) as excinfo:
                 await borrowed_publisher.publisher.publish("worker-added", metadata)
             assert excinfo.value.namespace == namespace
+            # The successor entered above is live, so the rendered
+            # message must scope its claim to this binding rather than
+            # to the namespace; see `DiscoveryNamespaceNotFound`.
+            message = str(excinfo.value)
+            assert namespace in message
+            assert "binding" in message
+            assert "has no live owner to borrow from" not in message
 
             # Assert — nothing reached the successor
             events = []

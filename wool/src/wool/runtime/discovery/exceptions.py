@@ -120,7 +120,7 @@ class DiscoveryNamespaceInUse(WoolError):
 
 # public
 class DiscoveryNamespaceNotFound(WoolError):
-    """Raised when a namespace has no live owner to borrow from.
+    """Raised when no live owner serves a borrower's binding.
 
     Raised at a bind where no owner has created the namespace yet, and
     again at any later operation by a borrower whose owner has since
@@ -131,8 +131,15 @@ class DiscoveryNamespaceNotFound(WoolError):
     borrower that wants to follow the namespace re-binds after this
     error. See `LocalDiscovery` for the ownership contract.
 
+    The condition is per-binding, not per-namespace. A successor that
+    claimed the namespace after this binding's owner left does not
+    serve it, so this is raised while that successor is live and
+    owning the namespace -- which is why neither the summary above nor
+    the rendered message states anything about the namespace's own
+    ownership.
+
     :param namespace:
-        The namespace that has no live owner.
+        The namespace this binding was made against.
     """
 
     def __init__(self, namespace: str):
@@ -140,4 +147,6 @@ class DiscoveryNamespaceNotFound(WoolError):
         super().__init__(namespace)
 
     def __str__(self) -> str:
-        return f"Discovery namespace {self.namespace!r} has no live owner to borrow from"
+        return (
+            f"Discovery namespace {self.namespace!r} has no live owner for this binding"
+        )

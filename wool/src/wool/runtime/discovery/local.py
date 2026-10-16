@@ -1235,7 +1235,8 @@ class LocalDiscovery(Discovery):
                 If the cross-process file lock is not acquired within this
                 publisher's ``lock_timeout``.
             :raises DiscoveryNamespaceNotFound:
-                If the namespace has no live owner; see
+                If this publisher's binding has no live owner, which a
+                successor claiming the namespace does not restore; see
                 `DiscoveryNamespaceNotFound`.
             """
             binding = self._bound

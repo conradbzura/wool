@@ -396,11 +396,12 @@ class TestDiscoveryNamespaceNotFound:
         assert error.namespace == namespace
 
         # The whole message: a namespace whose owner is gone may still
-        # have a readable registry, and a successor may already hold one,
-        # so the error must not assert that nothing is there.
+        # have a readable registry, and a successor may already hold
+        # one, so the claim is scoped to the binding rather than
+        # asserting anything about the namespace's own ownership.
         message = str(error)
         assert message == (
-            f"Discovery namespace {namespace!r} has no live owner to borrow from"
+            f"Discovery namespace {namespace!r} has no live owner for this binding"
         )
 
     @given(namespace=st.text())
