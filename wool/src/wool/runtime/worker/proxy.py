@@ -438,8 +438,15 @@ class WorkerProxy:
         ``quorum_timeout`` is non-positive or supplied without a
         positive ``quorum``.
     :raises TypeError:
-        If ``discovery`` does not implement
-        `~wool.DiscoverySubscriberLike`, e.g., a factory that returns one.
+        If ``discovery`` is an async generator, a callable, or
+        anything else with no ``__aiter__``. The async generator is the
+        surprising one: ``__aiter__`` is
+        `~wool.DiscoverySubscriberLike`'s only member and a generator
+        has one, so such an object satisfies `isinstance` and a type
+        checker and is rejected anyway — it is its own iterator, so
+        nothing can iterate it a second time, and it is unpicklable.
+        Pass the subscriber itself, not the iterator it returns and not
+        a factory for one.
     :raises asyncio.TimeoutError:
         Raised at context entry (``lazy=False``) or first
         `dispatch` (``lazy=True``) if ``quorum`` workers are not
