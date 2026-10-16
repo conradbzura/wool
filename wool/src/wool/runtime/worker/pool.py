@@ -207,12 +207,12 @@ class WorkerPool:
         on.
     :param quorum_timeout:
         Seconds to wait for ``quorum`` workers before raising
-        `asyncio.TimeoutError`. Forwarded to this pool's `WorkerProxy`,
-        which documents the bound and when it is inert. A timeout at
-        context entry (``lazy=False``) leaves the pool, never having
-        entered, unusable per its single-use semantics, so construct a
-        new pool to retry — and, where ``discovery`` was given as a
-        single-use instance, a fresh discovery instance with it. See the
+        `TimeoutError`. Forwarded to this pool's `WorkerProxy`, which
+        documents the bound and when it is inert. A timeout at context
+        entry (``lazy=False``) leaves the pool, never having entered,
+        unusable per its single-use semantics, so construct a new pool
+        to retry — and, where ``discovery`` was given as a single-use
+        instance, a fresh discovery instance with it. See the
         ``discovery`` parameter.
     :param shutdown_timeout:
         Maximum number of seconds to wait for spawned workers to stop
@@ -260,10 +260,19 @@ class WorkerPool:
     :raises ~wool.DiscoveryNamespaceInUse:
         At context entry, if ``discovery`` is a `~wool.LocalDiscovery`
         whose namespace a live owner already holds.
-    :raises asyncio.TimeoutError:
-        If the quorum wait does not complete within ``quorum_timeout``
-        — raised by the underlying `WorkerProxy` at context entry
-        (``lazy=False``) or first dispatch (``lazy=True``).
+    :raises TimeoutError:
+        Two waits raise it, and they differ in how they arrive. The
+        quorum wait raises it bare, from the underlying `WorkerProxy`
+        at context entry (``lazy=False``) or first dispatch
+        (``lazy=True``), when ``quorum`` workers are not admitted
+        within ``quorum_timeout``. A discovery publish raises it
+        wrapped in an ``ExceptionGroup`` when it does not acquire the
+        backend's cross-process lock in time — for
+        `~wool.LocalDiscovery`, within its ``lock_timeout``. Catching
+        both takes an ``except`` and an ``except*``. Teardown
+        announcements cannot raise it; see ``shutdown_timeout``.
+        ``asyncio.TimeoutError`` names this same class, not a second
+        one.
     :raises ~wool.DiscoveryNamespaceNotFound:
         If ``discovery`` borrows a `~wool.LocalDiscovery` namespace with
         no live owner, or its owner goes away while the pool is running.
@@ -288,24 +297,22 @@ class WorkerPool:
         ``tags`` reaches that metadata, so enough of them — or long
         enough ones — exhaust a block on any pool. Supply ``discovery``
         with a larger ``block_size`` to raise the ceiling.
-    :raises TimeoutError:
-        At context entry, **wrapped in an** ``ExceptionGroup`` — catch it
-        with ``except*``. If a discovery publish does not acquire the
-        backend's cross-process lock in time — for
-        `~wool.LocalDiscovery`, within its ``lock_timeout``. Teardown
-        announcements cannot raise it; see ``shutdown_timeout``.
     :raises ExceptionGroup:
         At context entry, wrapping every one of the above that a worker
         start can raise. Always, not only when several fail: workers are
         started under one `asyncio.gather` and the group is built for a
-        single failure as readily as for many, so the three entries above
-        are reachable this way and no other.
+        single failure as readily as for many, so
+        `~wool.DiscoveryCapacityExhausted` and
+        `~wool.DiscoveryBlockExhausted` are reachable this way and no
+        other.
 
-        `~wool.DiscoveryNamespaceNotFound` is the exception to that. It
-        arrives wrapped from a publish, and unwrapped from the publisher
-        bind at entry or from the subscriber bind under the quorum wait,
-        neither of which runs under the gather — so it is the one type
-        that needs both an ``except`` and an ``except*``.
+        Two types are the exception, and each needs both an ``except``
+        and an ``except*``. `~wool.DiscoveryNamespaceNotFound` arrives
+        wrapped from a publish and unwrapped from the publisher bind at
+        entry or the subscriber bind under the quorum wait.
+        `TimeoutError` arrives wrapped from a publish and unwrapped
+        from the quorum wait. Neither a bind nor the quorum wait runs
+        under the gather.
 
     **Basic ephemeral pool:**
 
