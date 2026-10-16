@@ -1025,14 +1025,18 @@ class LocalDiscovery(Discovery):
             directory = _namespace_directory(self._namespace)
             # The liveness lock goes first, so this owner never reports
             # as alive after its registry has stopped existing.
-            # `publish` consults that lock as its only oracle, inside a
-            # registry lock this purge does not take, so releasing the
-            # lock last would leave a window in which a cross-process
-            # publisher is told the owner lives, writes into an
-            # unlinked inode, and reports success for a write nobody
-            # can read. The claim still excludes a successor, and
-            # generation names are fresh per entry, so nothing depends
-            # on holding this across the removal.
+            # `publish` checks that lock together with `current()` —
+            # see the pair at its own call for what each one catches —
+            # inside a registry lock this purge does not take.
+            # Releasing the lock last would leave an instant where it
+            # reports the owner live and the files are already gone,
+            # leaving `current()` the only thing between a
+            # cross-process publisher and a write into an unlinked
+            # inode that reports success. The pair carries weight in
+            # both directions, so neither half may be dropped on the
+            # other's authority. The claim still excludes a successor,
+            # and generation names are fresh per entry, so nothing
+            # depends on holding this across the removal.
             _close_quietly(liveness)
             liveness = -1
             # The pointer next, so no borrower resolves this generation
