@@ -6,6 +6,7 @@ import inspect
 import os
 import pickle
 import re
+import resource
 import shutil
 import stat
 import struct
@@ -436,6 +437,20 @@ def _rejected_claim_is_raised(namespace):
 #: fraction of a second, which lowering the limit is what buys.
 _NESTED_DEPTH = 80
 _NESTED_HEADROOM = 50
+
+#: How wide a tree the breadth-sweep test plants, and how many
+#: descriptors it leaves the sweep beyond those already open. Wider than
+#: the headroom, so a sweep holding one per entry on the frontier runs
+#: out; the budget is measured rather than fixed, because the harness's
+#: own open files vary and a fixed one would either flake or prove
+#: nothing.
+_WIDE_BREADTH = 200
+_WIDE_FD_HEADROOM = 30
+
+#: How deep the cascade test nests one stranded entry. Deep enough that
+#: one warning per level above it would be unmistakable against the one
+#: warning the leak is owed.
+_CASCADE_DEPTH = 12
 
 #: Own a namespace in an independent interpreter until killed, so a test
 #: can take an owner away without any teardown of its own running — the
@@ -1029,6 +1044,197 @@ class TestLocalDiscovery:
 
         # Assert
         assert not directory.exists()
+
+    def test___exit___should_sweep_a_wide_namespace_within_its_descriptors(
+        self, namespace
+    ):
+        """Test a wide residue does not exhaust the descriptor table.
+
+        Given:
+            An owner whose namespace holds far more sibling directories
+            than the process has descriptors to spare, which a co-tenant
+            can plant under a world-writable root as readily as a deep
+            tree
+        When:
+            The owner exits
+        Then:
+            It should sweep every one of them, holding a descriptor per
+            level of depth rather than one per entry it has listed.
+        """
+        # Arrange
+        owner = LocalDiscovery(namespace)
+        owner.__enter__()
+        directory = namespace_directory(namespace)
+        root = os.open(directory, os.O_RDONLY)
+        try:
+            for index in range(_WIDE_BREADTH):
+                os.mkdir(f"d{index}", dir_fd=root)
+                child = os.open(
+                    f"d{index}",
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=root,
+                )
+                try:
+                    os.close(os.open("f", os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=child))
+                finally:
+                    os.close(child)
+        finally:
+            os.close(root)
+
+        # Act
+        #
+        # The budget is lowered rather than the tree widened past the
+        # real one, and restored in a `finally` because the rest of the
+        # session opens files of its own.
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        budget = len(os.listdir("/dev/fd")) + _WIDE_FD_HEADROOM
+        resource.setrlimit(resource.RLIMIT_NOFILE, (budget, hard))
+        try:
+            owner.__exit__(None, None, None)
+            # Recorded before the cleanup below, which would otherwise
+            # remove the residue this is asserting the absence of and
+            # make the assertion pass however the sweep went.
+            swept = not directory.exists()
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+            shutil.rmtree(directory, ignore_errors=True)
+
+        # Assert
+        assert swept
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root is not refused by a directory's mode"
+    )
+    def test___exit___should_warn_when_a_swept_subtree_cannot_be_entered(
+        self, namespace
+    ):
+        """Test a subtree the sweep cannot enter is reported.
+
+        Given:
+            An owner whose namespace holds a directory the sweep cannot
+            open, which is what another user's directory under a
+            world-writable root looks like
+        When:
+            The owner exits
+        Then:
+            It should report that subtree rather than passing it over as
+            a race, since abandoning one silently loses more than
+            failing to remove a single entry does.
+        """
+        # Arrange
+        owner = LocalDiscovery(namespace)
+        owner.__enter__()
+        directory = namespace_directory(namespace)
+        stranded = directory / "stranded"
+        stranded.mkdir()
+        (stranded / "held").write_text("")
+        os.chmod(stranded, 0o000)
+
+        # Act
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                owner.__exit__(None, None, None)
+        finally:
+            os.chmod(stranded, 0o700)
+            shutil.rmtree(directory, ignore_errors=True)
+
+        # Assert
+        reported = [str(warning.message) for warning in caught]
+        assert any("stranded" in message for message in reported), reported
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root is not refused by a directory's mode"
+    )
+    def test___exit___should_leak_no_descriptors_when_a_sweep_report_raises(
+        self, namespace
+    ):
+        """Test a promoted sweep warning strands no descriptor.
+
+        Given:
+            An owner whose namespace holds an entry the sweep cannot
+            remove, and a filter that turns the resulting
+            `ResourceWarning` into an exception mid-sweep
+        When:
+            The owner exits
+        Then:
+            It should close every descriptor the sweep had open, the
+            descriptors it holds being the cost of walking a tree
+            without resolving a path.
+        """
+        # Arrange
+        owner = LocalDiscovery(namespace)
+        owner.__enter__()
+        directory = namespace_directory(namespace)
+        for index in range(6):
+            sibling = directory / f"d{index}"
+            sibling.mkdir()
+            (sibling / "held").write_text("")
+        os.chmod(directory / "d3", 0o500)
+        before = set(os.listdir("/dev/fd"))
+
+        # Act
+        try:
+            with pytest.raises(ResourceWarning):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", ResourceWarning)
+                    owner.__exit__(None, None, None)
+        finally:
+            os.chmod(directory / "d3", 0o700)
+            shutil.rmtree(directory, ignore_errors=True)
+
+        # Assert
+        #
+        # Compared as a set rather than a count: the release closes the
+        # claim and the liveness descriptor on its way out whether the
+        # sweep reported or not, so the count legitimately falls. What
+        # must not happen is a descriptor the sweep opened surviving it.
+        assert not set(os.listdir("/dev/fd")) - before
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root is not refused by a directory's mode"
+    )
+    def test___exit___should_report_one_stranded_entry_once(self, namespace):
+        """Test a stranded entry is named once rather than per level.
+
+        Given:
+            An owner whose namespace holds one entry the sweep cannot
+            remove, nested far enough down that every directory above it
+            is left non-empty in turn
+        When:
+            The owner exits
+        Then:
+            It should name that entry once, so the report an operator
+            has to act on is not buried under one restatement per level.
+        """
+        # Arrange
+        owner = LocalDiscovery(namespace)
+        owner.__enter__()
+        directory = namespace_directory(namespace)
+        deepest = directory
+        for index in range(_CASCADE_DEPTH):
+            deepest = deepest / f"L{index}"
+            deepest.mkdir()
+        (deepest / "held").write_text("")
+        os.chmod(deepest, 0o500)
+
+        # Act
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                owner.__exit__(None, None, None)
+        finally:
+            os.chmod(deepest, 0o700)
+            shutil.rmtree(directory, ignore_errors=True)
+
+        # Assert
+        removals = [
+            str(warning.message)
+            for warning in caught
+            if "failed to remove" in str(warning.message)
+        ]
+        assert len(removals) == 1, removals
+        assert "held" in removals[0]
 
     def test_subscriber_with_default_instance(self, namespace):
         """Test subscriber property returns Subscriber instance.

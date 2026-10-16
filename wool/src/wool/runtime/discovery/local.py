@@ -2091,8 +2091,7 @@ def _remove_quietly(
     *,
     dir_fd: int | None = None,
     tolerate: tuple[int, ...] = (errno.ENOENT,),
-    stacklevel: int = 2,
-) -> None:
+) -> bool:
     """Remove one entry without raising, warning if it fails unexpectedly.
 
     Every removal in this module goes through here, so no teardown can
@@ -2132,9 +2131,13 @@ def _remove_quietly(
         from it; see `LocalDiscovery._release`.
     :param tolerate:
         Errnos that pass silently. Defaults to a missing entry alone.
-    :param stacklevel:
-        Frames to skip when attributing the warning, so a named wrapper
-        reports against its own caller rather than against itself.
+    :returns:
+        Whether the entry is gone — ``True`` when it was removed or was
+        already absent, ``False`` when it is still there. A caller
+        sweeping a tree needs this to tell a directory whose contents it
+        failed to remove from one it emptied, so that the enclosing
+        removal can tolerate a non-empty directory rather than naming
+        the same leak once per level; see `_purge`.
     """
     try:
         if dir_fd is None:
@@ -2142,12 +2145,18 @@ def _remove_quietly(
         else:
             remove(name, dir_fd=dir_fd)
     except OSError as error:
+        if error.errno == errno.ENOENT:
+            return True
         if error.errno not in tolerate:
+            # Attributed three frames out, so a named wrapper reports
+            # against its own caller rather than against itself.
             warnings.warn(
                 f"failed to remove {str(directory / name)!r}: {error}",
                 ResourceWarning,
-                stacklevel=stacklevel + 1,
+                stacklevel=3,
             )
+        return False
+    return True
 
 
 def _unlink_quietly(directory: Path, name: str, *, dir_fd: int | None = None) -> None:
@@ -2397,7 +2406,14 @@ def _purge(directory: Path, dir_fd: int) -> None:
     surfaces as a `ResourceWarning`; see `_remove_quietly`. What is left
     behind is a leak the caller cannot act on but an operator can, and a
     whole generation is the larger of the two leaks this module can
-    produce.
+    produce. A subtree this cannot descend into is reported for the same
+    reason, since abandoning one silently loses more than failing to
+    remove a single entry does.
+
+    One stranded entry is named once. A directory something was already
+    reported beneath cannot be emptied, so its own removal tolerates a
+    non-empty directory rather than reporting the same leak again at
+    every level above it.
 
     :param directory:
         The directory ``dir_fd`` holds, for naming entries in warnings.
@@ -2412,66 +2428,125 @@ def _purge(directory: Path, dir_fd: int) -> None:
     # would have absorbed it — it would have escaped `__exit__` and the
     # `atexit` handler, which is the one thing this promises not to do.
     #
-    # Tagged by the operation, as `shutil.rmtree` does. The seed is a
-    # scan alone: the caller's descriptor is the caller's to close, and
-    # the directory it holds is the caller's to remove.
+    # Tagged by the operation, as `shutil.rmtree` does. A child is opened
+    # when its own tag pops rather than when the listing names it, so at
+    # most one descriptor per level of *depth* is held. Opening during
+    # the listing held one per entry on the frontier instead, and the
+    # co-tenant who can plant a tree thousands deep can plant one
+    # thousands wide for the same reason — which would exhaust the
+    # process's descriptors rather than its stack, and take every
+    # unrelated `open` down with it. `shutil._rmtree_safe_fd` defers the
+    # open for this reason.
+    #
+    # The seed is a scan alone: the caller's descriptor is the caller's
+    # to close, and the directory it holds is the caller's to remove.
     stack: list[tuple[Any, Path, int, str]] = [(os.listdir, directory, dir_fd, "")]
-    while stack:
-        operation, reported, fd, name = stack.pop()
-        if operation is os.close:
-            os.close(fd)
-            continue
-        if operation is os.rmdir:
-            _remove_quietly(os.rmdir, reported, name, dir_fd=fd)
-            continue
-        try:
-            names = os.listdir(fd)
-        except OSError as error:
-            warnings.warn(
-                f"failed to list {str(reported)!r} to purge: {error}",
-                ResourceWarning,
-                stacklevel=2,
-            )
-            continue
-        for entry in names:
-            # Directory-ness is decided up front rather than inferred
-            # from the errno a failed unlink reports: `PermissionError`
-            # is `EPERM` or `EACCES`, and the sticky bit on a mode-1777
-            # root yields `EPERM` for another user's plain file too.
-            try:
-                status = os.stat(entry, dir_fd=fd, follow_symlinks=False)
-            except FileNotFoundError:
+    # Directories something was already reported beneath. Their own
+    # removal then tolerates a non-empty directory silently, so one
+    # stranded entry is named once rather than once per level above it.
+    reported_failures: set[Path] = set()
+    try:
+        while stack:
+            operation, reported, fd, name = stack.pop()
+            if operation is os.close:
+                _close_quietly(fd)
                 continue
+            if operation is os.rmdir:
+                tolerate = (errno.ENOENT,)
+                if reported / name in reported_failures:
+                    tolerate += (errno.ENOTEMPTY, errno.EEXIST)
+                if not _remove_quietly(
+                    os.rmdir, reported, name, dir_fd=fd, tolerate=tolerate
+                ):
+                    reported_failures.add(reported)
+                continue
+            if operation is os.open:
+                try:
+                    child = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fd,
+                    )
+                except OSError as error:
+                    # Narrowed to the races a listing cannot avoid: the
+                    # entry went away, or a symlink took its place so it
+                    # is no longer a directory. Anything else — a
+                    # permission the sticky bit denies on another user's
+                    # directory, a descriptor budget this process has
+                    # exhausted — leaves the whole subtree on disk,
+                    # which is the larger of the two leaks this module
+                    # can produce and has to be named rather than
+                    # passed over as a race.
+                    if error.errno not in (
+                        errno.ENOENT,
+                        errno.ELOOP,
+                        errno.ENOTDIR,
+                    ):
+                        warnings.warn(
+                            f"failed to descend into {str(reported)!r} "
+                            f"to purge: {error}",
+                            ResourceWarning,
+                            stacklevel=2,
+                        )
+                        reported_failures.add(reported.parent)
+                    continue
+                # Pushed so they pop in this order: the child's own
+                # scan, then its descriptor's close, then the removal of
+                # the child from its parent. A directory is removed only
+                # once emptied, which is what the ordering buys — and
+                # the removal resolves against the *parent's* descriptor
+                # rather than the child's, so closing the child first is
+                # correct rather than a hazard.
+                stack.append((os.rmdir, reported.parent, fd, name))
+                stack.append((os.close, reported, child, name))
+                stack.append((os.listdir, reported, child, ""))
+                continue
+            try:
+                names = os.listdir(fd)
             except OSError as error:
-                # Nothing was removed, so this does not go through the
-                # removal primitive and does not claim a removal failed.
                 warnings.warn(
-                    f"failed to inspect {str(reported / entry)!r}: {error}",
+                    f"failed to list {str(reported)!r} to purge: {error}",
                     ResourceWarning,
                     stacklevel=2,
                 )
+                reported_failures.add(reported)
                 continue
-            if not stat.S_ISDIR(status.st_mode):
-                _remove_quietly(os.unlink, reported, entry, dir_fd=fd)
-                continue
-            try:
-                child = os.open(
-                    entry,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=fd,
-                )
-            except OSError:
-                # Replaced by a symlink or removed since it was listed.
-                continue
-            # Pushed so they pop in this order: the child's own scan,
-            # then its descriptor's close, then the removal of the child
-            # from this directory. A directory is removed only once
-            # emptied, which is what the ordering buys — and the removal
-            # resolves against *this* descriptor rather than the child's,
-            # so closing the child first is correct rather than a hazard.
-            stack.append((os.rmdir, reported, fd, entry))
-            stack.append((os.close, reported, child, entry))
-            stack.append((os.listdir, reported / entry, child, ""))
+            for entry in names:
+                # Directory-ness is decided up front rather than
+                # inferred from the errno a failed unlink reports:
+                # `PermissionError` is `EPERM` or `EACCES`, and the
+                # sticky bit on a mode-1777 root yields `EPERM` for
+                # another user's plain file too.
+                try:
+                    status = os.stat(entry, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    # Nothing was removed, so this does not go through
+                    # the removal primitive and does not claim a removal
+                    # failed.
+                    warnings.warn(
+                        f"failed to inspect {str(reported / entry)!r}: {error}",
+                        ResourceWarning,
+                        stacklevel=2,
+                    )
+                    reported_failures.add(reported)
+                    continue
+                if not stat.S_ISDIR(status.st_mode):
+                    if not _remove_quietly(os.unlink, reported, entry, dir_fd=fd):
+                        reported_failures.add(reported)
+                    continue
+                stack.append((os.open, reported / entry, fd, entry))
+    finally:
+        # Nothing above raises on its own, but a `ResourceWarning` a
+        # filter has promoted to an error, or an interrupt landing
+        # between pops, would otherwise leave every descriptor still on
+        # the stack open — the recursion this replaced closed each child
+        # in a `finally`, and the never-raises contract is worth no less
+        # structurally than it was.
+        for operation, _, fd, _ in stack:
+            if operation is os.close:
+                _close_quietly(fd)
 
 
 @asynccontextmanager
