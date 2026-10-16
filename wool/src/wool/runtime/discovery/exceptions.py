@@ -62,10 +62,12 @@ class DiscoveryBlockExhausted(WoolError):
     worker's first registration and a re-registration writes into that
     same block, and the size itself is the one the namespace's owner
     stamped — no publisher chooses it, so no publisher can enlarge it.
-    Raising the ceiling means entering the namespace as an owner with a
-    larger `LocalDiscovery` ``block_size``, which is a new generation
-    that every borrower re-binds to; see
-    `LocalDiscovery.Publisher.publish`.
+    The ceiling is therefore settled where the namespace is entered, by
+    its owner's `LocalDiscovery` ``block_size``, and cannot be raised
+    for a namespace already in use: a second entry while the incumbent
+    owner lives raises `DiscoveryNamespaceInUse`. See `LocalDiscovery`
+    for who owns a namespace's artifacts and what a borrower of one may
+    assume.
 
     :param size:
         The attempted payload size in bytes.
