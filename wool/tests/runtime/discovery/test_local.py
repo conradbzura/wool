@@ -3269,6 +3269,35 @@ class TestLocalDiscoveryPublisher:
             assert events == []
 
     @pytest.mark.asyncio
+    async def test_publish_should_raise_when_its_owner_was_killed(
+        self, namespace, metadata, killed_owner
+    ):
+        """Test a publisher refuses to write for an owner that was killed.
+
+        Given:
+            A publisher bound while an owner in another interpreter was
+            live, whose owner is then killed without running any
+            teardown, so the registry it published survives and the
+            lock the kernel dropped is the only report of the loss
+        When:
+            The publisher publishes
+        Then:
+            It should raise `DiscoveryNamespaceNotFound` naming the
+            namespace, rather than writing into a registry no live
+            owner serves.
+        """
+        # Arrange
+        with killed_owner() as owner:
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                owner.kill()
+                owner.wait(timeout=30)
+
+                # Act & assert
+                with pytest.raises(DiscoveryNamespaceNotFound) as excinfo:
+                    await publisher.publish("worker-added", metadata)
+                assert excinfo.value.namespace == namespace
+
+    @pytest.mark.asyncio
     async def test___aexit___should_reclaim_its_blocks_when_the_owner_has_exited(
         self, atexit_recorder, borrowed_publisher
     ):
