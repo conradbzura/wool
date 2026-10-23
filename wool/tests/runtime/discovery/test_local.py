@@ -417,6 +417,29 @@ _LIFECYCLE_FORESTS = st.recursive(
 )
 
 
+def _enter_lifecycle_forest(namespace, forest, owned=False):
+    """Enter one claim on the namespace per node, nesting children.
+
+    A node entered while the namespace is free becomes its owner and
+    holds it for the duration of its children; a node entered while a
+    generation is live is a claim that generation's owner must reject,
+    and its children run on under the incumbent.
+
+    Each outcome is asserted rather than suppressed, so forest *depth*
+    discriminates: every nested node is a live rejection, which is what
+    ties these forests to the single-owner model rather than to teardown
+    hygiene alone.
+    """
+    for children in forest:
+        with ExitStack() as generation:
+            if owned:
+                with pytest.raises(DiscoveryNamespaceInUse):
+                    generation.enter_context(LocalDiscovery(namespace))
+            else:
+                generation.enter_context(LocalDiscovery(namespace))
+            _enter_lifecycle_forest(namespace, children, owned=True)
+
+
 def _worker():
     """Return WorkerMetadata for a distinct worker."""
     return WorkerMetadata(
@@ -7483,29 +7506,6 @@ class TestLocalDiscoverySubscriber:
 
         # Assert
         assert outcomes == ["raised", "raised", "raised"]
-
-
-def _enter_lifecycle_forest(namespace, forest, owned=False):
-    """Enter one claim on the namespace per node, nesting children.
-
-    A node entered while the namespace is free becomes its owner and
-    holds it for the duration of its children; a node entered while a
-    generation is live is a claim that generation's owner must reject,
-    and its children run on under the incumbent.
-
-    Each outcome is asserted rather than suppressed, so forest *depth*
-    discriminates: every nested node is a live rejection, which is what
-    ties these forests to the single-owner model rather than to teardown
-    hygiene alone.
-    """
-    for children in forest:
-        with ExitStack() as generation:
-            if owned:
-                with pytest.raises(DiscoveryNamespaceInUse):
-                    generation.enter_context(LocalDiscovery(namespace))
-            else:
-                generation.enter_context(LocalDiscovery(namespace))
-            _enter_lifecycle_forest(namespace, children, owned=True)
 
 
 class TestSubscriberLiveness:
