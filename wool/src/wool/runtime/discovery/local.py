@@ -90,7 +90,7 @@ _LIVENESS_INTERVAL: Final[float] = 5.0
 #: it is reported rather than waited out; see `_retire_observer`.
 _OBSERVER_JOIN_TIMEOUT: Final[float] = 5.0
 
-logger = logging.getLogger(__name__)
+_log = logging.getLogger(__name__)
 
 
 class _Watchdog(FileSystemEventHandler):
@@ -1819,7 +1819,7 @@ class LocalDiscovery(Discovery):
                 return
             scans = carried[uid] = carried.get(uid, 0) + 1
             if scans >= _CARRY_FORWARD_LIMIT:
-                logger.warning(
+                _log.warning(
                     "Worker %s in discovery namespace %r has been unreadable for "
                     "%d consecutive scans; still reporting its last known metadata",
                     uid,
