@@ -992,14 +992,17 @@ class LocalDiscovery(Discovery):
         liveness = os.open(generation, os.O_RDONLY)
         try:
             fcntl.flock(liveness, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            staging = generation / _STAGING
-            descriptor = os.open(staging, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+            # Created zero-filled, so every slot already reads as
+            # `_NULL_REF`, and exclusively: the generation name above is
+            # fresh per entry, so a staging file that already exists
+            # means that name collided rather than that an earlier
+            # attempt left one behind.
+            staging = _File.create(
+                generation / _STAGING,
+                _HEADER_SIZE + self._capacity * _REF_WIDTH,
+            )
             try:
-                # Truncation zero-fills, so every slot already reads as
-                # `_NULL_REF`.
-                os.ftruncate(descriptor, _HEADER_SIZE + self._capacity * _REF_WIDTH)
-                os.pwrite(
-                    descriptor,
+                staging.write(
                     struct.pack(
                         _HEADER_FORMAT,
                         _HEADER_MAGIC,
@@ -1009,8 +1012,8 @@ class LocalDiscovery(Discovery):
                     0,
                 )
             finally:
-                os.close(descriptor)
-            os.replace(staging, generation / _REGISTRY)
+                staging.close()
+            os.replace(staging.path, generation / _REGISTRY)
             (generation / _NOTIFY).touch()
             # Published last and atomically, so no borrower resolves a
             # generation before its registry is stamped.
