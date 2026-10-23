@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers import ROOT_DIRNAME
 from tests.helpers import discovery_root
 from tests.helpers import namespace_directory
 from tests.helpers import registry_path
@@ -1222,7 +1223,7 @@ class TestNamespaceResidue:
         # fixed `wool/` entry, so the root the namespaces sit beside gains
         # nothing per lifecycle. This is what makes `rm -rf <root>/wool`
         # a complete reclaim rather than a partial one.
-        assert [entry for entry in root.parent.glob("wool-*")] == []
+        assert [entry for entry in root.parent.glob(f"{ROOT_DIRNAME}-*")] == []
 
 
 @pytest.mark.integration

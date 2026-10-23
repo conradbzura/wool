@@ -33,6 +33,7 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from watchdog.observers import Observer
 
+from tests.helpers import CURRENT
 from tests.helpers import block_path
 from tests.helpers import blocks_directory
 from tests.helpers import discovery_root
@@ -2917,7 +2918,7 @@ class TestLocalDiscovery:
             entries = sorted(
                 entry.name for entry in namespace_directory(namespace).iterdir()
             )
-            assert entries == sorted(["current", live.name])
+            assert entries == sorted([CURRENT, live.name])
 
         assert not namespace_directory(namespace).exists()
 

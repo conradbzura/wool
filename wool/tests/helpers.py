@@ -2,8 +2,6 @@ import asyncio
 import datetime
 import ipaddress
 import os
-import sys
-import tempfile
 import uuid
 from collections.abc import Callable
 from collections.abc import Coroutine
@@ -21,6 +19,16 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 import wool
+from wool.runtime.discovery import local
+
+#: The entry every namespace's directory sits under, and the name of
+#: the pointer inside one. Taken from `wool.LocalDiscovery`'s own module
+#: rather than respelled, so the two cannot come to name different
+#: paths. A copy here survives a rename by pointing at a path nothing
+#: creates, which is worse than failing: an assertion that no residue
+#: remains then holds however much the product left behind.
+ROOT_DIRNAME = local._ROOT_DIRNAME
+CURRENT = local._CURRENT
 
 #: Tasks scheduled through `plant`, which owns their retention.
 planted_tasks: list[asyncio.Task] = []
@@ -65,14 +73,12 @@ class CertificateFiles(NamedTuple):
 def discovery_root() -> Path:
     """Return the directory every `wool.LocalDiscovery` namespace lives under.
 
-    Mirrors the module's own choice between the two candidate roots —
-    ``/dev/shm`` where Linux provides it, the temporary directory
-    otherwise — rather than reaching into the module to ask.
+    Asks the module which root it chose rather than repeating the
+    choice, so the two cannot disagree: the module resolves its root
+    once and caches it, and a copy here would answer for a different
+    temporary directory the moment one is set after that.
     """
-    shm = Path("/dev/shm")
-    if sys.platform.startswith("linux") and os.access(shm, os.W_OK | os.X_OK):
-        return shm.resolve() / "wool"
-    return Path(tempfile.gettempdir()).resolve() / "wool"
+    return local._root() / ROOT_DIRNAME
 
 
 def namespace_directory(namespace: str) -> Path:
@@ -94,7 +100,7 @@ def generation_directory(namespace: str) -> Path:
     that is live right now published.
     """
     directory = namespace_directory(namespace)
-    return directory / os.readlink(directory / "current")
+    return directory / os.readlink(directory / CURRENT)
 
 
 def registry_path(namespace: str) -> Path:
@@ -104,17 +110,17 @@ def registry_path(namespace: str) -> Path:
     needs the file an owner publishes and a publisher locks says which
     file it means without spreading the name.
     """
-    return generation_directory(namespace) / "registry"
+    return generation_directory(namespace) / local._REGISTRY
 
 
 def notify_path(namespace: str) -> Path:
     """Return the path of the file a namespace's subscribers watch."""
-    return generation_directory(namespace) / "notify"
+    return generation_directory(namespace) / local._NOTIFY
 
 
 def blocks_directory(namespace: str) -> Path:
     """Return the directory holding a namespace's worker metadata blocks."""
-    return generation_directory(namespace) / "blocks"
+    return generation_directory(namespace) / local._BLOCKS
 
 
 def block_path(namespace: str, uid: uuid.UUID) -> Path:
