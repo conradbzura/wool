@@ -150,6 +150,23 @@ def record_peer_loop() -> asyncio.AbstractEventLoop:
     return peer_loop
 
 
+async def borrower_binds(namespace: str) -> bool:
+    """Return whether a fresh borrowing publisher binds ``namespace``.
+
+    Answers what a borrower arriving in another process would find at
+    the moment it is called, so a test can distinguish a namespace an
+    owner still serves from one whose artifacts merely survive it.
+    Synchronous callers reach it through `asyncio.run`, which also
+    gives a probe running inside a patched system call a loop of its
+    own.
+    """
+    try:
+        async with wool.LocalDiscovery.Publisher(namespace):
+            return True
+    except wool.DiscoveryNamespaceNotFound:
+        return False
+
+
 async def park_then_plant(*factories: Callable[[], Coroutine[Any, Any, Any]]) -> None:
     """Await until cancelled, then plant each factory's coroutine in
     order and re-raise.

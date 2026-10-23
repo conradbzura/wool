@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers import ROOT_DIRNAME
+from tests.helpers import borrower_binds
 from tests.helpers import discovery_root
 from tests.helpers import namespace_directory
 from tests.helpers import registry_path
@@ -622,7 +623,7 @@ class TestCrossProcessOwnership:
                 # nothing to bind. Without this the two arms would
                 # assert the same thing and the parametrization would
                 # carry no information.
-                assert not asyncio.run(_binds(namespace))
+                assert not asyncio.run(borrower_binds(namespace))
             else:
                 owner.kill()
                 owner.wait(timeout=_TIMEOUT)
@@ -957,7 +958,7 @@ class TestCrossProcessBorrowing:
             assert "Traceback" not in borrower.stderr, borrower.stderr
             # The owner is still inside its context, so a fresh
             # borrower must still be able to bind.
-            assert asyncio.run(_binds(namespace))
+            assert asyncio.run(borrower_binds(namespace))
 
     @pytest.mark.asyncio
     async def test_publish_should_strand_a_borrower_across_processes(self, namespaces):
@@ -1169,7 +1170,7 @@ class TestNamespaceResidue:
                 borrower.wait(timeout=_TIMEOUT)
 
             # Assert
-            assert not await _binds(namespace)
+            assert not await borrower_binds(namespace)
             assert not namespace_directory(namespace).exists()
         finally:
             release_subprocess(borrower)
@@ -1262,7 +1263,7 @@ class TestCrossProcessTeardown:
             # Vacuity guard — two owners really are live at once, which
             # is the only state in which the first one's teardown could
             # reach the second one's files.
-            assert asyncio.run(_binds(namespace))
+            assert asyncio.run(borrower_binds(namespace))
 
             # Act
             assert owner.stdin is not None
@@ -1271,7 +1272,7 @@ class TestCrossProcessTeardown:
             assert owner.wait(timeout=_TIMEOUT) == 0
 
             # Assert
-            assert asyncio.run(_binds(namespace))
+            assert asyncio.run(borrower_binds(namespace))
             assert namespace_directory(namespace).exists()
         finally:
             release_subprocess(owner)
@@ -1397,15 +1398,6 @@ class TestCrossProcessTeardown:
             if owner.poll() is None:
                 owner.kill()
                 owner.wait(timeout=10)
-
-
-async def _binds(namespace: str) -> bool:
-    """Return whether a fresh borrowing publisher can bind ``namespace``."""
-    try:
-        async with LocalDiscovery.Publisher(namespace):
-            return True
-    except DiscoveryNamespaceNotFound:
-        return False
 
 
 async def _discovers(discovery: LocalDiscovery, uid, timeout: float = 10.0) -> bool:

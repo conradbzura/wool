@@ -36,6 +36,7 @@ from watchdog.observers import Observer
 from tests.helpers import CURRENT
 from tests.helpers import block_path
 from tests.helpers import blocks_directory
+from tests.helpers import borrower_binds
 from tests.helpers import discovery_root
 from tests.helpers import generation_directory
 from tests.helpers import namespace_directory
@@ -504,24 +505,6 @@ async def _collect_into(subscriber, events):
     """Append every event a subscriber yields to ``events``, until cancelled."""
     async for event in subscriber:
         events.append(event)
-
-
-def _borrower_binds(namespace):
-    """Return whether a fresh borrowing publisher binds ``namespace``.
-
-    Runs its own loop so a synchronous test — and a probe reaching in
-    from inside a patched system call — can ask what a borrower in
-    another process would find at that moment.
-    """
-
-    async def bind():
-        try:
-            async with LocalDiscovery.Publisher(namespace):
-                return True
-        except DiscoveryNamespaceNotFound:
-            return False
-
-    return asyncio.run(bind())
 
 
 def _rejected_claim(namespace):
@@ -1999,7 +1982,7 @@ class TestLocalDiscovery:
         probes = []
 
         def replace(source, target, **kwargs):
-            probes.append(_borrower_binds(namespace))
+            probes.append(asyncio.run(borrower_binds(namespace)))
             return real_replace(source, target, **kwargs)
 
         mocker.patch.object(os, "replace", replace)
@@ -2008,7 +1991,7 @@ class TestLocalDiscovery:
         with LocalDiscovery(namespace):
             # Assert
             assert probes == [False]
-            assert _borrower_binds(namespace)
+            assert asyncio.run(borrower_binds(namespace))
 
     def test___exit___should_disown_the_namespace_when_a_fork_exits(self, namespace):
         """Test a fork disowns the claim it inherited instead of reclaiming.
@@ -2048,7 +2031,7 @@ class TestLocalDiscovery:
 
             # Assert
             assert os.waitstatus_to_exitcode(status) == 0
-            assert _borrower_binds(namespace)
+            assert asyncio.run(borrower_binds(namespace))
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 owner.close()
@@ -2057,7 +2040,7 @@ class TestLocalDiscovery:
                 for warning in caught
                 if issubclass(warning.category, ResourceWarning)
             ] == []
-            assert not _borrower_binds(namespace)
+            assert not asyncio.run(borrower_binds(namespace))
             assert not namespace_directory(namespace).exists()
         finally:
             owner.close()
@@ -2093,7 +2076,7 @@ class TestLocalDiscovery:
 
             # Assert
             assert namespace_directory(namespace).exists()
-            assert _borrower_binds(namespace)
+            assert asyncio.run(borrower_binds(namespace))
         finally:
             stale.close()
             successor.close()
