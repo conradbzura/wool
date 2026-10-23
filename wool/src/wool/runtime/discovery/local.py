@@ -352,6 +352,11 @@ class _Binding:
     `LocalDiscovery` for the borrowing contract and `_owner_alive` for
     how a dead owner is detected.
 
+    :param namespace:
+        The namespace this binding was made against. Every failure a
+        borrower reports about its hold names this namespace, so one
+        binding carries one answer rather than each holder keeping its
+        own.
     :param generation:
         The generation directory this binding holds.
     :param header:
@@ -362,9 +367,12 @@ class _Binding:
         A descriptor on that directory, pinned for the binding's life.
     """
 
-    __slots__ = ("generation", "header", "_liveness")
+    __slots__ = ("namespace", "generation", "header", "_liveness")
 
-    def __init__(self, generation: Path, header: _Header, liveness: int) -> None:
+    def __init__(
+        self, namespace: str, generation: Path, header: _Header, liveness: int
+    ) -> None:
+        self.namespace = namespace
         self.generation = generation
         self.header = header
         self._liveness = liveness
@@ -399,7 +407,7 @@ class _Binding:
             liveness = os.open(generation, os.O_RDONLY)
         except (FileNotFoundError, NotADirectoryError) as error:
             raise DiscoveryNamespaceNotFound(namespace) from error
-        binding = cls(generation, header, liveness)
+        binding = cls(namespace, generation, header, liveness)
         # Proving the owner lives is the whole of what a bind adds to
         # resolving the pointer; see `_owner_alive`.
         #
@@ -425,6 +433,37 @@ class _Binding:
             True while that owner's process holds the generation.
         """
         return _owner_alive(self._liveness)
+
+    def require_live(self, registry: _File) -> None:
+        """Fail unless this binding's owner still serves ``registry``.
+
+        A borrower may act on what it reads from ``registry`` only
+        while this returns, and the window it clears is the instant it
+        is called: an owner that exits immediately afterwards is the
+        case the caller's next call reports, not this one.
+
+        :param registry:
+            A handle on this binding's generation, opened by the
+            caller.
+        :raises DiscoveryNamespaceNotFound:
+            If that handle's path no longer names the file it holds, or
+            the owner this binding was made against has gone.
+
+        .. rubric:: Implementation notes
+
+        Both oracles, because each sees a loss the other cannot. The
+        liveness lock reports an owner that died holding a generation,
+        and `_File.current` reports an inode whose name an owner
+        already unlinked — which is what a live owner's own teardown
+        does before it drops the lock. The pair therefore carries
+        weight in both directions, and neither half may be dropped on
+        the other's authority. Asking only one of them is how a
+        publisher and a subscriber come to disagree about what a
+        missing generation means, which is the disagreement binding
+        through one primitive exists to prevent.
+        """
+        if not registry.current() or not self.alive():
+            raise DiscoveryNamespaceNotFound(self.namespace)
 
     def close(self) -> None:
         """Release the descriptor this binding pins.
@@ -1024,19 +1063,17 @@ class LocalDiscovery(Discovery):
         try:
             directory = _namespace_directory(self._namespace)
             # The liveness lock goes first, so this owner never reports
-            # as alive after its registry has stopped existing.
-            # `publish` checks that lock together with `current()` —
-            # see the pair at its own call for what each one catches —
-            # inside a registry lock this purge does not take.
-            # Releasing the lock last would leave an instant where it
-            # reports the owner live and the files are already gone,
-            # leaving `current()` the only thing between a
-            # cross-process publisher and a write into an unlinked
-            # inode that reports success. The pair carries weight in
-            # both directions, so neither half may be dropped on the
-            # other's authority. The claim still excludes a successor,
-            # and generation names are fresh per entry, so nothing
-            # depends on holding this across the removal.
+            # as alive after its registry has stopped existing. A
+            # borrower checks that lock together with the registry's own
+            # name, through `_Binding.require_live`, inside a registry
+            # lock this purge does not take. Releasing the lock last
+            # would leave an instant where it reports the owner live and
+            # the files are already gone, leaving that one name the only
+            # thing between a cross-process publisher and a write into
+            # an unlinked inode that reports success. The claim still
+            # excludes a successor, and generation names are fresh per
+            # entry, so nothing depends on holding this across the
+            # removal.
             _close_quietly(liveness)
             liveness = -1
             # The pointer next, so no borrower resolves this generation
@@ -1260,18 +1297,8 @@ class LocalDiscovery(Discovery):
                 ):
                     # Under the lock, so a write never lands in a
                     # registry whose owner went away while this publish
-                    # was waiting for it; see `_owner_alive`.
-                    #
-                    # Both oracles, which is the pair a subscriber
-                    # checks at the same decision point. The liveness
-                    # lock alone cannot see an owner that has already
-                    # unlinked this registry, and `current()` is what
-                    # detects an inode with no name — so asking only
-                    # one of them is how a publisher and a subscriber
-                    # come to disagree about what a missing generation
-                    # means.
-                    if not registry.current() or not binding.alive():
-                        raise DiscoveryNamespaceNotFound(self._namespace)
+                    # was waiting for it.
+                    binding.require_live(registry)
                     match type:
                         case "worker-added":
                             await self._add(metadata, serialized, registry)
@@ -1668,11 +1695,8 @@ class LocalDiscovery(Discovery):
                     notification.clear()
                     # Before every read, so a borrower that outlived
                     # its owner fails here rather than serving the
-                    # snapshot it last saw. `current` catches a reclaimed
-                    # or superseded generation, `_owner_alive` an owner
-                    # that died holding one.
-                    if not registry.current() or not binding.alive():
-                        raise DiscoveryNamespaceNotFound(self._namespace)
+                    # snapshot it last saw.
+                    binding.require_live(registry)
                     discovered_workers: dict[str, WorkerMetadata] = {}
                     for _, slot in _iter_slots(registry):
                         if slot == _NULL_REF:
@@ -1740,10 +1764,7 @@ class LocalDiscovery(Discovery):
                 except asyncio.TimeoutError:
                     if deadline is not None and loop.time() >= deadline:
                         return
-                    # See the same pair at the top of the scan loop for
-                    # what each of the two checks catches.
-                    if not registry.current() or not binding.alive():
-                        raise DiscoveryNamespaceNotFound(self._namespace)
+                    binding.require_live(registry)
                 else:
                     return
 
