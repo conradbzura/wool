@@ -6293,6 +6293,73 @@ class TestLocalDiscoverySubscriber:
                             await seen.wait()
                             seen.clear()
 
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"),
+        reason=(
+            "the bound is only falsifiable on a watch backend that does not batch "
+            "events before delivery; a batching backend collapses the burst into a "
+            "single scan, which reports every publish and nothing more"
+        ),
+    )
+    @pytest.mark.asyncio
+    async def test___aiter___should_bound_rescans_when_publishes_burst(self, namespace):
+        """Test a burst of publishes does not cost a rescan each.
+
+        Given:
+            A subscriber already iterating a namespace, and a publisher
+            adding sixteen workers in one gathered burst
+        When:
+            Every one of those workers has been reported
+        Then:
+            It should have emitted events bounded by a small multiple of
+            the workers published, rather than a rescan's worth of
+            worker-updated per publish, which grows with the product of
+            the burst and the workers already registered.
+        """
+        # Arrange
+        workers = [
+            WorkerMetadata(
+                uid=uuid.uuid4(),
+                address=f"localhost:{50100 + index}",
+                pid=index,
+                version="1.0",
+            )
+            for index in range(16)
+        ]
+        events = []
+        added = set()
+        # Snapshotted inside the collector rather than read after the
+        # wait, so the count is the one standing when the last worker
+        # arrived rather than whatever a later scan has added to it.
+        emitted = []
+        complete = asyncio.Event()
+
+        async def collect(subscriber):
+            async for event in subscriber:
+                events.append(event)
+                if event.type == "worker-added":
+                    added.add(event.metadata.uid)
+                if len(added) == len(workers) and not emitted:
+                    emitted.append(len(events))
+                    complete.set()
+
+        with LocalDiscovery(namespace):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                subscriber = LocalDiscovery.Subscriber(namespace)
+                async with _collecting(subscriber, collect):
+                    # Act
+                    await asyncio.gather(
+                        *(
+                            publisher.publish("worker-added", worker)
+                            for worker in workers
+                        )
+                    )
+                    async with asyncio.timeout(30):
+                        await complete.wait()
+
+                    # Assert
+                    assert emitted[0] <= 4 * len(workers)
+
     @pytest.mark.asyncio
     async def test___aiter___should_raise_not_found_when_the_watch_cannot_start(
         self, namespace, mocker

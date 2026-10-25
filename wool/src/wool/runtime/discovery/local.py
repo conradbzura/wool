@@ -130,6 +130,15 @@ class _Watchdog(FileSystemEventHandler):
     polls rather than blocks, so each wakes a scan of its own. See
     `_lock`.
 
+    What a burst of those wakes costs is the watch backend's to decide
+    and is not uniform across platforms. A backend that batches events
+    before delivering them collapses the burst before the subscriber
+    rescans, leaving a handful of scans however many publishes arrived;
+    one that delivers each event as it happens leaves the scan count
+    following the publish count instead. Every scan reads every
+    registered worker's block, so on the latter what a burst costs grows
+    with the burst times the workers already registered.
+
     :param notification:
         asyncio.Event to set when the notification file is modified.
     :param watchdog:
