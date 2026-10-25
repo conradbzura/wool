@@ -260,6 +260,10 @@ class WorkerPool:
     :raises ~wool.DiscoveryNamespaceInUse:
         At context entry, if ``discovery`` is a `~wool.LocalDiscovery`
         whose namespace a live owner already holds.
+    :raises ~wool.DiscoveryNamespaceContended:
+        At context entry, if ``discovery`` is a `~wool.LocalDiscovery`
+        whose namespace directory is replaced faster than the entry can
+        claim it.
     :raises TimeoutError:
         Two waits raise it, and they differ in how they arrive. The
         quorum wait raises it bare, from the underlying `WorkerProxy`

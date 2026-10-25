@@ -46,6 +46,7 @@ from wool.runtime.discovery import local
 from wool.runtime.discovery.base import DiscoverySubscriberLike
 from wool.runtime.discovery.exceptions import DiscoveryBlockExhausted
 from wool.runtime.discovery.exceptions import DiscoveryCapacityExhausted
+from wool.runtime.discovery.exceptions import DiscoveryNamespaceContended
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceInUse
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceNotFound
 from wool.runtime.discovery.exceptions import DiscoveryWorkerNotFound
@@ -2207,6 +2208,39 @@ class TestLocalDiscovery:
             # Assert
             assert discovery.namespace == namespace
             assert vanished
+
+    def test___enter___should_raise_when_the_directory_is_replaced_repeatedly(
+        self, namespace, mocker
+    ):
+        """Test entry gives up rather than spinning on a replaced directory.
+
+        Given:
+            A namespace whose directory never matches the one a claim
+            was taken on, as a co-tenant replacing it faster than entry
+            can claim it would produce
+        When:
+            An owner claims the namespace
+        Then:
+            It should raise DiscoveryNamespaceContended naming the
+            namespace after exactly the capped number of attempts,
+            rather than retrying without end on the caller's thread.
+        """
+        # Arrange
+        checks = []
+
+        def samestat(claimed, named):
+            checks.append(None)
+            return False
+
+        mocker.patch.object(os.path, "samestat", samestat)
+        mocker.patch.object(local, "_CLAIM_ATTEMPT_LIMIT", 3)
+
+        # Act & assert
+        with pytest.raises(DiscoveryNamespaceContended) as excinfo:
+            with LocalDiscovery(namespace):
+                pass
+        assert excinfo.value.namespace == namespace
+        assert len(checks) == 3
 
     def test___enter___should_release_the_claim_when_the_registry_cannot_be_written(
         self, namespace, mocker

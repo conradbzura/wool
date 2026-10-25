@@ -121,6 +121,33 @@ class DiscoveryNamespaceInUse(WoolError):
 
 
 # public
+class DiscoveryNamespaceContended(WoolError):
+    """Raised when a namespace's claim could not be taken.
+
+    The namespace's directory was replaced under an entry more times
+    than it retries, so no claim it took ever named the directory the
+    namespace's path resolves to. Unlike `DiscoveryNamespaceInUse`, no
+    process holds the claim: entry failed because the directory kept
+    changing underneath it, not because anything owns it. A retry meets
+    the same contention, so the remedy is a root nothing else writes
+    to. See `LocalDiscovery` for the ownership contract.
+
+    :param namespace:
+        The namespace whose claim could not be taken.
+    """
+
+    def __init__(self, namespace: str):
+        self.namespace = namespace
+        super().__init__(namespace)
+
+    def __str__(self) -> str:
+        return (
+            f"Discovery namespace {self.namespace!r} was replaced faster than it "
+            "could be claimed"
+        )
+
+
+# public
 class DiscoveryNamespaceNotFound(WoolError):
     """Raised when no live owner serves a borrower's binding.
 

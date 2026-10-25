@@ -12,6 +12,7 @@ import wool
 from wool.runtime.context.exceptions import SerializationWarning
 from wool.runtime.discovery.exceptions import DiscoveryBlockExhausted
 from wool.runtime.discovery.exceptions import DiscoveryCapacityExhausted
+from wool.runtime.discovery.exceptions import DiscoveryNamespaceContended
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceInUse
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceNotFound
 from wool.runtime.discovery.exceptions import DiscoveryWorkerNotFound
@@ -29,6 +30,7 @@ _RECONSTRUCTION_CASES = [
         DiscoveryWorkerNotFound, (uuid.UUID(int=7),), ("uid",), id="worker-not-found"
     ),
     pytest.param(DiscoveryNamespaceInUse, ("ns",), ("namespace",), id="in-use"),
+    pytest.param(DiscoveryNamespaceContended, ("ns",), ("namespace",), id="contended"),
     pytest.param(DiscoveryNamespaceNotFound, ("ns",), ("namespace",), id="not-found"),
 ]
 
@@ -373,6 +375,42 @@ class TestDiscoveryNamespaceInUse:
         assert str(restored) == str(error)
 
 
+class TestDiscoveryNamespaceContended:
+    @given(namespace=st.text())
+    @settings(max_examples=100)
+    def test___init___should_expose_its_namespace_across_the_argument_domain(
+        self, namespace
+    ):
+        """Test field exposure and message content over the argument.
+
+        Given:
+            Any namespace.
+        When:
+            A DiscoveryNamespaceContended is constructed from it.
+        Then:
+            It should expose the namespace unchanged, carry it as its
+            sole argument, and render exactly the message quoting it,
+            naming the replacement that defeated the claim rather than
+            an owner holding it.
+        """
+        # Act
+        error = DiscoveryNamespaceContended(namespace)
+
+        # Assert
+        assert error.namespace == namespace
+        assert error.args == (namespace,)
+
+        # The whole message, not a substring: what separates this from
+        # DiscoveryNamespaceInUse is that nothing holds the claim, so
+        # the message must not read as though something does.
+        message = str(error)
+        assert message == (
+            f"Discovery namespace {namespace!r} was replaced faster than it "
+            "could be claimed"
+        )
+        assert "in use" not in message
+
+
 class TestDiscoveryNamespaceNotFound:
     @given(namespace=st.text())
     @settings(max_examples=100)
@@ -464,6 +502,7 @@ class TestDiscoveryExceptionReconstruction:
             (DiscoveryBlockExhausted, 2048),
             (DiscoveryWorkerNotFound, uuid.UUID(int=7)),
             (DiscoveryNamespaceInUse, "ns"),
+            (DiscoveryNamespaceContended, "ns"),
             (DiscoveryNamespaceNotFound, "ns"),
         ],
         ids=lambda value: getattr(value, "__name__", None),

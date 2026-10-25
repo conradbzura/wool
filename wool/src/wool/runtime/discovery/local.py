@@ -43,6 +43,7 @@ from wool.runtime.discovery.base import DiscoverySubscriberLike
 from wool.runtime.discovery.base import PredicateFunction
 from wool.runtime.discovery.exceptions import DiscoveryBlockExhausted
 from wool.runtime.discovery.exceptions import DiscoveryCapacityExhausted
+from wool.runtime.discovery.exceptions import DiscoveryNamespaceContended
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceInUse
 from wool.runtime.discovery.exceptions import DiscoveryNamespaceNotFound
 from wool.runtime.discovery.exceptions import DiscoveryWorkerNotFound
@@ -83,6 +84,14 @@ _MIN_PAYLOAD: Final = len(
     .to_protobuf()
     .SerializeToString()
 )
+#: Times `LocalDiscovery.__enter__` retakes the claim before giving
+#: up. A legitimate claim takes one attempt, because every retry
+#: follows another process's completed reclaim rather than contending
+#: with one, so the cap is reached only under a co-tenant replacing the
+#: directory faster than entry can claim it. Bounded at all because
+#: entry is synchronous and spins on the caller's thread; see
+#: `LocalDiscovery`.
+_CLAIM_ATTEMPT_LIMIT: Final = 8
 #: How long a parked subscription waits before re-checking that its
 #: owner still holds the generation it bound. Bounds how long a borrower
 #: can serve a snapshot of a namespace that no longer has a live owner,
@@ -685,15 +694,18 @@ class LocalDiscovery(Discovery):
     so among cooperating processes a claim resolves rather than
     livelocking: a legitimate claim takes one iteration.
 
-    That bound is the cooperation, not the loop. The loop has no cap and
-    no sleep, so a co-tenant that keeps replacing the directory — the
+    That bound is the cooperation, not the loop, so the loop carries one
+    of its own: `_CLAIM_ATTEMPT_LIMIT` attempts, after which entry
+    raises `DiscoveryNamespaceContended` rather than spinning. What the
+    cap is for is a co-tenant that keeps replacing the directory — the
     threat `_purge` documents, a world-writable root shared by every
-    user on the host — holds entry spinning on the caller's thread.
-    Entry is synchronous and is reached from async code, including the
-    public form that hands a `LocalDiscovery` to a `~wool.WorkerPool`,
-    where `~wool.runtime.typing.resolved` enters a synchronous context
-    manager inline; so the mitigation is a root no co-tenant shares,
-    rather than anything this loop can do about it.
+    user on the host — which would otherwise hold entry on the caller's
+    thread, because entry is synchronous and is reached from async code,
+    including the public form that hands a `LocalDiscovery` to a
+    `~wool.WorkerPool`, where `~wool.runtime.typing.resolved` enters a
+    synchronous context manager inline. Note what a cap can and cannot
+    do: it converts that spin into a failure, and what makes a
+    legitimate claim resolve is still a root no co-tenant shares.
 
     Having taken the claim, an owner sweeps the namespace before staging
     anything: it removes every generation and pointer it finds, through
@@ -830,6 +842,9 @@ class LocalDiscovery(Discovery):
             If entry has already been attempted on this instance.
         :raises DiscoveryNamespaceInUse:
             If a live owner holds the namespace; see `LocalDiscovery`.
+        :raises DiscoveryNamespaceContended:
+            If the namespace's directory is replaced under this entry
+            more times than it retries; see `LocalDiscovery`.
         """
         # Stamped before anything can fail, so a fork racing this entry
         # either sees an instance that was never entered — whose release
@@ -837,7 +852,7 @@ class LocalDiscovery(Discovery):
         # disowns. See **Forks** in `LocalDiscovery`.
         self._owner_pid = os.getpid()
         directory = _namespace_directory(self._namespace)
-        while True:
+        for _ in range(_CLAIM_ATTEMPT_LIMIT):
             directory.mkdir(parents=True, exist_ok=True)
             try:
                 claim = os.open(directory, os.O_RDONLY)
@@ -873,7 +888,7 @@ class LocalDiscovery(Discovery):
                 # that is not a directory, after it was opened. Both are
                 # progress by another process, so the claim is retried;
                 # every other error reaches the caller rather than
-                # spinning this loop, which has no timeout and no sleep.
+                # spending an attempt of this loop's bounded budget.
                 pass
             except BaseException:
                 self._release()
@@ -883,6 +898,12 @@ class LocalDiscovery(Discovery):
             # on the instance for `_release` to act on.
             claim, self._claim = self._claim, -1
             os.close(claim)
+        else:
+            # Reached holding nothing, which is why exhaustion needs no
+            # teardown of its own: the exchange above closes the claim
+            # before looping, and the `os.open` arm retries before
+            # there is one to close.
+            raise DiscoveryNamespaceContended(self._namespace)
         self._cleanup = atexit.register(self._release)
         return self
 
