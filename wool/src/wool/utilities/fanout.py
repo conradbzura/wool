@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import weakref
 from typing import AsyncGenerator
 from typing import AsyncIterable
@@ -108,6 +109,11 @@ class Fanout(Generic[T]):
         cause rather than a clean end, and cleaning up is not what made
         it end.
 
+        The shared iterator is closed when it is an async generator or
+        when it exposes ``aclose`` as a coroutine function. A source
+        offering neither is left to its own collection, and a
+        synchronous ``aclose`` is never called.
+
         A failure to close the iterator propagates. The caller is a
         resource pool's finalizer, which knows which pooled resource is
         being retired and logs it against that; this container knows
@@ -115,6 +121,20 @@ class Fanout(Generic[T]):
 
         :raises BaseException:
             Whatever closing the shared iterator raised.
+
+        .. rubric:: Implementation notes
+
+        The close takes two arms because neither predicate covers the
+        other while both shapes are closeable. `isinstance` against
+        `AsyncGenerator` is itself structural, over five names rather
+        than one, so it admits a conforming duck and misses a
+        class-based iterator that implements ``aclose`` and not
+        ``asend``; a native generator's ``aclose`` is a builtin, which
+        `inspect.iscoroutinefunction` does not report. What the pair
+        excludes is the case worth excluding: a synchronous ``aclose``
+        a third party happened to name that way, which `AsyncIterable`'s
+        guarantee of ``__aiter__`` and nothing else leaves possible and
+        which awaiting would raise on.
         """
         # Set before anything can suspend, so a consumer cannot start a
         # pull against an iterator this is about to close.
@@ -127,13 +147,12 @@ class Fanout(Generic[T]):
                 # suspended inside an active pull refuses to close.
                 await asyncio.wait({pull})
             iterator, self._iterator = self._iterator, None
-            # Narrowed to generators rather than probing for `aclose`:
-            # `AsyncIterable` guarantees `__aiter__` and nothing else, so
-            # an attribute probe made closing an unstated optional part
-            # of the contract and would await whatever a third party
-            # happened to name `aclose`.
+            # Two arms, for the reason in the implementation notes.
+            close = getattr(iterator, "aclose", None)
             if isinstance(iterator, AsyncGenerator):
                 await iterator.aclose()
+            elif inspect.iscoroutinefunction(close):
+                await close()
         finally:
             self._wake()
 

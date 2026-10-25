@@ -200,6 +200,82 @@ class TestFanout:
         # Assert
         assert closed == [True]
 
+    @pytest.mark.asyncio
+    async def test_cleanup_should_close_a_conforming_non_generator_source(self):
+        """Test cleanup closes a source that is not an async generator.
+
+        Given:
+            A Fanout over a class-based async iterator that implements
+            aclose as a coroutine function but not the rest of the
+            async generator protocol, which is a shape the subscriber
+            contract admits
+        When:
+            cleanup is called after the iterator has been initialised
+        Then:
+            It should await that aclose, rather than leaving the source
+            open on the grounds that it is not a generator.
+        """
+        # Arrange
+        closed = []
+
+        class _Iterator:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return "item"
+
+            async def aclose(self):
+                closed.append(True)
+
+        fanout = Fanout(_Iterator())
+        consumer = fanout.consumer()
+        await anext(consumer)  # initialise the iterator
+
+        # Act
+        await fanout.cleanup()
+
+        # Assert
+        assert closed == [True]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_should_not_await_a_synchronous_aclose(self):
+        """Test cleanup leaves a source's synchronous aclose alone.
+
+        Given:
+            A Fanout over a class-based async iterator whose aclose is
+            an ordinary function, which AsyncIterable's guarantee of
+            __aiter__ and nothing else leaves possible
+        When:
+            cleanup is called after the iterator has been initialised
+        Then:
+            It should neither call it nor raise, since awaiting a
+            non-awaitable would reach the pool's finalizer as a close
+            failure against the resource being retired.
+        """
+        # Arrange
+        called = []
+
+        class _Iterator:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return "item"
+
+            def aclose(self):
+                called.append(True)
+
+        fanout = Fanout(_Iterator())
+        consumer = fanout.consumer()
+        await anext(consumer)  # initialise the iterator
+
+        # Act
+        await fanout.cleanup()
+
+        # Assert
+        assert called == []
+
 
 class TestFanoutConsumer:
     """Tests for the FanoutConsumer class.
