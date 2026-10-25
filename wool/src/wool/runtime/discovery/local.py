@@ -73,6 +73,16 @@ _CURRENT: Final = "current"
 _BLOCKS: Final = "blocks"
 _NAME_MAX: Final = 255
 _CARRY_FORWARD_LIMIT: Final = 3
+#: Smallest serialized `~wool.runtime.worker.metadata.WorkerMetadata`,
+#: measured from the schema rather than written down, so a field added
+#: to the message moves the block-size floor with it rather than leaving
+#: a validator that admits a block nothing can be published into. See
+#: `_validate_block_size`.
+_MIN_PAYLOAD: Final = len(
+    WorkerMetadata(uid=UUID(int=0), address="", pid=0, version="")
+    .to_protobuf()
+    .SerializeToString()
+)
 #: How long a parked subscription waits before re-checking that its
 #: owner still holds the generation it bound. Bounds how long a borrower
 #: can serve a snapshot of a namespace that no longer has a live owner,
@@ -580,19 +590,21 @@ class LocalDiscovery(Discovery):
     :param block_size:
         Size in bytes for each worker's serialized data block. Each
         block spends 4 bytes on a length prefix, leaving
-        ``block_size - 4`` for the serialized metadata, so it must exceed
-        4. That floor is arithmetic and not practical — see
-        `LocalDiscovery.Publisher.publish` for the size a block actually
-        has to reach. Defaults to 1024.
+        ``block_size - 4`` for the serialized metadata, so it must hold
+        that prefix and the smallest metadata any worker serializes to.
+        That floor is the smallest block that can work rather than the
+        smallest that will — see `LocalDiscovery.Publisher.publish` for
+        what a given worker's metadata needs of it. Defaults to 1024.
     :param lock_timeout:
         Maximum seconds each publisher waits for the cross-process file
         lock; see `LocalDiscovery.Publisher`. Defaults to
         `DEFAULT_LOCK_TIMEOUT`.
     :raises ValueError:
         If ``namespace`` does not name a single path component, if
-        ``capacity`` is less than 1, if ``block_size`` does not exceed
-        the 4-byte length prefix, if ``poll_interval`` is not positive,
-        or if ``lock_timeout`` is negative.
+        ``capacity`` is less than 1, if ``block_size`` cannot hold the
+        length prefix and the smallest serialized metadata, if
+        ``poll_interval`` is not positive, or if ``lock_timeout`` is
+        negative.
 
     Example — publish workers:
 
@@ -1267,14 +1279,12 @@ class LocalDiscovery(Discovery):
                 For ``worker-added`` and ``worker-updated``, if the
                 serialized metadata exceeds the worker's block, which is
                 rejected before anything is written, so the prior
-                registration is left intact. This is the real bound on
-                `LocalDiscovery`'s ``block_size``: that parameter's own
-                floor rejects only what cannot hold the length prefix,
-                and a block above it but below the smallest serialized
-                `~wool.runtime.worker.metadata.WorkerMetadata` — 64
-                bytes, against a realistic worker's ~95 — constructs,
-                claims the namespace and then fails every publish here,
-                permanently and per worker.
+                registration is left intact. `LocalDiscovery`'s
+                ``block_size`` floor admits every block that can hold
+                some worker's metadata, so what stays reachable here is
+                a block that cannot hold *this* worker's: how far above
+                that floor a worker sits depends on its metadata, down
+                to the length of the version string it carries.
             :raises TimeoutError:
                 If the cross-process file lock is not acquired within this
                 publisher's ``lock_timeout``.
@@ -1952,26 +1962,33 @@ def _validate_namespace(namespace: str) -> None:
 
 
 def _validate_block_size(block_size: int) -> None:
-    """Reject a block size that cannot hold the length prefix and a payload.
+    """Reject a block size no worker's metadata could fit in.
 
     `_write_block` spends ``struct.calcsize("I")`` bytes on the length
     prefix and bounds the payload against the block's live size, so a
-    block no larger than the prefix leaves nothing for metadata and makes
-    every publish raise `DiscoveryBlockExhausted` permanently.
+    block short of that prefix plus `_MIN_PAYLOAD` holds no worker's
+    metadata at all and makes every publish raise
+    `DiscoveryBlockExhausted` permanently.
 
-    This bound is necessary and not sufficient: a block a few bytes above
-    the prefix still cannot hold the smallest serialized `WorkerMetadata`,
-    and fails the same permanent way. It rejects only the sizes that are
-    unusable by arithmetic rather than by payload.
+    The floor is the smallest block that can work rather than the
+    smallest that will: what a block has to reach depends on the
+    metadata published into it, and one above this floor but short of
+    that worker's own requirement fails the same permanent way. See
+    `LocalDiscovery.Publisher.publish`.
 
+    :param block_size:
+        The size to check, in bytes.
     :raises ValueError:
-        If ``block_size`` does not exceed the length prefix.
+        If ``block_size`` cannot hold the length prefix and the smallest
+        serialized metadata.
     """
     prefix = struct.calcsize("I")
-    if block_size <= prefix:
+    floor = prefix + _MIN_PAYLOAD
+    if block_size < floor:
         raise ValueError(
-            f"Expected block size greater than the {prefix}-byte length prefix, "
-            f"got {block_size}"
+            f"Expected block size of at least {floor} bytes, the {prefix}-byte "
+            f"length prefix plus the {_MIN_PAYLOAD}-byte smallest serialized "
+            f"worker metadata, got {block_size}"
         )
 
 

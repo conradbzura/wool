@@ -54,6 +54,21 @@ from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.afilter import afilter
 
+#: The smallest block a publish can use, rebuilt here from the length
+#: prefix and the smallest metadata the schema serializes to rather than
+#: read back from the module. Deriving it independently is what makes
+#: this a check of the product's own arithmetic: a prefix or a schema
+#: that moves on one side and not the other turns the boundary
+#: assertions below red, where reading the module's constant back would
+#: agree with whatever it now says.
+LENGTH_PREFIX = struct.calcsize("I")
+MIN_PAYLOAD = len(
+    WorkerMetadata(uid=uuid.UUID(int=0), address="", pid=0, version="")
+    .to_protobuf()
+    .SerializeToString()
+)
+MIN_BLOCK_SIZE = LENGTH_PREFIX + MIN_PAYLOAD
+
 
 @pytest.fixture
 def metadata():
@@ -647,23 +662,27 @@ class TestLocalDiscovery:
         with pytest.raises(ValueError, match="non-empty namespace"):
             LocalDiscovery("")
 
-    @pytest.mark.parametrize("block_size", [0, -1, 1, 4])
-    def test___init___should_raise_when_block_size_within_the_prefix(self, block_size):
-        """Test LocalDiscovery rejects a block size the prefix alone fills.
+    @pytest.mark.parametrize(
+        "block_size", [0, -1, 1, LENGTH_PREFIX, LENGTH_PREFIX + 1, MIN_BLOCK_SIZE - 1]
+    )
+    def test___init___should_raise_when_block_size_cannot_hold_minimal_metadata(
+        self, block_size
+    ):
+        """Test LocalDiscovery rejects a block no metadata could fit in.
 
         Given:
-            A block_size no larger than the 4-byte length prefix every
-            block spends before its payload
+            A block_size short of the length prefix every block spends
+            plus the smallest metadata the schema serializes to
         When:
             LocalDiscovery is instantiated
         Then:
-            It should raise ValueError, since such a block leaves no room
-            for metadata at all and would make every publish raise
+            It should raise ValueError, since such a block holds no
+            worker's metadata at all and would make every publish raise
             permanently.
         """
         # Act & assert
         with pytest.raises(
-            ValueError, match="Expected block size greater than the 4-byte"
+            ValueError, match=f"Expected block size of at least {MIN_BLOCK_SIZE} bytes"
         ):
             LocalDiscovery("ns", block_size=block_size)
 
@@ -688,6 +707,8 @@ class TestLocalDiscovery:
 
     @given(block_size=st.integers())
     @settings(max_examples=50)
+    @example(block_size=MIN_BLOCK_SIZE)
+    @example(block_size=MIN_BLOCK_SIZE - 1)
     @example(block_size=5)
     @example(block_size=4)
     @example(block_size=1)
@@ -702,16 +723,18 @@ class TestLocalDiscovery:
             LocalDiscovery is instantiated with it.
         Then:
             It should raise ValueError naming the offending value exactly
-            when the value does not exceed the length prefix, and
-            construct successfully for every larger value.
+            when the value cannot hold the length prefix and the
+            smallest serialized metadata, and construct successfully for
+            every value that can.
         """
         # Act & assert
-        if block_size <= 4:
+        if block_size < MIN_BLOCK_SIZE:
             with pytest.raises(
                 ValueError,
                 match=(
-                    f"Expected block size greater than the 4-byte length prefix, "
-                    f"got {block_size}"
+                    f"Expected block size of at least {MIN_BLOCK_SIZE} bytes, the "
+                    f"{LENGTH_PREFIX}-byte length prefix plus the {MIN_PAYLOAD}-byte "
+                    f"smallest serialized worker metadata, got {block_size}"
                 ),
             ):
                 LocalDiscovery("ns", block_size=block_size)
@@ -4213,6 +4236,35 @@ class TestLocalDiscoveryPublisher:
 
                 # Assert
                 assert sorted(publisher._blocks) == [uid.hex]
+
+    @pytest.mark.asyncio
+    async def test_publish_should_succeed_when_the_block_is_the_smallest_usable_size(
+        self, namespace
+    ):
+        """Test a publish into a block of exactly the validated floor.
+
+        Given:
+            An owner that entered the namespace with the smallest
+            block_size its constructor accepts, and a worker whose
+            metadata is the smallest the schema serializes to
+        When:
+            That worker is published
+        Then:
+            It should write the worker's block rather than raise
+            DiscoveryBlockExhausted, which is what makes the floor the
+            smallest block that works rather than one short of it.
+        """
+        # Arrange
+        minimal = WorkerMetadata(uid=uuid.UUID(int=0), address="", pid=0, version="")
+
+        # Act
+        with LocalDiscovery(namespace, block_size=MIN_BLOCK_SIZE):
+            async with LocalDiscovery.Publisher(namespace) as publisher:
+                await publisher.publish("worker-added", minimal)
+
+                # Assert
+                block = block_path(namespace, minimal.uid)
+                assert block.stat().st_size == MIN_BLOCK_SIZE
 
     @pytest.mark.asyncio
     async def test_publish_should_leave_worker_undiscoverable_when_add_overflows(
