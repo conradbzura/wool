@@ -60,6 +60,16 @@ class _PooledSubscriber:
     closed and the fanout's pull task is still not cancelled. What ends
     is the unbounded *retention*, not the missing teardown.
 
+    What that costs is specific. The source iterator is a
+    `~wool.LocalDiscovery.Subscriber` iteration whose exit stack holds
+    its binding, its registry handle and its observer's retirement, so
+    none of the three unwind: a watcher thread outlives the
+    subscription and the descriptors it pinned stay open. The
+    uncancelled pull reports itself as a pending task destroyed, naming
+    neither the fanout nor the subscriber it belonged to.
+    `~wool.LocalDiscovery` carries an `atexit` fallback against the
+    same hazard, where a fanout has no second route of any kind.
+
     :param subscriber:
         The subscriber the key's factory built.
     :param fanout:
