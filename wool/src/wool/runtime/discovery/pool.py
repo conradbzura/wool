@@ -8,6 +8,7 @@ from typing import Callable
 
 from wool.runtime.discovery import __subscriber_pool__
 from wool.runtime.discovery.base import DiscoveryEvent
+from wool.runtime.discovery.base import DiscoverySubscriberLike
 from wool.runtime.resourcepool import ResourcePool
 from wool.runtime.worker.metadata import WorkerMetadata
 from wool.utilities.fanout import Fanout
@@ -30,12 +31,13 @@ class _SubscriberKey:
     :param identity:
         The key callable's result, which alone decides sharing.
     :param factory:
-        Builds the subscriber cached under ``identity``. Excluded from
+        Builds the subscriber cached under ``identity``, whose events
+        are what every consumer of that entry receives. Excluded from
         equality and hashing.
     """
 
     identity: Any
-    factory: Callable[[], Any] = field(compare=False)
+    factory: Callable[[], DiscoverySubscriberLike] = field(compare=False)
 
     def __repr__(self) -> str:
         return repr(self.identity)
